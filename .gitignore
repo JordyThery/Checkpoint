@@ -9,6 +9,7 @@ build/
 .DS_Store
 
 # Archives / exports
+*.app/
 *.xcarchive
 *.ipa
 *.dSYM.zip
