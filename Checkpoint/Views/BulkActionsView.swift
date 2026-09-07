@@ -98,14 +98,14 @@ struct BulkActionsView: View {
                 LabeledContent("Selected Devices", value: "\(reports.count)")
                 LabeledContent("Computers", value: "\(computerCount)")
                 LabeledContent("Mobile Devices", value: "\(mobileCount)")
-                LabeledContent("In Apple Business Manager", value: "\(abmCount)")
+                LabeledContent("In Apple Business", value: "\(abmCount)")
                 LabeledContent("With Jamf Pro Record", value: "\(jamfCount)")
             }
-            Section("Apple Business Manager") {
+            Section("Apple Business") {
                 bulkPicker("MDM Server", selection: $mdmSelection, currentState: currentMDMState, noneLabel: "Unassigned", options: model.mdmServers.map { ($0.id, $0.name) })
                 Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
                     .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
-                Button("Release \(count(abmCount)) from Apple Business Manager", role: .destructive) { pending = .release }
+                Button("Release \(count(abmCount)) from Apple Business", role: .destructive) { pending = .release }
                     .disabled(abmCount == 0)
             }
             if computerCount > 0 {
@@ -234,7 +234,7 @@ struct BulkActionsView: View {
                 "Unassign \(count(abmCount)) from their MDM server?"
             }
         case .release:
-            "Release \(count(abmCount)) from Apple Business Manager?"
+            "Release \(count(abmCount)) from Apple Business?"
         case .applyComputerPrestage:
             if let name = selectedPrestageName(computerPrestageSelection, in: model.prestages) {
                 "Move \(count(computerCount)) to PreStage “\(name)”?"
@@ -259,7 +259,7 @@ struct BulkActionsView: View {
     private var pendingMessage: String {
         switch pending {
         case .applyMDM:
-            "Devices that are released or not in Apple Business Manager are skipped. Apple processes assignments asynchronously."
+            "Devices that are released or not in Apple Business are skipped. Apple processes assignments asynchronously."
         case .release:
             "The devices will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .applyComputerPrestage, .applyMobilePrestage:

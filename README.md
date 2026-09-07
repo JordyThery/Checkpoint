@@ -2,11 +2,11 @@
 
 **One list of serial numbers. Both sides of the story.**
 
-Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business Manager** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table — and the tools to act on what you find.
+Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table — and the tools to act on what you find.
 
 Enter serial numbers — typed, pasted, or imported from a text/CSV file — and Checkpoint reports, per device:
 
-**From Apple Business Manager**
+**From Apple Business**
 
 - Assignment status (assigned / unassigned / released) and the assigned MDM server
 - Warranty and AppleCare coverage
@@ -23,7 +23,7 @@ Enter serial numbers — typed, pasted, or imported from a text/CSV file — and
 
 Checkpoint doesn't just surface discrepancies — it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
-- **Apple Business Manager**: assign or unassign the MDM server, release a device from the organization
+- **Apple Business**: assign or unassign the MDM server, release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), delete the device record
 - **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
@@ -33,7 +33,7 @@ Multiple Jamf Pro servers (e.g. production and testing) can be configured and sw
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business Manager API key (ABM → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
+- An Apple Business API key (ABM → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
 - A Jamf Pro server. Both authentication methods are supported:
   - **API client** (recommended): create one under Settings → API Roles and Clients
   - **Username / password** (bearer token)

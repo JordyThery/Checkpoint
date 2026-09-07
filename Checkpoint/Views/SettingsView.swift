@@ -13,7 +13,7 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Apple Business Manager
+// MARK: - Apple Business
 
 struct ABMSettingsTab: View {
     @Environment(AppSettings.self) private var settings
@@ -39,7 +39,7 @@ struct ABMSettingsTab: View {
                     .font(.caption.monospaced())
                     .frame(height: 90)
                 Button("Import .pem File…") { showingImporter = true }
-                Text("Paste the PEM private key downloaded when creating the API key in Apple Business Manager (Preferences → API), or import the .pem file. The key is stored only in your keychain.")
+                Text("Paste the PEM private key downloaded when creating the API key in Apple Business (Preferences → API), or import the .pem file. The key is stored only in your keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

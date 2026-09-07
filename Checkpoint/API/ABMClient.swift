@@ -40,7 +40,7 @@ struct MDMServer: Sendable, Identifiable, Hashable {
 
 // MARK: - Client
 
-/// Client for the Apple Business Manager API (`api-business.apple.com`).
+/// Client for the Apple Business API (`api-business.apple.com`).
 /// Authenticates with the OAuth 2 client-credentials grant using an
 /// ES256-signed JWT client assertion.
 actor ABMClient {
@@ -215,7 +215,7 @@ actor ABMClient {
            let first = parsed.errors?.first {
             detail = first.detail ?? first.title ?? ""
         }
-        throw APIError(message: "Apple Business Manager: HTTP \(status)\(detail.isEmpty ? "" : " – \(detail)")")
+        throw APIError(message: "Apple Business: HTTP \(status)\(detail.isEmpty ? "" : " – \(detail)")")
     }
 
     // MARK: OAuth
@@ -238,7 +238,7 @@ actor ABMClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw APIError(message: "Apple Business Manager sign-in failed: \(body.prefix(300))")
+            throw APIError(message: "Apple Business sign-in failed: \(body.prefix(300))")
         }
         struct TokenResponse: Decodable {
             let access_token: String

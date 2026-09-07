@@ -44,7 +44,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No Devices",
                         systemImage: "laptopcomputer.and.iphone",
-                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in Apple Business Manager and Jamf Pro.")
+                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in Apple Business and Jamf Pro.")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
@@ -69,7 +69,7 @@ struct ContentView: View {
                     } label: {
                         Label("Settings", systemImage: "gearshape")
                     }
-                    .help("Configure Apple Business Manager and Jamf Pro credentials")
+                    .help("Configure Apple Business and Jamf Pro credentials")
                 }
             }
         }
@@ -131,9 +131,9 @@ struct ContentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             if !model.isABMConfigured && settings.jamfServers.isEmpty {
-                Text("Apple Business Manager and Jamf Pro are not configured yet.")
+                Text("Apple Business and Jamf Pro are not configured yet.")
             } else if !model.isABMConfigured {
-                Text("Apple Business Manager is not configured — ABM columns will be empty.")
+                Text("Apple Business is not configured — ABM columns will be empty.")
             } else {
                 Text("No Jamf Pro server is configured — Jamf columns will be empty.")
             }

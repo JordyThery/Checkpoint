@@ -32,7 +32,7 @@ struct DeviceDetailView: View {
                     Text(report.serial).monospaced().textSelection(.enabled)
                 }
             }
-            Section("Apple Business Manager") { abmContent }
+            Section("Apple Business") { abmContent }
             Section("Jamf Pro") { jamfContent }
             if let info = report.jamf.value {
                 Section("MDM Commands") { commandButtons(info) }
@@ -111,7 +111,7 @@ struct DeviceDetailView: View {
                 "Unassign \(report.serial) from its MDM server?"
             }
         case .release:
-            "Release \(report.serial) from Apple Business Manager?"
+            "Release \(report.serial) from Apple Business?"
         case .applyPrestage:
             if let selectedPrestageName {
                 "Move \(report.serial) to PreStage “\(selectedPrestageName)”?"
@@ -181,7 +181,7 @@ struct DeviceDetailView: View {
         case .pending:
             ProgressView().controlSize(.small)
         case .notConfigured:
-            Text("Add your Apple Business Manager API credentials in Settings to see device status, warranty, and MDM assignment.")
+            Text("Add your Apple Business API credentials in Settings to see device status, warranty, and MDM assignment.")
                 .foregroundStyle(.secondary)
         case .notFound:
             Text("This serial number is not part of your organization — it was never added, or it has been released.")
@@ -244,7 +244,7 @@ struct DeviceDetailView: View {
             }
             Button("Apply MDM Assignment") { pending = .applyMDM }
                 .disabled(mdmSelection == info.mdmServerID)
-            Button("Release from Apple Business Manager", role: .destructive) { pending = .release }
+            Button("Release from Apple Business", role: .destructive) { pending = .release }
         }
     }
 

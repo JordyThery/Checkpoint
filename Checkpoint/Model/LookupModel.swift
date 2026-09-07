@@ -280,20 +280,20 @@ final class LookupModel {
         var errorDescription: String? { message }
     }
 
-    /// Permanently releases the devices from Apple Business Manager.
+    /// Permanently releases the devices from Apple Business.
     func releaseFromABM(reports: [DeviceReport]) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business Manager is not configured.") }
+        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
-        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business Manager.") }
+        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
         try await abm.submitActivity(.release, serials: serials)
         await refreshRows(serials)
     }
 
     /// Assigns the devices to an MDM server, or unassigns them when `serverID` is nil.
     func setMDMServer(reports: [DeviceReport], to serverID: String?) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business Manager is not configured.") }
+        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let inOrg = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }
-        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business Manager.") }
+        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
         if let serverID {
             try await abm.submitActivity(.assign, serials: inOrg.map(\.serial), mdmServerID: serverID)
         } else {
