@@ -1,19 +1,29 @@
 # Checkpoint
 
-A macOS app for Mac admins that shows the full lifecycle status of Apple devices across **Apple Business Manager** and **Jamf Pro** in one table — and lets you act on it.
+**One list of serial numbers. Both sides of the story.**
 
-Feed it serial numbers (typed, pasted, or imported from a text/CSV file) and Checkpoint shows, per device:
+Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business Manager** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table — and the tools to act on what you find.
 
-| Source | Information |
-| --- | --- |
-| Apple Business Manager | Assignment status (assigned / unassigned / released), assigned MDM server, warranty & AppleCare coverage, model, order and purchase source |
-| Jamf Pro | Device record & name, PreStage scope, last enrollment date, last inventory update, Last Contact, last check-in, MDM profile expiration |
+Enter serial numbers — typed, pasted, or imported from a text/CSV file — and Checkpoint reports, per device:
 
-## Actions
+**From Apple Business Manager**
 
-All actions work on a single device or in bulk on a multi-selection, and always ask for confirmation:
+- Assignment status (assigned / unassigned / released) and the assigned MDM server
+- Warranty and AppleCare coverage
+- Model, order number, and purchase source
 
-- **Apple Business Manager**: assign / unassign MDM server, release from the organization
+**From Jamf Pro**
+
+- Whether a device record exists, and its name
+- PreStage enrollment scope
+- Last enrollment date, last inventory update, Last Contact, and last check-in
+- MDM profile expiration
+
+## Beyond reporting
+
+Checkpoint doesn't just surface discrepancies — it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
+
+- **Apple Business Manager**: assign or unassign the MDM server, release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), delete the device record
 - **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
