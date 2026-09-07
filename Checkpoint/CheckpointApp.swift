@@ -1,6 +1,6 @@
 import SwiftUI
 
-@main struct MyApp: App {
+@main struct CheckpointApp: App {
     private let settings = AppSettings.shared
     @State private var model = LookupModel(settings: AppSettings.shared)
 
