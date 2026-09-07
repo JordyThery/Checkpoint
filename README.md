@@ -33,7 +33,7 @@ Multiple Jamf Pro servers (e.g. production and testing) can be configured and sw
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business API key (ABM → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
+- An Apple Business API key (Apple Business → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
 - A Jamf Pro server. Both authentication methods are supported:
   - **API client** (recommended): create one under Settings → API Roles and Clients
   - **Username / password** (bearer token)
@@ -53,7 +53,7 @@ Grant the API role only what you intend to use:
 
 ## Security
 
-Credentials are stored only on your Mac: secrets (ABM private key, Jamf client secrets/passwords) in the login keychain, non-secret configuration in user defaults. The app is sandboxed and talks exclusively to your configured Jamf Pro servers and Apple's API endpoints (`api-business.apple.com`, `account.apple.com`).
+Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the login keychain, non-secret configuration in user defaults. The app is sandboxed and talks exclusively to your configured Jamf Pro servers and Apple's API endpoints (`api-business.apple.com`, `account.apple.com`).
 
 ## Building
 
