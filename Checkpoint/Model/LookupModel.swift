@@ -468,8 +468,10 @@ final class LookupModel {
             }
             // The Jamf Pro UI's blank push also queues a DeclarativeManagement
             // sync — that's the entry that shows up in the device's management
-            // history. Queue it first, then send the push that wakes the
-            // device. A DDM failure is reported but doesn't stop the push.
+            // history. The public API rejects a bare DECLARATIVE_MANAGEMENT on
+            // some servers (HTTP 500), so fall back to a minimal
+            // DeviceInformation query: equally visible in pending commands and
+            // it forces the same MDM check-in. Failures don't stop the push.
             var ddmError: String?
             do {
                 try await jamf.sendModernCommand(
@@ -477,7 +479,14 @@ final class LookupModel {
                     managementIDs: managementIDs
                 )
             } catch {
-                ddmError = error.localizedDescription
+                do {
+                    try await jamf.sendModernCommand(
+                        commandData: ["commandType": "DEVICE_INFORMATION", "queries": ["DeviceName"]],
+                        managementIDs: managementIDs
+                    )
+                } catch let fallbackError {
+                    ddmError = "\(error.localizedDescription); fallback DeviceInformation also failed: \(fallbackError.localizedDescription)"
+                }
             }
             let errorIDs = Set(try await jamf.blankPush(managementIDs: managementIDs).map { $0.lowercased() })
             if !errorIDs.isEmpty {
@@ -488,7 +497,7 @@ final class LookupModel {
                 throw ActionError(message: "Jamf Pro could not deliver the blank push to: \(names)")
             }
             if let ddmError {
-                throw ActionError(message: "The blank push was sent, but queuing the DeclarativeManagement sync failed: \(ddmError)")
+                throw ActionError(message: "The blank push was sent, but no visible command could be queued with it: \(ddmError)")
             }
             return managementIDs.count
         }
