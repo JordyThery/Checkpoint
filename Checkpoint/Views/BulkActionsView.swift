@@ -371,7 +371,7 @@ struct BulkActionsView: View {
 
     private func execute(_ command: MDMCommand, pin: String?) {
         let note = command == .blankPush
-            ? " Blank pushes only wake the devices — they never appear in their pending or completed commands."
+            ? " Blank pushes only wake the devices — expect at most a DeclarativeManagement entry in their management history."
             : ""
         run(successMessage: "\(command.title) was queued for \(count(commandCount(command))) in Jamf Pro.\(note)") {
             try await model.sendCommand(command, reports: reports, passcode: pin)

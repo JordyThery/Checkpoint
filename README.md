@@ -25,7 +25,7 @@ Checkpoint doesn't just surface discrepancies — it resolves them. Every action
 
 - **Apple Business**: assign or unassign the MDM server, release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Send Blank Push; mobile devices: Update Inventory, Lock, Restart, Wipe, Send Blank Push, Renew MDM Profile
+- **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -50,12 +50,13 @@ Grant the API role only what you intend to use:
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Site display & changes | Read Sites, Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
-| MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Send Blank Pushes to Mobile Devices, Update Inventory for Mobile Devices |
+| MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
+| Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
 
 ## Security
 
-Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the login keychain, non-secret configuration in user defaults. The app is sandboxed and talks exclusively to your configured Jamf Pro servers and Apple's API endpoints (`api-business.apple.com`, `account.apple.com`).
+Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the login keychain, non-secret configuration in user defaults. The app is sandboxed and talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
 
 ## Building
 

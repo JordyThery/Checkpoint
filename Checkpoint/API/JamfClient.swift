@@ -282,6 +282,25 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
+    /// Sends a blank push to the given management IDs — the same endpoint the
+    /// Jamf Pro UI uses, which surfaces as a DeclarativeManagement entry in
+    /// the device's management history.
+    func blankPush(managementIDs: [String]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["clientManagementIds": managementIDs])
+        let (data, status) = try await send(path: "/api/v2/mdm/blank-push", method: "POST", body: body)
+        try throwIfError(status: status, data: data)
+    }
+
+    /// Reinstalls the Jamf management framework (jamf binary) on a computer
+    /// through an MDM InstallEnterpriseApplication command.
+    func redeployFramework(computerID: String) async throws {
+        let (data, status) = try await send(
+            path: "/api/v1/jamf-management-framework/redeploy/\(computerID)",
+            method: "POST"
+        )
+        try throwIfError(status: status, data: data)
+    }
+
     func deleteComputer(id: String) async throws {
         let (data, status) = try await send(path: "/api/v1/computers-inventory/\(id)", method: "DELETE")
         try throwIfError(status: status, data: data)

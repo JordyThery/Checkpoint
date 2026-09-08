@@ -73,26 +73,24 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     case wipeComputer
     case blankPush
     case renewProfile
+    case redeployFramework
     case updateInventory
     case lockMobile
     case clearPasscode
     case restartMobile
     case wipeMobile
 
-    // Clear Passcode is not offered: Jamf Pro removed it from the Classic API
-    // and the modern replacement requires the device's escrowed unlock token,
-    // which the API does not expose.
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
-        case .computer: [.lockComputer, .renewProfile, .wipeComputer, .blankPush]
-        case .mobileDevice: [.updateInventory, .lockMobile, .restartMobile, .wipeMobile, .blankPush, .renewProfile]
+        case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush]
+        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .blankPush, .renewProfile]
         }
     }
 
     /// Display order when a mixed selection is shown.
     static let allInDisplayOrder: [MDMCommand] = [
-        .updateInventory, .lockComputer, .lockMobile,
-        .restartMobile, .renewProfile, .blankPush, .wipeComputer, .wipeMobile,
+        .updateInventory, .lockComputer, .lockMobile, .clearPasscode,
+        .restartMobile, .renewProfile, .redeployFramework, .blankPush, .wipeComputer, .wipeMobile,
     ]
 
     func applies(to kind: JamfDeviceKind) -> Bool {
@@ -106,7 +104,6 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     func classicCommand(for kind: JamfDeviceKind) -> String? {
         guard applies(to: kind) else { return nil }
         switch self {
-        case .blankPush: return kind == .mobileDevice ? "BlankPush" : nil
         case .updateInventory: return "UpdateInventory"
         default: return nil
         }
@@ -130,15 +127,13 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .wipeMobile:
             return ["commandType": "ERASE_DEVICE"]
         case .clearPasscode:
-            return ["commandType": "CLEAR_PASSCODE"]
+            // The API schema marks unlockToken as required, but Jamf escrows
+            // the real token itself and exposes it through no API — send an
+            // empty value to pass validation and let the server substitute it.
+            return ["commandType": "CLEAR_PASSCODE", "unlockToken": ""]
         case .restartMobile:
             return ["commandType": "RESTART_DEVICE"]
-        case .blankPush where kind == .computer:
-            // The Classic blank push for computers is gone and the modern API
-            // has no BLANK_PUSH — a minimal DeviceInformation query has the
-            // same effect: the Mac must check in with MDM to answer it.
-            return ["commandType": "DEVICE_INFORMATION", "queries": ["DeviceName"]]
-        case .blankPush, .updateInventory, .renewProfile:
+        case .blankPush, .updateInventory, .renewProfile, .redeployFramework:
             return nil
         }
     }
@@ -149,6 +144,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .wipeComputer: "Wipe Computer"
         case .blankPush: "Send Blank Push"
         case .renewProfile: "Renew MDM Profile"
+        case .redeployFramework: "Redeploy Jamf Framework"
         case .updateInventory: "Update Inventory"
         case .lockMobile: "Lock Device"
         case .clearPasscode: "Clear Passcode"
@@ -173,8 +169,9 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         switch self {
         case .lockComputer: "The Mac will lock immediately and require the PIN to be used again."
         case .wipeComputer: "All data on the Mac will be erased. This cannot be undone."
-        case .blankPush: "Nudges the device to check in with MDM and process its pending commands. Nothing visible happens on the device itself."
+        case .blankPush: "Nudges the device to check in with MDM and process its pending commands. It can appear as a DeclarativeManagement entry in the management history."
         case .renewProfile: "The MDM enrollment profile will be renewed on the device."
+        case .redeployFramework: "Reinstalls the Jamf management framework (jamf binary) on the Mac through MDM. Use when a Mac has stopped checking in but still responds to MDM."
         case .updateInventory: "The device will be asked to submit a fresh inventory report."
         case .lockMobile: "The device will lock immediately; the owner's passcode unlocks it."
         case .clearPasscode: "The device passcode will be removed."
@@ -463,8 +460,30 @@ final class LookupModel {
             return udids.count
         }
 
+        if command == .blankPush {
+            let managementIDs = targets.compactMap(\.info.managementID)
+            guard !managementIDs.isEmpty else {
+                throw ActionError(message: "No management IDs are known, so a blank push cannot be sent — run a fresh lookup first.")
+            }
+            try await jamf.blankPush(managementIDs: managementIDs)
+            return managementIDs.count
+        }
+
         var failures: [String] = []
         var sent = 0
+
+        if command == .redeployFramework {
+            for target in targets where target.info.kind == .computer {
+                do {
+                    try await jamf.redeployFramework(computerID: target.info.computerID)
+                    sent += 1
+                } catch {
+                    failures.append("\(target.serial): \(error.localizedDescription)")
+                }
+            }
+            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+            return sent
+        }
 
         // Modern /v2/mdm/commands endpoint, batched per device kind (the
         // payload differs between computers and mobile devices).
