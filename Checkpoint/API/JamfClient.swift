@@ -21,6 +21,7 @@ struct JamfComputerRecord: Sendable {
     /// Last inventory update.
     let reportDate: String?
     let mdmProfileExpiration: String?
+    let siteID: String?
     let siteName: String?
 }
 
@@ -35,7 +36,13 @@ struct JamfMobileDeviceRecord: Sendable {
     /// Last contact with the Jamf Pro server (inventory attribute added in Jamf Pro 11.30).
     let lastContactTime: String?
     let mdmProfileExpiration: String?
+    let siteID: String?
     let siteName: String?
+}
+
+struct JamfSite: Sendable, Identifiable, Hashable {
+    let id: String
+    let name: String
 }
 
 /// The two PreStage families in Jamf Pro. Endpoint versions differ per family,
@@ -168,6 +175,7 @@ actor JamfClient {
             lastEnrolledDate: item.general?.lastEnrolledDate,
             reportDate: item.general?.reportDate,
             mdmProfileExpiration: item.general?.mdmProfileExpiration ?? item.general?.mdmCertificateExpiration,
+            siteID: item.general?.site?.id,
             siteName: item.general?.site?.name
         )
     }
@@ -223,6 +231,7 @@ actor JamfClient {
                 ?? DateFormatting.isoFromEpochMilliseconds(general.last_inventory_update_epoch),
             lastContactTime: detail?.lastContactTimestamp,
             mdmProfileExpiration: detail?.mdmProfileExpirationTimestamp,
+            siteID: detail?.site?.id,
             siteName: detail?.site?.name
         )
     }
@@ -435,6 +444,46 @@ actor JamfClient {
             return
         }
         throw lastError ?? APIError(message: "Could not update the PreStage scope.")
+    }
+
+    // MARK: Sites
+
+    /// All sites on the server. The full-access site is represented by
+    /// Jamf with the ID "-1" and is not included in the response.
+    func sites() async throws -> [JamfSite] {
+        struct Item: Decodable {
+            let id: String
+            let name: String
+        }
+        struct Wrapped: Decodable { let results: [Item] }
+        let (data, status) = try await send(path: "/api/v1/sites")
+        try throwIfError(status: status, data: data)
+        let items = (try? JSONDecoder().decode([Item].self, from: data))
+            ?? (try? JSONDecoder().decode(Wrapped.self, from: data))?.results
+            ?? []
+        return items.map { JamfSite(id: $0.id, name: $0.name) }
+    }
+
+    /// Moves a computer to the given site ("-1" for none).
+    func setComputerSite(computerID: String, siteID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["general": ["siteId": siteID]])
+        let (data, status) = try await send(
+            path: "/api/v1/computers-inventory-detail/\(computerID)",
+            method: "PATCH",
+            body: body
+        )
+        try throwIfError(status: status, data: data)
+    }
+
+    /// Moves a mobile device to the given site ("-1" for none).
+    func setMobileDeviceSite(deviceID: String, siteID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["siteId": siteID])
+        let (data, status) = try await send(
+            path: "/api/v2/mobile-devices/\(deviceID)",
+            method: "PATCH",
+            body: body
+        )
+        try throwIfError(status: status, data: data)
     }
 
     /// Cheap connectivity/credentials check.

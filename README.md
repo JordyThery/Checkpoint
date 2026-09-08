@@ -24,8 +24,8 @@ Enter serial numbers — typed, pasted, or imported from a text/CSV file — and
 Checkpoint doesn't just surface discrepancies — it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
 - **Apple Business**: assign or unassign the MDM server, release a device from the organization
-- **Jamf Pro**: change PreStage scope (computers and mobile devices), delete the device record
-- **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
+- **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
+- **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Send Blank Push; mobile devices: Update Inventory, Lock, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -48,6 +48,7 @@ Grant the API role only what you intend to use:
 | Device lookup | Read Computers, Read Mobile Devices |
 | PreStage display & changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
+| Site display & changes | Read Sites, Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Send Blank Pushes to Mobile Devices, Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
@@ -63,6 +64,10 @@ Open the project in Xcode 26 or later and build the `Checkpoint` scheme (⌘R). 
 ## Acknowledgements
 
 Inspired by [asbmutil](https://github.com/rodchristiansen/asbmutil) and [AxMJamfSync](https://github.com/karthikeyan-mac/AxMJamfSync).
+
+## Support
+
+If Checkpoint saves you time, you can [buy me a coffee](https://buymeacoffee.com/jordythery). ☕️
 
 ## License
 

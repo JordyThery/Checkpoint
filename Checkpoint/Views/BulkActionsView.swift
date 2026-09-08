@@ -11,6 +11,7 @@ struct BulkActionsView: View {
     @State private var mdmSelection: BulkChoice = .none
     @State private var computerPrestageSelection: BulkChoice = .none
     @State private var mobilePrestageSelection: BulkChoice = .none
+    @State private var siteSelection: BulkChoice = .none
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var infoMessage: String?
@@ -36,6 +37,7 @@ struct BulkActionsView: View {
         case release
         case applyComputerPrestage
         case applyMobilePrestage
+        case applySite
         case deleteJamf
         case command(MDMCommand)
     }
@@ -103,6 +105,18 @@ struct BulkActionsView: View {
         return .mixed
     }
 
+    private var currentSiteState: BulkChoice {
+        var values = Set<String>()
+        for report in reports {
+            if let info = report.jamf.value {
+                values.insert(info.siteID ?? "-1")
+            }
+        }
+        if values.isEmpty { return .none }
+        if values.count == 1 { return values.first == "-1" ? .none : .value(values.first!) }
+        return .mixed
+    }
+
     var body: some View {
         Form {
             Section {
@@ -131,6 +145,13 @@ struct BulkActionsView: View {
                     bulkPicker("PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: prestageOptions(kind: .mobileDevice).map { ($0.id, $0.displayName) })
                     Button("Apply PreStage to \(count(mobileCount))") { pending = .applyMobilePrestage }
                         .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice))
+                }
+            }
+            if jamfCount > 0 && !model.sites.isEmpty {
+                Section("Jamf Pro Site") {
+                    bulkPicker("Site", selection: $siteSelection, currentState: currentSiteState, noneLabel: "None", options: model.sites.map { ($0.id, $0.name) })
+                    Button("Apply Site to \(count(jamfCount))") { pending = .applySite }
+                        .disabled(siteSelection == .mixed || siteSelection == currentSiteState)
                 }
             }
             Section("MDM Commands") {
@@ -162,6 +183,7 @@ struct BulkActionsView: View {
         .onChange(of: currentMDMState) { _, newValue in mdmSelection = newValue }
         .onChange(of: currentPrestageState(kind: .computer)) { _, newValue in computerPrestageSelection = newValue }
         .onChange(of: currentPrestageState(kind: .mobileDevice)) { _, newValue in mobilePrestageSelection = newValue }
+        .onChange(of: currentSiteState) { _, newValue in siteSelection = newValue }
         .alert(
             "Action Failed",
             isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -258,6 +280,8 @@ struct BulkActionsView: View {
             } else {
                 "Remove \(count(mobileCount)) from their PreStage?"
             }
+        case .applySite:
+            "Move \(count(jamfCount)) to site “\(selectedSiteName)”?"
         case .deleteJamf:
             "Delete \(count(jamfCount)) from Jamf Pro?"
         case .command(let command):
@@ -265,6 +289,10 @@ struct BulkActionsView: View {
         case nil:
             ""
         }
+    }
+
+    private var selectedSiteName: String {
+        siteSelection.appliedID.flatMap { id in model.sites.first { $0.id == id }?.name } ?? "None"
     }
 
     private var pendingMessage: String {
@@ -275,6 +303,8 @@ struct BulkActionsView: View {
             "The devices will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .applyComputerPrestage, .applyMobilePrestage:
             "Devices are removed from their current PreStage scope and added to the selected one. Devices already in the selected PreStage, and devices of the other type, are skipped."
+        case .applySite:
+            "Only the Jamf Pro records move to the other site. The PreStages each device can join stay the same — they follow the ADE token that synced it."
         case .deleteJamf:
             "The computer and mobile device records will be deleted from the selected Jamf Pro server."
         case .command(let command):
@@ -303,6 +333,11 @@ struct BulkActionsView: View {
             Button("Change PreStage") {
                 run { try await model.setPrestage(reports: reports, to: mobilePrestageSelection.appliedID, kind: .mobileDevice) }
             }
+        case .applySite:
+            Button("Change Site") {
+                let siteID = siteSelection.appliedID ?? "-1"
+                run { try await model.setSite(reports: reports, to: siteID) }
+            }
         case .deleteJamf:
             Button("Delete Records", role: .destructive) {
                 run { try await model.deleteFromJamf(reports: reports) }
@@ -322,6 +357,7 @@ struct BulkActionsView: View {
         mdmSelection = currentMDMState
         computerPrestageSelection = currentPrestageState(kind: .computer)
         mobilePrestageSelection = currentPrestageState(kind: .mobileDevice)
+        siteSelection = currentSiteState
     }
 
     private func executeWithPIN(_ command: MDMCommand) {
@@ -334,7 +370,10 @@ struct BulkActionsView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued for \(count(commandCount(command))) in Jamf Pro.") {
+        let note = command == .blankPush
+            ? " Blank pushes only wake the devices — they never appear in their pending or completed commands."
+            : ""
+        run(successMessage: "\(command.title) was queued for \(count(commandCount(command))) in Jamf Pro.\(note)") {
             try await model.sendCommand(command, reports: reports, passcode: pin)
         }
     }

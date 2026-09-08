@@ -10,6 +10,7 @@ struct DeviceDetailView: View {
 
     @State private var mdmSelection: String?
     @State private var prestageSelection: String?
+    @State private var siteSelection = "-1"
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var infoMessage: String?
@@ -21,6 +22,7 @@ struct DeviceDetailView: View {
         case applyMDM
         case release
         case applyPrestage
+        case applySite
         case deleteJamf
         case command(MDMCommand)
     }
@@ -51,6 +53,7 @@ struct DeviceDetailView: View {
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
+        .onChange(of: report.jamf.value?.siteID) { syncSelections() }
         .alert(
             "Action Failed",
             isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -110,6 +113,10 @@ struct DeviceDetailView: View {
         prestageSelection.map { id in prestageChoices.first { $0.id == id }?.displayName ?? id }
     }
 
+    private var selectedSiteName: String {
+        model.sites.first { $0.id == siteSelection }?.name ?? "None"
+    }
+
     private var pendingTitle: String {
         switch pending {
         case .applyMDM:
@@ -126,6 +133,8 @@ struct DeviceDetailView: View {
             } else {
                 "Remove \(report.serial) from its PreStage?"
             }
+        case .applySite:
+            "Move \(report.serial) to site “\(selectedSiteName)”?"
         case .deleteJamf:
             "Delete the Jamf Pro record for \(report.serial)?"
         case .command(let command):
@@ -143,6 +152,8 @@ struct DeviceDetailView: View {
             "The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .applyPrestage:
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
+        case .applySite:
+            "Only the Jamf Pro record moves to the other site. The PreStages the device can join stay the same — they follow the ADE token that synced it."
         case .deleteJamf:
             "The record will be deleted from the selected Jamf Pro server."
         case .command(let command):
@@ -167,6 +178,11 @@ struct DeviceDetailView: View {
             Button("Change PreStage") {
                 let kind = report.jamf.value?.kind ?? .computer
                 run { try await model.setPrestage(reports: [report], to: prestageSelection, kind: kind) }
+            }
+        case .applySite:
+            Button("Change Site") {
+                let siteID = siteSelection
+                run { try await model.setSite(reports: [report], to: siteID) }
             }
         case .deleteJamf:
             Button("Delete Record", role: .destructive) {
@@ -279,7 +295,18 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func jamfDetails(_ info: JamfInfo) -> some View {
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
-        LabeledContent("Site", value: info.siteName ?? "None")
+        if model.sites.isEmpty {
+            LabeledContent("Site", value: info.siteName ?? "None")
+        } else {
+            Picker("Site", selection: $siteSelection) {
+                Text("None").tag("-1")
+                ForEach(model.sites) { site in
+                    Text(site.name).tag(site.id)
+                }
+            }
+            Button("Apply Site Change") { pending = .applySite }
+                .disabled(siteSelection == (info.siteID ?? "-1"))
+        }
         LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
         LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
         if info.kind == .mobileDevice || info.lastContact != nil {
@@ -336,7 +363,10 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued in Jamf Pro.") {
+        let note = command == .blankPush
+            ? " Blank pushes only wake the device — they never appear in its pending or completed commands."
+            : ""
+        run(successMessage: "\(command.title) was queued in Jamf Pro.\(note)") {
             try await model.sendCommand(command, reports: [report], passcode: pin)
         }
     }
@@ -351,6 +381,7 @@ struct DeviceDetailView: View {
         let current = model.reports.first { $0.serial == report.serial } ?? report
         mdmSelection = current.abm.value?.mdmServerID
         prestageSelection = current.jamf.value?.prestageID
+        siteSelection = current.jamf.value?.siteID ?? "-1"
     }
 
     private func run(successMessage: String? = nil, _ operation: @escaping () async throws -> Void) {

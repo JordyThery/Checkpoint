@@ -33,6 +33,7 @@ struct JamfInfo: Sendable {
     /// UUID used by the modern /v2/mdm/commands endpoint.
     var managementID: String?
     var name: String?
+    var siteID: String?
     var siteName: String?
     /// Device-enrollment (ADE) instance that synced this serial, if any.
     var adeInstanceID: String?
@@ -78,16 +79,19 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     case restartMobile
     case wipeMobile
 
+    // Clear Passcode is not offered: Jamf Pro removed it from the Classic API
+    // and the modern replacement requires the device's escrowed unlock token,
+    // which the API does not expose.
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
         case .computer: [.lockComputer, .renewProfile, .wipeComputer, .blankPush]
-        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .blankPush, .renewProfile]
+        case .mobileDevice: [.updateInventory, .lockMobile, .restartMobile, .wipeMobile, .blankPush, .renewProfile]
         }
     }
 
     /// Display order when a mixed selection is shown.
     static let allInDisplayOrder: [MDMCommand] = [
-        .updateInventory, .lockComputer, .lockMobile, .clearPasscode,
+        .updateInventory, .lockComputer, .lockMobile,
         .restartMobile, .renewProfile, .blankPush, .wipeComputer, .wipeMobile,
     ]
 
@@ -227,6 +231,13 @@ final class LookupModel {
     var mdmServers: [MDMServer] = []
     var prestages: [JamfPrestage] = []
     var mobilePrestages: [JamfPrestage] = []
+    var sites: [JamfSite] = []
+
+    // Clients are reused across lookups and actions: each new ABMClient
+    // requests a fresh OAuth token, and Apple rate-limits its token endpoint
+    // aggressively (HTTP 429 after a handful of sign-ins).
+    private var cachedABMClient: (key: String, client: ABMClient)?
+    private var cachedJamfClient: (key: String, client: JamfClient)?
 
     init(settings: AppSettings) {
         self.settings = settings
@@ -403,6 +414,32 @@ final class LookupModel {
         await refreshRows(affected)
     }
 
+    /// Moves the devices' Jamf Pro records to another site ("-1" for none).
+    /// Note this does not change which PreStages a device can join — that is
+    /// determined by the ADE token that synced it, not by the record's site.
+    func setSite(reports: [DeviceReport], to siteID: String) async throws {
+        guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        let withRecords = reports.compactMap { report in
+            report.jamf.value.map { (serial: report.serial, info: $0) }
+        }.filter { ($0.info.siteID ?? "-1") != siteID }
+        guard !withRecords.isEmpty else { return }
+        var failures: [String] = []
+        for entry in withRecords {
+            do {
+                switch entry.info.kind {
+                case .computer:
+                    try await jamf.setComputerSite(computerID: entry.info.computerID, siteID: siteID)
+                case .mobileDevice:
+                    try await jamf.setMobileDeviceSite(deviceID: entry.info.computerID, siteID: siteID)
+                }
+            } catch {
+                failures.append("\(entry.serial): \(error.localizedDescription)")
+            }
+        }
+        await refreshRows(withRecords.map(\.serial))
+        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+    }
+
     // MARK: MDM commands
 
     /// Sends a Jamf Pro MDM command to every selected device it applies to,
@@ -472,13 +509,21 @@ final class LookupModel {
     private func makeABMClient() -> ABMClient? {
         guard settings.abm.isConfigured,
               let pem = Keychain.get(ABMConfig.privateKeyKeychainKey), !pem.isEmpty else { return nil }
-        return ABMClient(clientID: settings.abm.clientID, keyID: settings.abm.keyID, privateKeyPEM: pem)
+        let key = [settings.abm.clientID, settings.abm.keyID, pem].joined(separator: "|")
+        if let cached = cachedABMClient, cached.key == key { return cached.client }
+        let client = ABMClient(clientID: settings.abm.clientID, keyID: settings.abm.keyID, privateKeyPEM: pem)
+        cachedABMClient = (key, client)
+        return client
     }
 
     private func makeJamfClient() -> JamfClient? {
         guard let config = selectedJamfServer,
               let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
-        return JamfClient(config: config, secret: secret)
+        let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
+        if let cached = cachedJamfClient, cached.key == key { return cached.client }
+        guard let client = JamfClient(config: config, secret: secret) else { return nil }
+        cachedJamfClient = (key, client)
+        return client
     }
 
     private struct LookupContext: Sendable {
@@ -511,6 +556,9 @@ final class LookupModel {
             }
             if let list = try? await jamf.prestages(family: .mobileDevice) {
                 mobilePrestages = list
+            }
+            if let list = try? await jamf.sites() {
+                sites = list
             }
             context.computerPrestageNames = Dictionary(prestages.map { ($0.id, $0.displayName) }) { first, _ in first }
             context.mobilePrestageNames = Dictionary(mobilePrestages.map { ($0.id, $0.displayName) }) { first, _ in first }
@@ -550,6 +598,7 @@ final class LookupModel {
                     udid: record.udid,
                     managementID: record.managementID,
                     name: record.name,
+                    siteID: record.siteID,
                     siteName: record.siteName,
                     adeInstanceID: context.adeInstanceBySerial[serial],
                     lastEnrolledDate: record.lastEnrolledDate,
@@ -571,6 +620,7 @@ final class LookupModel {
                     udid: record.udid,
                     managementID: record.managementID,
                     name: record.name,
+                    siteID: record.siteID,
                     siteName: record.siteName,
                     adeInstanceID: context.adeInstanceBySerial[serial],
                     lastEnrolledDate: record.lastEnrolledDate,
