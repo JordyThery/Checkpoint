@@ -38,6 +38,8 @@ struct JamfMobileDeviceRecord: Sendable {
     let mdmProfileExpiration: String?
     let siteID: String?
     let siteName: String?
+    /// Escrowed unlock token, required by the ClearPasscode MDM command.
+    let unlockToken: String?
 }
 
 struct JamfSite: Sendable, Identifiable, Hashable {
@@ -209,9 +211,20 @@ actor JamfClient {
             let lastEnrollmentTimestamp: String?
             let mdmProfileExpirationTimestamp: String?
             let site: Site?
+            // The escrowed unlock token lives in the per-OS detail object.
+            let ios: OSDetails?
+            let tvos: OSDetails?
+            let watchos: OSDetails?
+            let visionos: OSDetails?
             struct Site: Decodable {
                 let id: String?
                 let name: String?
+            }
+            struct OSDetails: Decodable {
+                let unlockToken: String?
+            }
+            var unlockToken: String? {
+                [ios, tvos, watchos, visionos].compactMap { $0?.unlockToken }.first { !$0.isEmpty }
             }
         }
         var detail: Detail?
@@ -232,7 +245,8 @@ actor JamfClient {
             lastContactTime: detail?.lastContactTimestamp,
             mdmProfileExpiration: detail?.mdmProfileExpirationTimestamp,
             siteID: detail?.site?.id,
-            siteName: detail?.site?.name
+            siteName: detail?.site?.name,
+            unlockToken: detail?.unlockToken
         )
     }
 
@@ -284,11 +298,14 @@ actor JamfClient {
 
     /// Sends a blank push to the given management IDs — the same endpoint the
     /// Jamf Pro UI uses, which surfaces as a DeclarativeManagement entry in
-    /// the device's management history.
-    func blankPush(managementIDs: [String]) async throws {
+    /// the device's management history. Returns the management IDs the server
+    /// could not push to.
+    func blankPush(managementIDs: [String]) async throws -> [String] {
         let body = try JSONSerialization.data(withJSONObject: ["clientManagementIds": managementIDs])
         let (data, status) = try await send(path: "/api/v2/mdm/blank-push", method: "POST", body: body)
         try throwIfError(status: status, data: data)
+        struct Response: Decodable { let errorUuids: [String]? }
+        return (try? JSONDecoder().decode(Response.self, from: data))?.errorUuids ?? []
     }
 
     /// Reinstalls the Jamf management framework (jamf binary) on a computer

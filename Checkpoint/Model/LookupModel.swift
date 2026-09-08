@@ -37,6 +37,8 @@ struct JamfInfo: Sendable {
     var siteName: String?
     /// Device-enrollment (ADE) instance that synced this serial, if any.
     var adeInstanceID: String?
+    /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
+    var unlockToken: String?
     var lastEnrolledDate: String?
     var reportDate: String?
     /// Last check-in (Jamf binary; computers only).
@@ -126,14 +128,12 @@ nonisolated enum MDMCommand: Hashable, Sendable {
             return ["commandType": "DEVICE_LOCK"]
         case .wipeMobile:
             return ["commandType": "ERASE_DEVICE"]
-        case .clearPasscode:
-            // The API schema marks unlockToken as required, but Jamf escrows
-            // the real token itself and exposes it through no API — send an
-            // empty value to pass validation and let the server substitute it.
-            return ["commandType": "CLEAR_PASSCODE", "unlockToken": ""]
         case .restartMobile:
             return ["commandType": "RESTART_DEVICE"]
-        case .blankPush, .updateInventory, .renewProfile, .redeployFramework:
+        case .clearPasscode, .blankPush, .updateInventory, .renewProfile, .redeployFramework:
+            // Clear Passcode needs the per-device escrowed unlock token, so
+            // it cannot share one batched command body — sendCommand handles
+            // it separately.
             return nil
         }
     }
@@ -461,16 +461,48 @@ final class LookupModel {
         }
 
         if command == .blankPush {
-            let managementIDs = targets.compactMap(\.info.managementID)
+            let pushTargets = targets.filter { $0.info.managementID != nil }
+            let managementIDs = pushTargets.compactMap(\.info.managementID)
             guard !managementIDs.isEmpty else {
                 throw ActionError(message: "No management IDs are known, so a blank push cannot be sent — run a fresh lookup first.")
             }
-            try await jamf.blankPush(managementIDs: managementIDs)
+            let errorIDs = Set(try await jamf.blankPush(managementIDs: managementIDs).map { $0.lowercased() })
+            if !errorIDs.isEmpty {
+                let failedSerials = pushTargets
+                    .filter { errorIDs.contains(($0.info.managementID ?? "").lowercased()) }
+                    .map(\.serial)
+                let names = failedSerials.isEmpty ? errorIDs.joined(separator: ", ") : failedSerials.joined(separator: ", ")
+                throw ActionError(message: "Jamf Pro could not deliver the blank push to: \(names)")
+            }
             return managementIDs.count
         }
 
         var failures: [String] = []
         var sent = 0
+
+        if command == .clearPasscode {
+            for target in targets where target.info.kind == .mobileDevice {
+                guard let managementID = target.info.managementID else {
+                    failures.append("\(target.serial): the record has no management ID — run a fresh lookup first.")
+                    continue
+                }
+                guard let unlockToken = target.info.unlockToken, !unlockToken.isEmpty else {
+                    failures.append("\(target.serial): Jamf Pro has no escrowed unlock token for this device, so the passcode cannot be cleared.")
+                    continue
+                }
+                do {
+                    try await jamf.sendModernCommand(
+                        commandData: ["commandType": "CLEAR_PASSCODE", "unlockToken": unlockToken],
+                        managementIDs: [managementID]
+                    )
+                    sent += 1
+                } catch {
+                    failures.append("\(target.serial): \(error.localizedDescription)")
+                }
+            }
+            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+            return sent
+        }
 
         if command == .redeployFramework {
             for target in targets where target.info.kind == .computer {
@@ -642,6 +674,7 @@ final class LookupModel {
                     siteID: record.siteID,
                     siteName: record.siteName,
                     adeInstanceID: context.adeInstanceBySerial[serial],
+                    unlockToken: record.unlockToken,
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.lastInventoryDate,
                     lastContactTime: nil,
