@@ -363,10 +363,7 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        let note = command == .blankPush
-            ? " Blank pushes only wake the device — expect at most a DeclarativeManagement entry in its management history."
-            : ""
-        run(successMessage: "\(command.title) was queued in Jamf Pro.\(note)") {
+        run(successMessage: "\(command.title) was queued in Jamf Pro.") {
             try await model.sendCommand(command, reports: [report], passcode: pin)
         }
     }

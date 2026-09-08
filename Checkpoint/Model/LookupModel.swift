@@ -169,7 +169,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         switch self {
         case .lockComputer: "The Mac will lock immediately and require the PIN to be used again."
         case .wipeComputer: "All data on the Mac will be erased. This cannot be undone."
-        case .blankPush: "Nudges the device to check in with MDM and process its pending commands. It can appear as a DeclarativeManagement entry in the management history."
+        case .blankPush: "The device will be asked to check in with MDM and process any pending commands."
         case .renewProfile: "The MDM enrollment profile will be renewed on the device."
         case .redeployFramework: "Reinstalls the Jamf management framework (jamf binary) on the Mac through MDM. Use when a Mac has stopped checking in but still responds to MDM."
         case .updateInventory: "The device will be asked to submit a fresh inventory report."
@@ -466,6 +466,14 @@ final class LookupModel {
             guard !managementIDs.isEmpty else {
                 throw ActionError(message: "No management IDs are known, so a blank push cannot be sent — run a fresh lookup first.")
             }
+            // The Jamf Pro UI's blank push also queues a DeclarativeManagement
+            // sync — that's the entry that shows up in the device's management
+            // history. Queue it first (non-fatal: not every device runs DDM),
+            // then send the push that wakes the device.
+            try? await jamf.sendModernCommand(
+                commandData: ["commandType": "DECLARATIVE_MANAGEMENT"],
+                managementIDs: managementIDs
+            )
             let errorIDs = Set(try await jamf.blankPush(managementIDs: managementIDs).map { $0.lowercased() })
             if !errorIDs.isEmpty {
                 let failedSerials = pushTargets
