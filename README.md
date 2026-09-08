@@ -52,6 +52,7 @@ Grant the API role only what you intend to use:
 | Delete records | Delete Computers, Delete Mobile Devices |
 | MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
+| Send Blank Push | Send Declarative Management Command |
 | Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
 
 ## Security

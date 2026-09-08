@@ -296,10 +296,16 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
-    /// Sends a blank push to the given management IDs — the same endpoint the
-    /// Jamf Pro UI uses, which surfaces as a DeclarativeManagement entry in
-    /// the device's management history. Returns the management IDs the server
-    /// could not push to.
+    /// Queues a DeclarativeManagement sync command for the device — what the
+    /// Jamf Pro UI's blank push shows in the management history. Requires the
+    /// "Send Declarative Management Command" privilege.
+    func ddmSync(managementID: String) async throws {
+        let (data, status) = try await send(path: "/api/v1/ddm/\(managementID)/sync", method: "POST")
+        try throwIfError(status: status, data: data)
+    }
+
+    /// Sends a blank push to the given management IDs. Returns the management
+    /// IDs the server could not push to.
     func blankPush(managementIDs: [String]) async throws -> [String] {
         let body = try JSONSerialization.data(withJSONObject: ["clientManagementIds": managementIDs])
         let (data, status) = try await send(path: "/api/v2/mdm/blank-push", method: "POST", body: body)

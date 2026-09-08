@@ -466,26 +466,30 @@ final class LookupModel {
             guard !managementIDs.isEmpty else {
                 throw ActionError(message: "No management IDs are known, so a blank push cannot be sent — run a fresh lookup first.")
             }
-            // The Jamf Pro UI's blank push also queues a DeclarativeManagement
-            // sync — that's the entry that shows up in the device's management
-            // history. The public API rejects a bare DECLARATIVE_MANAGEMENT on
-            // some servers (HTTP 500), so fall back to a minimal
-            // DeviceInformation query: equally visible in pending commands and
-            // it forces the same MDM check-in. Failures don't stop the push.
+            // The Jamf Pro UI's blank push queues a DeclarativeManagement sync
+            // per device (POST /v1/ddm/{managementId}/sync) — that's the entry
+            // in the management history. Do the same, falling back to a
+            // minimal DeviceInformation query for devices the DDM endpoint
+            // rejects. Failures don't stop the push itself.
             var ddmError: String?
-            do {
-                try await jamf.sendModernCommand(
-                    commandData: ["commandType": "DECLARATIVE_MANAGEMENT"],
-                    managementIDs: managementIDs
-                )
-            } catch {
+            var fallbackIDs: [String] = []
+            var syncErrors: [String] = []
+            for managementID in managementIDs {
+                do {
+                    try await jamf.ddmSync(managementID: managementID)
+                } catch {
+                    fallbackIDs.append(managementID)
+                    syncErrors.append(error.localizedDescription)
+                }
+            }
+            if !fallbackIDs.isEmpty {
                 do {
                     try await jamf.sendModernCommand(
                         commandData: ["commandType": "DEVICE_INFORMATION", "queries": ["DeviceName"]],
-                        managementIDs: managementIDs
+                        managementIDs: fallbackIDs
                     )
-                } catch let fallbackError {
-                    ddmError = "\(error.localizedDescription); fallback DeviceInformation also failed: \(fallbackError.localizedDescription)"
+                } catch {
+                    ddmError = "\(syncErrors.first ?? ""); fallback DeviceInformation also failed: \(error.localizedDescription)"
                 }
             }
             let errorIDs = Set(try await jamf.blankPush(managementIDs: managementIDs).map { $0.lowercased() })
