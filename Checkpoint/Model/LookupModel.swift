@@ -468,12 +468,17 @@ final class LookupModel {
             }
             // The Jamf Pro UI's blank push also queues a DeclarativeManagement
             // sync — that's the entry that shows up in the device's management
-            // history. Queue it first (non-fatal: not every device runs DDM),
-            // then send the push that wakes the device.
-            try? await jamf.sendModernCommand(
-                commandData: ["commandType": "DECLARATIVE_MANAGEMENT"],
-                managementIDs: managementIDs
-            )
+            // history. Queue it first, then send the push that wakes the
+            // device. A DDM failure is reported but doesn't stop the push.
+            var ddmError: String?
+            do {
+                try await jamf.sendModernCommand(
+                    commandData: ["commandType": "DECLARATIVE_MANAGEMENT"],
+                    managementIDs: managementIDs
+                )
+            } catch {
+                ddmError = error.localizedDescription
+            }
             let errorIDs = Set(try await jamf.blankPush(managementIDs: managementIDs).map { $0.lowercased() })
             if !errorIDs.isEmpty {
                 let failedSerials = pushTargets
@@ -481,6 +486,9 @@ final class LookupModel {
                     .map(\.serial)
                 let names = failedSerials.isEmpty ? errorIDs.joined(separator: ", ") : failedSerials.joined(separator: ", ")
                 throw ActionError(message: "Jamf Pro could not deliver the blank push to: \(names)")
+            }
+            if let ddmError {
+                throw ActionError(message: "The blank push was sent, but queuing the DeclarativeManagement sync failed: \(ddmError)")
             }
             return managementIDs.count
         }
