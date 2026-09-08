@@ -6,9 +6,9 @@
 
 **One list of serial numbers. Both sides of the story.**
 
-Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table — and the tools to act on what you find.
+Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table, and the tools to act on what you find.
 
-Enter serial numbers — typed, pasted, or imported from a text/CSV file — and Checkpoint reports, per device:
+Enter serial numbers, typed, pasted, or imported from a text/CSV file, and Checkpoint reports, per device:
 
 **From Apple Business**
 
@@ -27,11 +27,11 @@ Enter serial numbers — typed, pasted, or imported from a text/CSV file — and
 
 ## Beyond reporting
 
-Checkpoint doesn't just surface discrepancies — it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
+Checkpoint doesn't just surface discrepancies, it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
 - **Apple Business**: assign or unassign the MDM server, release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands** — computers: Lock, Wipe, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
+- **MDM commands**, computers: Lock, Wipe, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -67,7 +67,7 @@ Credentials are stored only on your Mac: secrets (Apple Business private key, Ja
 
 ## Building
 
-Open the project in Xcode 26 or later and build the `Checkpoint` scheme (⌘R). No dependencies — the app uses only Apple frameworks.
+Open the project in Xcode 26 or later and build the `Checkpoint` scheme (⌘R). No dependencies, the app uses only Apple frameworks.
 
 ## Acknowledgements
 
