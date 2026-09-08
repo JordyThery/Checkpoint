@@ -34,16 +34,20 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 - **MDM commands**, computers: Lock, Wipe, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
-Multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
+Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
 
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business API key (Apple Business → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
+- An Apple Business API key per organization (Apple Business → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
 - A Jamf Pro server. Both authentication methods are supported:
   - **API client** (recommended): create one under Settings → API Roles and Clients
   - **Username / password** (bearer token)
 - Jamf Pro 11.30+ for the Last Contact attribute (older versions simply show "—")
+
+### Apple Business API access
+
+Create the key in Apple Business under Preferences → API. The account that owns it needs the **Device Manager** role or higher, otherwise it cannot manage device assignments through the API. Each organization needs its own key.
 
 ### Jamf Pro API privileges
 

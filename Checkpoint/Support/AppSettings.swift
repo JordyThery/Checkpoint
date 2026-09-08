@@ -55,16 +55,35 @@ nonisolated enum AppAppearance: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-struct ABMConfig: Codable {
+nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var name = ""
     var clientID = ""
     var keyID = ""
 
-    static let privateKeyKeychainKey = "abm.privateKey"
+    /// The ES256 private key lives in the keychain under this per-organization key.
+    var privateKeyKeychainKey: String { "abm.\(id.uuidString)" }
+
+    /// Key used while the app supported a single organization. Only read during
+    /// migration; see `AppSettings.migrateLegacyABMOrg`.
+    static let legacyPrivateKeyKeychainKey = "abm.privateKey"
+
+    var displayName: String {
+        if !name.isEmpty { return name }
+        return clientID.isEmpty ? "Unnamed organization" : clientID
+    }
 
     var isConfigured: Bool {
         !clientID.trimmingCharacters(in: .whitespaces).isEmpty
             && !keyID.trimmingCharacters(in: .whitespaces).isEmpty
     }
+}
+
+/// Single-organization Apple Business layout used before multi-organization
+/// support. Decoded only to migrate it into `AppSettings.abmOrgs`.
+private struct LegacyABMConfig: Codable {
+    var clientID = ""
+    var keyID = ""
 }
 
 @MainActor
@@ -73,23 +92,50 @@ final class AppSettings {
     static let shared = AppSettings()
 
     var jamfServers: [JamfServerConfig] { didSet { save() } }
-    var abm: ABMConfig { didSet { save() } }
+    var abmOrgs: [ABMConfig] { didSet { save() } }
     var appearance: AppAppearance { didSet { save() } }
 
     private init() {
         let defaults = UserDefaults.standard
         jamfServers = defaults.data(forKey: "jamfServers")
             .flatMap { try? JSONDecoder().decode([JamfServerConfig].self, from: $0) } ?? []
-        abm = defaults.data(forKey: "abmConfig")
-            .flatMap { try? JSONDecoder().decode(ABMConfig.self, from: $0) } ?? ABMConfig()
+        abmOrgs = defaults.data(forKey: "abmOrgs")
+            .flatMap { try? JSONDecoder().decode([ABMConfig].self, from: $0) } ?? []
         appearance = defaults.string(forKey: "appearance")
             .flatMap(AppAppearance.init(rawValue:)) ?? .system
+        if abmOrgs.isEmpty { migrateLegacyABMOrg() }
+    }
+
+    /// Carries a pre-multi-organization Apple Business setup into `abmOrgs`,
+    /// moving its keychain item to the new per-organization key. The old item
+    /// is removed only once the copy reads back, so a failed write can never
+    /// lose a private key that cannot be downloaded from Apple again.
+    private func migrateLegacyABMOrg() {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: "abmConfig"),
+              let legacy = try? JSONDecoder().decode(LegacyABMConfig.self, from: data) else { return }
+        let legacyPEM = Keychain.get(ABMConfig.legacyPrivateKeyKeychainKey)
+        guard !legacy.clientID.isEmpty || !(legacyPEM ?? "").isEmpty else {
+            defaults.removeObject(forKey: "abmConfig")
+            return
+        }
+        let org = ABMConfig(name: "Apple Business", clientID: legacy.clientID, keyID: legacy.keyID)
+        if let legacyPEM, !legacyPEM.isEmpty {
+            Keychain.set(legacyPEM, for: org.privateKeyKeychainKey)
+            if Keychain.get(org.privateKeyKeychainKey) == legacyPEM {
+                Keychain.delete(ABMConfig.legacyPrivateKeyKeychainKey)
+            }
+        }
+        abmOrgs = [org]
+        defaults.removeObject(forKey: "abmConfig")
+        // Property observers don't fire inside an initializer, so persist here.
+        save()
     }
 
     private func save() {
         let defaults = UserDefaults.standard
         if let data = try? JSONEncoder().encode(jamfServers) { defaults.set(data, forKey: "jamfServers") }
-        if let data = try? JSONEncoder().encode(abm) { defaults.set(data, forKey: "abmConfig") }
+        if let data = try? JSONEncoder().encode(abmOrgs) { defaults.set(data, forKey: "abmOrgs") }
         defaults.set(appearance.rawValue, forKey: "appearance")
     }
 }

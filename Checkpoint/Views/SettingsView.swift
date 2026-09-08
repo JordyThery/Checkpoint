@@ -38,6 +38,65 @@ struct GeneralSettingsTab: View {
 
 struct ABMSettingsTab: View {
     @Environment(AppSettings.self) private var settings
+    @State private var selectedID: UUID?
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                List(selection: $selectedID) {
+                    ForEach(settings.abmOrgs) { org in
+                        Text(org.displayName).tag(org.id)
+                    }
+                }
+                Divider()
+                HStack(spacing: 10) {
+                    Button { add() } label: { Image(systemName: "plus") }
+                        .help("Add an Apple Business organization")
+                    Button { removeSelected() } label: { Image(systemName: "minus") }
+                        .disabled(selectedID == nil)
+                        .help("Remove the selected organization")
+                    Spacer()
+                }
+                .buttonStyle(.borderless)
+                .padding(6)
+            }
+            .frame(width: 180)
+            Divider()
+            if let index = settings.abmOrgs.firstIndex(where: { $0.id == selectedID }) {
+                ABMOrgEditor(config: settings.abmOrgs[index])
+                    .id(settings.abmOrgs[index].id)
+            } else {
+                ContentUnavailableView(
+                    "No Organization Selected",
+                    systemImage: "apple.logo",
+                    description: Text("Add an Apple Business organization with the + button. You can store several and switch between them in the toolbar.")
+                )
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .onAppear { selectedID = settings.abmOrgs.first?.id }
+    }
+
+    private func add() {
+        let org = ABMConfig(name: "New Organization")
+        settings.abmOrgs.append(org)
+        selectedID = org.id
+    }
+
+    private func removeSelected() {
+        guard let selectedID,
+              let index = settings.abmOrgs.firstIndex(where: { $0.id == selectedID }) else { return }
+        Keychain.delete(settings.abmOrgs[index].privateKeyKeychainKey)
+        settings.abmOrgs.remove(at: index)
+        self.selectedID = settings.abmOrgs.first?.id
+    }
+}
+
+struct ABMOrgEditor: View {
+    @Environment(AppSettings.self) private var settings
+    let config: ABMConfig
+
+    @State private var name = ""
     @State private var clientID = ""
     @State private var keyID = ""
     @State private var privateKeyPEM = ""
@@ -48,6 +107,9 @@ struct ABMSettingsTab: View {
 
     var body: some View {
         Form {
+            Section("Organization") {
+                TextField("Name", text: $name, prompt: Text("Head Office"))
+            }
             Section("API Credentials") {
                 TextField("Client ID", text: $clientID, prompt: Text("BUSINESSAPI.xxxxxxxx-…"))
                 TextField("Key ID", text: $keyID)
@@ -89,18 +151,21 @@ struct ABMSettingsTab: View {
             }
         }
         .onAppear {
-            clientID = settings.abm.clientID
-            keyID = settings.abm.keyID
-            hasStoredKey = Keychain.get(ABMConfig.privateKeyKeychainKey) != nil
+            name = config.name
+            clientID = config.clientID
+            keyID = config.keyID
+            hasStoredKey = Keychain.get(config.privateKeyKeychainKey) != nil
         }
     }
 
     private func save() {
-        settings.abm.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.abm.keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = settings.abmOrgs.firstIndex(where: { $0.id == config.id }) else { return }
+        settings.abmOrgs[index].name = name
+        settings.abmOrgs[index].clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.abmOrgs[index].keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         let pem = privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
         if !pem.isEmpty {
-            Keychain.set(pem, for: ABMConfig.privateKeyKeychainKey)
+            Keychain.set(pem, for: config.privateKeyKeychainKey)
             hasStoredKey = true
             privateKeyPEM = ""
         }
@@ -109,7 +174,7 @@ struct ABMSettingsTab: View {
 
     private func test() {
         save()
-        guard let pem = Keychain.get(ABMConfig.privateKeyKeychainKey), !pem.isEmpty else {
+        guard let pem = Keychain.get(config.privateKeyKeychainKey), !pem.isEmpty else {
             statusMessage = "Add the private key first."
             return
         }

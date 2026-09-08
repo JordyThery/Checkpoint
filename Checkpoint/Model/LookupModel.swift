@@ -212,6 +212,7 @@ final class LookupModel {
 
     var reports: [DeviceReport] = []
     var isLoading = false
+    var selectedABMOrgID: UUID?
     var selectedJamfServerID: UUID?
     var mdmServers: [MDMServer] = []
     var prestages: [JamfPrestage] = []
@@ -220,13 +221,20 @@ final class LookupModel {
 
     // Clients are reused across lookups and actions: each new ABMClient
     // requests a fresh OAuth token, and Apple rate-limits its token endpoint
-    // aggressively (HTTP 429 after a handful of sign-ins).
-    private var cachedABMClient: (key: String, client: ABMClient)?
-    private var cachedJamfClient: (key: String, client: JamfClient)?
+    // aggressively (HTTP 429 after a handful of sign-ins). One client is kept
+    // per configuration rather than one overall, so switching organizations or
+    // servers back and forth reuses the tokens instead of re-authenticating.
+    private var abmClients: [String: ABMClient] = [:]
+    private var jamfClients: [String: JamfClient] = [:]
 
     init(settings: AppSettings) {
         self.settings = settings
+        selectedABMOrgID = settings.abmOrgs.first?.id
         selectedJamfServerID = settings.jamfServers.first?.id
+    }
+
+    var selectedABMOrg: ABMConfig? {
+        settings.abmOrgs.first { $0.id == selectedABMOrgID } ?? settings.abmOrgs.first
     }
 
     var selectedJamfServer: JamfServerConfig? {
@@ -234,7 +242,14 @@ final class LookupModel {
     }
 
     var isABMConfigured: Bool {
-        settings.abm.isConfigured && Keychain.get(ABMConfig.privateKeyKeychainKey) != nil
+        guard let org = selectedABMOrg else { return false }
+        return org.isConfigured && Keychain.get(org.privateKeyKeychainKey) != nil
+    }
+
+    /// Empties the results table. Cached clients are deliberately kept so their
+    /// access tokens survive; clearing the list must not cost a fresh sign-in.
+    func clearReports() {
+        reports = []
     }
 
     // MARK: Lookup
@@ -571,12 +586,12 @@ final class LookupModel {
     // MARK: Clients & shared context
 
     private func makeABMClient() -> ABMClient? {
-        guard settings.abm.isConfigured,
-              let pem = Keychain.get(ABMConfig.privateKeyKeychainKey), !pem.isEmpty else { return nil }
-        let key = [settings.abm.clientID, settings.abm.keyID, pem].joined(separator: "|")
-        if let cached = cachedABMClient, cached.key == key { return cached.client }
-        let client = ABMClient(clientID: settings.abm.clientID, keyID: settings.abm.keyID, privateKeyPEM: pem)
-        cachedABMClient = (key, client)
+        guard let config = selectedABMOrg, config.isConfigured,
+              let pem = Keychain.get(config.privateKeyKeychainKey), !pem.isEmpty else { return nil }
+        let key = [config.id.uuidString, config.clientID, config.keyID, pem].joined(separator: "|")
+        if let cached = abmClients[key] { return cached }
+        let client = ABMClient(clientID: config.clientID, keyID: config.keyID, privateKeyPEM: pem)
+        abmClients[key] = client
         return client
     }
 
@@ -584,9 +599,9 @@ final class LookupModel {
         guard let config = selectedJamfServer,
               let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
-        if let cached = cachedJamfClient, cached.key == key { return cached.client }
+        if let cached = jamfClients[key] { return cached }
         guard let client = JamfClient(config: config, secret: secret) else { return nil }
-        cachedJamfClient = (key, client)
+        jamfClients[key] = client
         return client
     }
 

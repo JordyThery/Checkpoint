@@ -54,14 +54,37 @@ struct ContentView: View {
             }
             .navigationTitle("Checkpoint")
             .toolbar {
-                ToolbarItem {
-                    Picker("Jamf Pro server", selection: $model.selectedJamfServerID) {
-                        ForEach(settings.jamfServers) { server in
-                            Text(server.displayName).tag(Optional(server.id))
+                // Both pickers stay hidden until something is configured — an
+                // empty popup button is just unexplained chrome, and the
+                // configuration hint below already points at Settings.
+                if !settings.abmOrgs.isEmpty {
+                    ToolbarItem {
+                        // Reads through selectedABMOrg so the popup shows the
+                        // organization actually in use, including the implicit
+                        // first one when nothing has been picked yet.
+                        Picker("Apple Business organization", selection: Binding(
+                            get: { model.selectedABMOrg?.id },
+                            set: { model.selectedABMOrgID = $0 }
+                        )) {
+                            ForEach(settings.abmOrgs) { org in
+                                Text(org.displayName).tag(Optional(org.id))
+                            }
                         }
+                        .help("Apple Business organization used for lookups and actions")
                     }
-                    .help("Jamf Pro server used for lookups and actions")
-                    .disabled(settings.jamfServers.isEmpty)
+                }
+                if !settings.jamfServers.isEmpty {
+                    ToolbarItem {
+                        Picker("Jamf Pro server", selection: Binding(
+                            get: { model.selectedJamfServer?.id },
+                            set: { model.selectedJamfServerID = $0 }
+                        )) {
+                            ForEach(settings.jamfServers) { server in
+                                Text(server.displayName).tag(Optional(server.id))
+                            }
+                        }
+                        .help("Jamf Pro server used for lookups and actions")
+                    }
                 }
                 ToolbarItem {
                     Button {
@@ -111,6 +134,9 @@ struct ContentView: View {
             Button("Import…") { showingImporter = true }
                 .help("Import a text or CSV file with one serial number per line")
                 .disabled(model.isLoading)
+            Button("Clear") { clear() }
+                .help("Remove every device from the list")
+                .disabled(model.isLoading || (model.reports.isEmpty && serialsText.isEmpty))
             Button(action: lookUp) {
                 Text("Look Up")
                     .frame(minWidth: 60)
@@ -229,6 +255,12 @@ struct ContentView: View {
         selection.removeAll()
         let text = serialsText
         Task { await model.lookUp(serialsText: text) }
+    }
+
+    private func clear() {
+        serialsText = ""
+        selection.removeAll()
+        model.clearReports()
     }
 
     private func openInJamf(_ ids: Set<DeviceReport.ID>) {
