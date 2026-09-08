@@ -153,9 +153,10 @@ actor ABMClient {
 
     // MARK: Activities
 
-    /// Submits an org device activity. ABM processes these asynchronously,
-    /// so the new state may take a moment to become visible.
-    func submitActivity(_ type: ActivityType, serials: [String], mdmServerID: String? = nil) async throws {
+    /// Submits an org device activity and returns its ID. ABM processes these
+    /// asynchronously — poll with `waitForActivity` before re-reading state.
+    @discardableResult
+    func submitActivity(_ type: ActivityType, serials: [String], mdmServerID: String? = nil) async throws -> String? {
         var relationships: [String: Any] = [
             "devices": ["data": serials.map { ["type": "orgDevices", "id": $0] }]
         ]
@@ -171,6 +172,36 @@ actor ABMClient {
         ])
         let (data, status) = try await send(path: "/v1/orgDeviceActivities", method: "POST", body: body)
         try throwIfError(status: status, data: data)
+        struct Response: Decodable {
+            let data: Item?
+            struct Item: Decodable { let id: String }
+        }
+        return (try? JSONDecoder().decode(Response.self, from: data))?.data?.id
+    }
+
+    /// Waits until the activity leaves the in-progress states or the timeout
+    /// elapses, so a follow-up device fetch sees the new assignment. Returns
+    /// without throwing on timeout — the caller refreshes with whatever state
+    /// ABM reports at that point.
+    func waitForActivity(id: String, timeout: TimeInterval = 30) async {
+        struct Response: Decodable {
+            let data: Item?
+            struct Item: Decodable { let attributes: Attributes? }
+            struct Attributes: Decodable { let status: String? }
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            guard let (data, status) = try? await send(path: "/v1/orgDeviceActivities/\(id)"),
+                  (200...299).contains(status),
+                  let activityStatus = (try? JSONDecoder().decode(Response.self, from: data))?.data?.attributes?.status
+            else { return }
+            switch activityStatus.uppercased() {
+            case "IN_PROGRESS", "PENDING", "SUBMITTED":
+                try? await Task.sleep(for: .seconds(2))
+            default:
+                return
+            }
+        }
     }
 
     /// Cheap connectivity/credentials check.

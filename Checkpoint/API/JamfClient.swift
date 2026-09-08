@@ -10,6 +10,8 @@ nonisolated enum JamfDeviceKind: String, Sendable {
 struct JamfComputerRecord: Sendable {
     let id: String
     let udid: String?
+    /// UUID used by the modern /v2/mdm/commands endpoint.
+    let managementID: String?
     let name: String?
     /// Last check-in (Jamf binary).
     let lastContactTime: String?
@@ -19,17 +21,21 @@ struct JamfComputerRecord: Sendable {
     /// Last inventory update.
     let reportDate: String?
     let mdmProfileExpiration: String?
+    let siteName: String?
 }
 
 struct JamfMobileDeviceRecord: Sendable {
     let id: String
     let udid: String?
+    /// UUID used by the modern /v2/mdm/commands endpoint.
+    let managementID: String?
     let name: String?
     let lastEnrolledDate: String?
     let lastInventoryDate: String?
     /// Last contact with the Jamf Pro server (inventory attribute added in Jamf Pro 11.30).
     let lastContactTime: String?
     let mdmProfileExpiration: String?
+    let siteName: String?
 }
 
 /// The two PreStage families in Jamf Pro. Endpoint versions differ per family,
@@ -63,6 +69,9 @@ nonisolated enum JamfPrestageFamily: Sendable {
 struct JamfPrestage: Sendable, Identifiable, Hashable {
     let id: String
     let displayName: String
+    /// The device-enrollment (ADE) instance the PreStage belongs to. Only
+    /// devices synced through the same instance can be scoped to it.
+    let enrollmentInstanceID: String?
 }
 
 // MARK: - Client
@@ -117,6 +126,12 @@ actor JamfClient {
                 // v1 name / v3 name for the same value.
                 let mdmProfileExpiration: String?
                 let mdmCertificateExpiration: String?
+                let managementId: String?
+                let site: Site?
+            }
+            struct Site: Decodable {
+                let id: String?
+                let name: String?
             }
         }
         let (data, status) = try await send(
@@ -146,12 +161,14 @@ actor JamfClient {
         return JamfComputerRecord(
             id: item.id,
             udid: item.udid,
+            managementID: item.general?.managementId,
             name: item.general?.name,
             lastContactTime: item.general?.lastContactTime,
             lastContact: lastContact,
             lastEnrolledDate: item.general?.lastEnrolledDate,
             reportDate: item.general?.reportDate,
-            mdmProfileExpiration: item.general?.mdmProfileExpiration ?? item.general?.mdmCertificateExpiration
+            mdmProfileExpiration: item.general?.mdmProfileExpiration ?? item.general?.mdmCertificateExpiration,
+            siteName: item.general?.site?.name
         )
     }
 
@@ -178,10 +195,16 @@ actor JamfClient {
         struct Detail: Decodable {
             let name: String?
             let udid: String?
+            let managementId: String?
             let lastInventoryUpdateTimestamp: String?
             let lastContactTimestamp: String?
             let lastEnrollmentTimestamp: String?
             let mdmProfileExpirationTimestamp: String?
+            let site: Site?
+            struct Site: Decodable {
+                let id: String?
+                let name: String?
+            }
         }
         var detail: Detail?
         if let (detailData, detailStatus) = try? await send(path: "/api/v2/mobile-devices/\(general.id)/detail"),
@@ -192,13 +215,15 @@ actor JamfClient {
         return JamfMobileDeviceRecord(
             id: String(general.id),
             udid: detail?.udid ?? general.udid,
+            managementID: detail?.managementId,
             name: detail?.name ?? general.display_name,
             lastEnrolledDate: detail?.lastEnrollmentTimestamp
                 ?? DateFormatting.isoFromEpochMilliseconds(general.last_enrollment_epoch),
             lastInventoryDate: detail?.lastInventoryUpdateTimestamp
                 ?? DateFormatting.isoFromEpochMilliseconds(general.last_inventory_update_epoch),
             lastContactTime: detail?.lastContactTimestamp,
-            mdmProfileExpiration: detail?.mdmProfileExpirationTimestamp
+            mdmProfileExpiration: detail?.mdmProfileExpirationTimestamp,
+            siteName: detail?.site?.name
         )
     }
 
@@ -226,6 +251,18 @@ actor JamfClient {
             path: "/JSSResource/mobiledevicecommands/command/\(command)/id/\(deviceID)",
             method: "POST"
         )
+        try throwIfError(status: status, data: data)
+    }
+
+    /// Sends an MDM command through the modern endpoint. Jamf Pro removed the
+    /// security-sensitive commands (lock, wipe, clear passcode, restart) from
+    /// the Classic API, which now rejects them with HTTP 400.
+    func sendModernCommand(commandData: [String: any Sendable], managementIDs: [String]) async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "clientData": managementIDs.map { ["managementId": $0] },
+            "commandData": commandData,
+        ] as [String: Any])
+        let (data, status) = try await send(path: "/api/v2/mdm/commands", method: "POST", body: body)
         try throwIfError(status: status, data: data)
     }
 
@@ -262,6 +299,7 @@ actor JamfClient {
             struct Item: Decodable {
                 let id: String
                 let displayName: String
+                let deviceEnrollmentProgramInstanceId: String?
             }
         }
         var all: [JamfPrestage] = []
@@ -277,11 +315,70 @@ actor JamfClient {
             )
             try throwIfError(status: status, data: data)
             let decoded = try JSONDecoder().decode(Response.self, from: data)
-            all += decoded.results.map { JamfPrestage(id: $0.id, displayName: $0.displayName) }
+            all += decoded.results.map {
+                JamfPrestage(id: $0.id, displayName: $0.displayName, enrollmentInstanceID: $0.deviceEnrollmentProgramInstanceId)
+            }
             if all.count >= decoded.totalCount || decoded.results.isEmpty { break }
             page += 1
         }
         return all
+    }
+
+    /// Maps serial number → device-enrollment (ADE) instance ID for every
+    /// device synced through any of the server's ADE tokens. Used to filter
+    /// PreStages to the ones a device can actually be scoped to.
+    func adeInstanceBySerial() async throws -> [String: String] {
+        struct ListResponse: Decodable {
+            let totalCount: Int
+            let results: [Item]
+            struct Item: Decodable { let id: String }
+        }
+        struct DevicesResponse: Decodable {
+            let totalCount: Int
+            let results: [Item]
+            struct Item: Decodable { let serialNumber: String? }
+        }
+
+        var instanceIDs: [String] = []
+        var page = 0
+        while true {
+            let (data, status) = try await send(
+                path: "/api/v1/device-enrollments",
+                queryItems: [
+                    URLQueryItem(name: "page", value: String(page)),
+                    URLQueryItem(name: "page-size", value: "100"),
+                ]
+            )
+            try throwIfError(status: status, data: data)
+            let decoded = try JSONDecoder().decode(ListResponse.self, from: data)
+            instanceIDs += decoded.results.map(\.id)
+            if instanceIDs.count >= decoded.totalCount || decoded.results.isEmpty { break }
+            page += 1
+        }
+
+        var map: [String: String] = [:]
+        for instanceID in instanceIDs {
+            var page = 0
+            var seen = 0
+            while true {
+                let (data, status) = try await send(
+                    path: "/api/v1/device-enrollments/\(instanceID)/devices",
+                    queryItems: [
+                        URLQueryItem(name: "page", value: String(page)),
+                        URLQueryItem(name: "page-size", value: "500"),
+                    ]
+                )
+                try throwIfError(status: status, data: data)
+                let decoded = try JSONDecoder().decode(DevicesResponse.self, from: data)
+                for item in decoded.results {
+                    if let serial = item.serialNumber?.uppercased() { map[serial] = instanceID }
+                }
+                seen += decoded.results.count
+                if seen >= decoded.totalCount || decoded.results.isEmpty { break }
+                page += 1
+            }
+        }
+        return map
     }
 
     /// Maps serial number → PreStage ID for every scoped device in the family.

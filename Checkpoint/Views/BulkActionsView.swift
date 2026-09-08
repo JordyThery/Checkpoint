@@ -82,6 +82,17 @@ struct BulkActionsView: View {
         return .mixed
     }
 
+    /// PreStages every selected device of the kind can join: filtered to the
+    /// shared device-enrollment (ADE) instance when the selection has exactly
+    /// one, the full list otherwise.
+    private func prestageOptions(kind: JamfDeviceKind) -> [JamfPrestage] {
+        let all = kind == .computer ? model.prestages : model.mobilePrestages
+        let instances = Set(reports.filter { $0.deviceKind == kind }.compactMap { $0.jamf.value?.adeInstanceID })
+        guard instances.count == 1, let instance = instances.first else { return all }
+        let matching = all.filter { $0.enrollmentInstanceID == instance }
+        return matching.isEmpty ? all : matching
+    }
+
     private func currentPrestageState(kind: JamfDeviceKind) -> BulkChoice {
         var values = Set<String?>()
         for report in reports where report.deviceKind == kind {
@@ -110,14 +121,14 @@ struct BulkActionsView: View {
             }
             if computerCount > 0 {
                 Section("Computer PreStage") {
-                    bulkPicker("PreStage", selection: $computerPrestageSelection, currentState: currentPrestageState(kind: .computer), noneLabel: "None", options: model.prestages.map { ($0.id, $0.displayName) })
+                    bulkPicker("PreStage", selection: $computerPrestageSelection, currentState: currentPrestageState(kind: .computer), noneLabel: "None", options: prestageOptions(kind: .computer).map { ($0.id, $0.displayName) })
                     Button("Apply PreStage to \(count(computerCount))") { pending = .applyComputerPrestage }
                         .disabled(computerPrestageSelection == .mixed || computerPrestageSelection == currentPrestageState(kind: .computer))
                 }
             }
             if mobileCount > 0 {
                 Section("Mobile Device PreStage") {
-                    bulkPicker("PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: model.mobilePrestages.map { ($0.id, $0.displayName) })
+                    bulkPicker("PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: prestageOptions(kind: .mobileDevice).map { ($0.id, $0.displayName) })
                     Button("Apply PreStage to \(count(mobileCount))") { pending = .applyMobilePrestage }
                         .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice))
                 }

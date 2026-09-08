@@ -49,6 +49,8 @@ struct DeviceDetailView: View {
         }
         .onAppear(perform: syncSelections)
         .onChange(of: report.serial) { syncSelections() }
+        .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
+        .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
         .alert(
             "Action Failed",
             isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -94,8 +96,14 @@ struct DeviceDetailView: View {
         mdmSelection.map { id in model.mdmServers.first { $0.id == id }?.name ?? id }
     }
 
+    /// PreStages the device can actually join: ones tied to the same
+    /// device-enrollment (ADE) instance that synced this serial. Falls back
+    /// to the full list when the instance is unknown.
     private var prestageChoices: [JamfPrestage] {
-        report.jamf.value?.kind == .mobileDevice ? model.mobilePrestages : model.prestages
+        let all = report.jamf.value?.kind == .mobileDevice ? model.mobilePrestages : model.prestages
+        guard let instance = report.jamf.value?.adeInstanceID else { return all }
+        let matching = all.filter { $0.enrollmentInstanceID == instance }
+        return matching.isEmpty ? all : matching
     }
 
     private var selectedPrestageName: String? {
@@ -271,6 +279,7 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func jamfDetails(_ info: JamfInfo) -> some View {
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
+        LabeledContent("Site", value: info.siteName ?? "None")
         LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
         LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
         if info.kind == .mobileDevice || info.lastContact != nil {
@@ -334,9 +343,14 @@ struct DeviceDetailView: View {
 
     // MARK: Helpers
 
+    /// Reads the report fresh from the model rather than from this view
+    /// value: the async `run` closure captures the view (and its `report`)
+    /// from before the action, so syncing from `self.report` there would
+    /// reset the pickers to the pre-action values.
     private func syncSelections() {
-        mdmSelection = report.abm.value?.mdmServerID
-        prestageSelection = report.jamf.value?.prestageID
+        let current = model.reports.first { $0.serial == report.serial } ?? report
+        mdmSelection = current.abm.value?.mdmServerID
+        prestageSelection = current.jamf.value?.prestageID
     }
 
     private func run(successMessage: String? = nil, _ operation: @escaping () async throws -> Void) {

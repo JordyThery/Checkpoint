@@ -47,8 +47,9 @@ Grant the API role only what you intend to use:
 | --- | --- |
 | Device lookup | Read Computers, Read Mobile Devices |
 | PreStage display & changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
+| PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Delete records | Delete Computers, Delete Mobile Devices |
-| MDM commands | Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Blank Pushes to Computers, Send Mobile Device Remote Command, and related command privileges |
+| MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Send Blank Pushes to Mobile Devices, Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
 
 ## Security

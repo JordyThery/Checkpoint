@@ -39,6 +39,22 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     }
 }
 
+nonisolated enum AppAppearance: String, Codable, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .system: "System"
+        case .light: "Light"
+        case .dark: "Dark"
+        }
+    }
+}
+
 struct ABMConfig: Codable {
     var clientID = ""
     var keyID = ""
@@ -58,6 +74,7 @@ final class AppSettings {
 
     var jamfServers: [JamfServerConfig] { didSet { save() } }
     var abm: ABMConfig { didSet { save() } }
+    var appearance: AppAppearance { didSet { save() } }
 
     private init() {
         let defaults = UserDefaults.standard
@@ -65,11 +82,14 @@ final class AppSettings {
             .flatMap { try? JSONDecoder().decode([JamfServerConfig].self, from: $0) } ?? []
         abm = defaults.data(forKey: "abmConfig")
             .flatMap { try? JSONDecoder().decode(ABMConfig.self, from: $0) } ?? ABMConfig()
+        appearance = defaults.string(forKey: "appearance")
+            .flatMap(AppAppearance.init(rawValue:)) ?? .system
     }
 
     private func save() {
         let defaults = UserDefaults.standard
         if let data = try? JSONEncoder().encode(jamfServers) { defaults.set(data, forKey: "jamfServers") }
         if let data = try? JSONEncoder().encode(abm) { defaults.set(data, forKey: "abmConfig") }
+        defaults.set(appearance.rawValue, forKey: "appearance")
     }
 }

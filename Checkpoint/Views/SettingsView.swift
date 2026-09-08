@@ -4,12 +4,33 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     var body: some View {
         TabView {
+            GeneralSettingsTab()
+                .tabItem { Label("General", systemImage: "gearshape") }
             ABMSettingsTab()
                 .tabItem { Label("Apple Business", systemImage: "apple.logo") }
             JamfSettingsTab()
                 .tabItem { Label("Jamf Pro", systemImage: "server.rack") }
         }
         .frame(width: 580, height: 500)
+    }
+}
+
+// MARK: - General
+
+struct GeneralSettingsTab: View {
+    @Environment(AppSettings.self) private var settings
+
+    var body: some View {
+        @Bindable var settings = settings
+        Form {
+            Picker("Appearance", selection: $settings.appearance) {
+                ForEach(AppAppearance.allCases) { appearance in
+                    Text(appearance.label).tag(appearance)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .formStyle(.grouped)
     }
 }
 

@@ -30,7 +30,12 @@ struct JamfInfo: Sendable {
     var computerID: String
     var kind: JamfDeviceKind
     var udid: String?
+    /// UUID used by the modern /v2/mdm/commands endpoint.
+    var managementID: String?
     var name: String?
+    var siteName: String?
+    /// Device-enrollment (ADE) instance that synced this serial, if any.
+    var adeInstanceID: String?
     var lastEnrolledDate: String?
     var reportDate: String?
     /// Last check-in (Jamf binary; computers only).
@@ -91,17 +96,46 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     }
 
     /// Classic API command string, per device kind. Nil when the command is
-    /// not sent through the Classic command endpoints.
+    /// not sent through the Classic command endpoints. Jamf Pro removed the
+    /// security-sensitive commands from the Classic API (they return HTTP
+    /// 400 now) — those go through /v2/mdm/commands instead.
     func classicCommand(for kind: JamfDeviceKind) -> String? {
         guard applies(to: kind) else { return nil }
         switch self {
-        case .blankPush: return "BlankPush"
-        case .lockComputer, .lockMobile: return "DeviceLock"
-        case .wipeComputer, .wipeMobile: return "EraseDevice"
+        case .blankPush: return kind == .mobileDevice ? "BlankPush" : nil
         case .updateInventory: return "UpdateInventory"
-        case .clearPasscode: return "ClearPasscode"
-        case .restartMobile: return "RestartDevice"
-        case .renewProfile: return nil
+        default: return nil
+        }
+    }
+
+    /// Body for the modern /v2/mdm/commands endpoint. Nil when the command is
+    /// still served by a Classic or dedicated endpoint.
+    func modernCommandData(for kind: JamfDeviceKind, passcode: String?) -> [String: any Sendable]? {
+        guard applies(to: kind) else { return nil }
+        switch self {
+        case .lockComputer:
+            var data: [String: any Sendable] = ["commandType": "DEVICE_LOCK"]
+            if let passcode { data["pin"] = passcode }
+            return data
+        case .wipeComputer:
+            var data: [String: any Sendable] = ["commandType": "ERASE_DEVICE"]
+            if let passcode { data["pin"] = passcode }
+            return data
+        case .lockMobile:
+            return ["commandType": "DEVICE_LOCK"]
+        case .wipeMobile:
+            return ["commandType": "ERASE_DEVICE"]
+        case .clearPasscode:
+            return ["commandType": "CLEAR_PASSCODE"]
+        case .restartMobile:
+            return ["commandType": "RESTART_DEVICE"]
+        case .blankPush where kind == .computer:
+            // The Classic blank push for computers is gone and the modern API
+            // has no BLANK_PUSH — a minimal DeviceInformation query has the
+            // same effect: the Mac must check in with MDM to answer it.
+            return ["commandType": "DEVICE_INFORMATION", "queries": ["DeviceName"]]
+        case .blankPush, .updateInventory, .renewProfile:
+            return nil
         }
     }
 
@@ -135,7 +169,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         switch self {
         case .lockComputer: "The Mac will lock immediately and require the PIN to be used again."
         case .wipeComputer: "All data on the Mac will be erased. This cannot be undone."
-        case .blankPush: "Sends an empty APNs push so the device checks in with MDM."
+        case .blankPush: "Nudges the device to check in with MDM and process its pending commands. Nothing visible happens on the device itself."
         case .renewProfile: "The MDM enrollment profile will be renewed on the device."
         case .updateInventory: "The device will be asked to submit a fresh inventory report."
         case .lockMobile: "The device will lock immediately; the owner's passcode unlocks it."
@@ -285,7 +319,8 @@ final class LookupModel {
         guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
-        try await abm.submitActivity(.release, serials: serials)
+        let activityID = try await abm.submitActivity(.release, serials: serials)
+        if let activityID { await abm.waitForActivity(id: activityID) }
         await refreshRows(serials)
     }
 
@@ -294,8 +329,11 @@ final class LookupModel {
         guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let inOrg = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }
         guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
+        var activityIDs: [String] = []
         if let serverID {
-            try await abm.submitActivity(.assign, serials: inOrg.map(\.serial), mdmServerID: serverID)
+            if let id = try await abm.submitActivity(.assign, serials: inOrg.map(\.serial), mdmServerID: serverID) {
+                activityIDs.append(id)
+            }
         } else {
             // Unassigning requires naming the current server, so batch per server.
             var byServer: [String: [String]] = [:]
@@ -306,9 +344,14 @@ final class LookupModel {
             }
             guard !byServer.isEmpty else { return }
             for (server, serials) in byServer {
-                try await abm.submitActivity(.unassign, serials: serials, mdmServerID: server)
+                if let id = try await abm.submitActivity(.unassign, serials: serials, mdmServerID: server) {
+                    activityIDs.append(id)
+                }
             }
         }
+        // ABM applies activities asynchronously; wait for them so the refresh
+        // below reads the new assignment instead of the old one.
+        for id in activityIDs { await abm.waitForActivity(id: id) }
         await refreshRows(inOrg.map(\.serial))
     }
 
@@ -385,16 +428,33 @@ final class LookupModel {
 
         var failures: [String] = []
         var sent = 0
+
+        // Modern /v2/mdm/commands endpoint, batched per device kind (the
+        // payload differs between computers and mobile devices).
+        for kind in [JamfDeviceKind.computer, .mobileDevice] {
+            guard let commandData = command.modernCommandData(for: kind, passcode: command.needsPIN ? passcode : nil) else { continue }
+            let kindTargets = targets.filter { $0.info.kind == kind }
+            guard !kindTargets.isEmpty else { continue }
+            for target in kindTargets where target.info.managementID == nil {
+                failures.append("\(target.serial): the record has no management ID — run a fresh lookup first.")
+            }
+            let managementIDs = kindTargets.compactMap(\.info.managementID)
+            guard !managementIDs.isEmpty else { continue }
+            do {
+                try await jamf.sendModernCommand(commandData: commandData, managementIDs: managementIDs)
+                sent += managementIDs.count
+            } catch {
+                failures.append("\(kindTargets.map(\.serial).joined(separator: ", ")): \(error.localizedDescription)")
+            }
+        }
+
+        // Classic endpoints for the commands they still serve.
         for target in targets {
             guard let commandName = command.classicCommand(for: target.info.kind) else { continue }
             do {
                 switch target.info.kind {
                 case .computer:
-                    try await jamf.sendComputerCommand(
-                        commandName,
-                        computerID: target.info.computerID,
-                        passcode: command.needsPIN ? passcode : nil
-                    )
+                    try await jamf.sendComputerCommand(commandName, computerID: target.info.computerID)
                 case .mobileDevice:
                     try await jamf.sendMobileDeviceCommand(commandName, deviceID: target.info.computerID)
                 }
@@ -430,6 +490,7 @@ final class LookupModel {
         var computerPrestageNames: [String: String] = [:]
         var mobilePrestageBySerial: [String: String] = [:]
         var mobilePrestageNames: [String: String] = [:]
+        var adeInstanceBySerial: [String: String] = [:]
     }
 
     private func makeContext() async -> LookupContext {
@@ -455,6 +516,7 @@ final class LookupModel {
             context.mobilePrestageNames = Dictionary(mobilePrestages.map { ($0.id, $0.displayName) }) { first, _ in first }
             context.computerPrestageBySerial = (try? await jamf.prestageAssignments(family: .computer)) ?? [:]
             context.mobilePrestageBySerial = (try? await jamf.prestageAssignments(family: .mobileDevice)) ?? [:]
+            context.adeInstanceBySerial = (try? await jamf.adeInstanceBySerial()) ?? [:]
         }
         return context
     }
@@ -486,7 +548,10 @@ final class LookupModel {
                     computerID: record.id,
                     kind: .computer,
                     udid: record.udid,
+                    managementID: record.managementID,
                     name: record.name,
+                    siteName: record.siteName,
+                    adeInstanceID: context.adeInstanceBySerial[serial],
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.reportDate,
                     lastContactTime: record.lastContactTime,
@@ -504,7 +569,10 @@ final class LookupModel {
                     computerID: record.id,
                     kind: .mobileDevice,
                     udid: record.udid,
+                    managementID: record.managementID,
                     name: record.name,
+                    siteName: record.siteName,
+                    adeInstanceID: context.adeInstanceBySerial[serial],
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.lastInventoryDate,
                     lastContactTime: nil,
