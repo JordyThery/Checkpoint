@@ -39,7 +39,7 @@ Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. produc
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business API key per organization (Apple Business → Preferences → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
+- An Apple Business API account per organization (Apple Business → Settings → Integrations → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
 - A Jamf Pro server. Both authentication methods are supported:
   - **API client** (recommended): create one under Settings → API Roles and Clients
   - **Username / password** (bearer token)
@@ -47,7 +47,7 @@ Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. produc
 
 ### Apple Business API access
 
-Create the key in Apple Business under Preferences → API. The account that owns it needs the **Device Manager** role or higher, otherwise it cannot manage device assignments through the API. Each organization needs its own key.
+In Apple Business, go to Settings → Integrations → API and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API. Each organization needs its own API account.
 
 ### Jamf Pro API privileges
 

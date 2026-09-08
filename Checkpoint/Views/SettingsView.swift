@@ -122,7 +122,7 @@ struct ABMOrgEditor: View {
                     .font(.caption.monospaced())
                     .frame(height: 90)
                 Button("Import .pem File…") { showingImporter = true }
-                Text("Paste the PEM private key downloaded when creating the API key in Apple Business (Preferences → API), or import the .pem file. The key is stored only in your keychain.")
+                Text("Paste the PEM private key downloaded when creating the API account in Apple Business (Settings → Integrations → API), or import the .pem file. The account needs the Device Enrollment Manager role or higher. The key is stored only in your keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
