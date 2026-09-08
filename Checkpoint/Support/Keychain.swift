@@ -4,6 +4,7 @@ import Security
 /// Minimal wrapper around the macOS keychain for storing API secrets
 /// (Jamf client secrets/passwords and the ABM private key).
 enum Keychain {
+    // Pre-rename service name — changing it would orphan existing users' secrets.
     private static let service = "DeviceStatus.secrets"
 
     static func set(_ value: String, for key: String) {

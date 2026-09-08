@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="Checkpoint app icon">
+</p>
+
 # Checkpoint
 
 **One list of serial numbers. Both sides of the story.**
@@ -18,6 +22,8 @@ Enter serial numbers — typed, pasted, or imported from a text/CSV file — and
 - PreStage enrollment scope
 - Last enrollment date, last inventory update, Last Contact, and last check-in
 - MDM profile expiration
+
+![Checkpoint showing four computers with their Apple Business and Jamf Pro status, with the device inspector open](docs/screenshot.png)
 
 ## Beyond reporting
 

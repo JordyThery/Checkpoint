@@ -99,20 +99,8 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         Self.commands(for: kind).contains(self)
     }
 
-    /// Classic API command string, per device kind. Nil when the command is
-    /// not sent through the Classic command endpoints. Jamf Pro removed the
-    /// security-sensitive commands from the Classic API (they return HTTP
-    /// 400 now) — those go through /v2/mdm/commands instead.
-    func classicCommand(for kind: JamfDeviceKind) -> String? {
-        guard applies(to: kind) else { return nil }
-        switch self {
-        case .updateInventory: return "UpdateInventory"
-        default: return nil
-        }
-    }
-
     /// Body for the modern /v2/mdm/commands endpoint. Nil when the command is
-    /// still served by a Classic or dedicated endpoint.
+    /// served by a Classic or dedicated endpoint instead.
     func modernCommandData(for kind: JamfDeviceKind, passcode: String?) -> [String: any Sendable]? {
         guard applies(to: kind) else { return nil }
         switch self {
@@ -565,19 +553,15 @@ final class LookupModel {
             }
         }
 
-        // Classic endpoints for the commands they still serve.
-        for target in targets {
-            guard let commandName = command.classicCommand(for: target.info.kind) else { continue }
-            do {
-                switch target.info.kind {
-                case .computer:
-                    try await jamf.sendComputerCommand(commandName, computerID: target.info.computerID)
-                case .mobileDevice:
-                    try await jamf.sendMobileDeviceCommand(commandName, deviceID: target.info.computerID)
+        // Update Inventory is the one command still served by the Classic API.
+        if command == .updateInventory {
+            for target in targets where target.info.kind == .mobileDevice {
+                do {
+                    try await jamf.sendMobileDeviceCommand("UpdateInventory", deviceID: target.info.computerID)
+                    sent += 1
+                } catch {
+                    failures.append("\(target.serial): \(error.localizedDescription)")
                 }
-                sent += 1
-            } catch {
-                failures.append("\(target.serial): \(error.localizedDescription)")
             }
         }
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }

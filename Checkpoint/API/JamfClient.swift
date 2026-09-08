@@ -257,18 +257,9 @@ actor JamfClient {
 
     // MARK: MDM commands
 
-    /// Sends a Classic API computer command (e.g. DeviceLock, EraseDevice,
-    /// BlankPush). Lock and erase require a 6-digit passcode.
-    func sendComputerCommand(_ command: String, computerID: String, passcode: String? = nil) async throws {
-        var path = "/JSSResource/computercommands/command/\(command)"
-        if let passcode { path += "/passcode/\(passcode)" }
-        path += "/id/\(computerID)"
-        let (data, status) = try await send(path: path, method: "POST")
-        try throwIfError(status: status, data: data)
-    }
-
-    /// Sends a Classic API mobile device command (e.g. UpdateInventory,
-    /// DeviceLock, ClearPasscode, RestartDevice, EraseDevice, BlankPush).
+    /// Sends a Classic API mobile device command. Only UpdateInventory still
+    /// goes through this route — Jamf Pro removed the security-sensitive
+    /// commands from the Classic API (they return HTTP 400 now).
     func sendMobileDeviceCommand(_ command: String, deviceID: String) async throws {
         let (data, status) = try await send(
             path: "/JSSResource/mobiledevicecommands/command/\(command)/id/\(deviceID)",
@@ -277,9 +268,8 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
-    /// Sends an MDM command through the modern endpoint. Jamf Pro removed the
-    /// security-sensitive commands (lock, wipe, clear passcode, restart) from
-    /// the Classic API, which now rejects them with HTTP 400.
+    /// Sends an MDM command through the modern /v2/mdm/commands endpoint,
+    /// batched across the given management IDs.
     func sendModernCommand(commandData: [String: any Sendable], managementIDs: [String]) async throws {
         let body = try JSONSerialization.data(withJSONObject: [
             "clientData": managementIDs.map { ["managementId": $0] },
