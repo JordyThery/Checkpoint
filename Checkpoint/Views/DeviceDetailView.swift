@@ -38,9 +38,15 @@ struct DeviceDetailView: View {
                     Text(report.serial).monospaced().textSelection(.enabled)
                 }
             }
+            // Read-only detail and the actions that act on it are kept in
+            // separate sections, so the form reads as facts then choices.
             Section("Apple Business") { abmContent }
+            if let info = report.abm.value, !info.isReleased {
+                Section { abmActions(info) }
+            }
             Section("Jamf Pro") { jamfContent }
             if let info = report.jamf.value {
+                Section { jamfActions(info) }
                 Section("MDM Commands") { commandButtons(info) }
             }
         }
@@ -307,34 +313,33 @@ struct DeviceDetailView: View {
             LabeledContent("Migration", value: outcome)
         }
 
-        if !info.isReleased {
-            Picker("MDM Server", selection: $mdmSelection) {
-                Text("Unassigned").tag(String?.none)
-                ForEach(model.mdmServers) { server in
-                    Text(server.name).tag(Optional(server.id))
-                }
-            }
-            Button("Apply MDM Assignment") { pending = .applyMDM }
-                .disabled(mdmSelection == info.mdmServerID)
+    }
 
-            if info.device.hasActiveMigration {
-                DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
-                Button("Update Deadline") { pending = .updateDeadline }
-                Button("Cancel Migration", role: .destructive) { pending = .cancelMigration }
-                Text("The device is already assigned to \(info.mdmServerName ?? "the new server"). Cancelling stops the migration only, it does not return the assignment.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if info.device.isMdmMigrationCapable == true {
-                DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
-                Button("Assign with Migration Deadline") { pending = .scheduleMigration }
-                    .disabled(mdmSelection == nil || mdmSelection == info.mdmServerID)
-                Text("The device keeps running under its current service until it migrates, so nothing is erased. Apple prompts the user and enforces the deadline.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    @ViewBuilder
+    private func abmActions(_ info: ABMInfo) -> some View {
+        Picker("MDM Server", selection: $mdmSelection) {
+            Text("Unassigned").tag(String?.none)
+            ForEach(model.mdmServers) { server in
+                Text(server.name).tag(Optional(server.id))
             }
-
-            Button("Release from Apple Business", role: .destructive) { pending = .release }
         }
+        Button("Apply MDM Assignment") { pending = .applyMDM }
+            .disabled(mdmSelection == info.mdmServerID)
+
+        if info.device.hasActiveMigration {
+            DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
+            Button("Update Deadline") { pending = .updateDeadline }
+            Button("Cancel Migration", role: .destructive) { pending = .cancelMigration }
+            Text("The device is already assigned to \(info.mdmServerName ?? "the new server"). Cancelling stops the migration only, it does not return the assignment.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else if info.device.isMdmMigrationCapable == true {
+            DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
+            Button("Assign with Migration Deadline") { pending = .scheduleMigration }
+                .disabled(mdmSelection == nil || mdmSelection == info.mdmServerID)
+        }
+
+        Button("Release from Apple Business", role: .destructive) { pending = .release }
     }
 
     /// Apple rejects anything beyond 90 days.
@@ -368,15 +373,6 @@ struct DeviceDetailView: View {
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
         if model.sites.isEmpty {
             LabeledContent("Site", value: info.siteName ?? "None")
-        } else {
-            Picker("Site", selection: $siteSelection) {
-                Text("None").tag("-1")
-                ForEach(model.sites) { site in
-                    Text(site.name).tag(site.id)
-                }
-            }
-            Button("Apply Site Change") { pending = .applySite }
-                .disabled(siteSelection == (info.siteID ?? "-1"))
         }
         LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
         LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
@@ -393,10 +389,20 @@ struct DeviceDetailView: View {
             Text(DateFormatting.short(info.mdmProfileExpiration))
                 .foregroundStyle(expired ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
         }
-        if let url = info.webURL {
-            Link("Open in Jamf Pro", destination: url)
-        }
+    }
 
+    @ViewBuilder
+    private func jamfActions(_ info: JamfInfo) -> some View {
+        if !model.sites.isEmpty {
+            Picker("Site", selection: $siteSelection) {
+                Text("None").tag("-1")
+                ForEach(model.sites) { site in
+                    Text(site.name).tag(site.id)
+                }
+            }
+            Button("Apply Site Change") { pending = .applySite }
+                .disabled(siteSelection == (info.siteID ?? "-1"))
+        }
         Picker("PreStage", selection: $prestageSelection) {
             Text("None").tag(String?.none)
             ForEach(prestageChoices) { prestage in
@@ -406,6 +412,9 @@ struct DeviceDetailView: View {
         Button("Apply PreStage Change") { pending = .applyPrestage }
             .disabled(prestageSelection == info.prestageID)
         Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
+        if let url = info.webURL {
+            Link("Open in Jamf Pro", destination: url)
+        }
     }
 
     // MARK: MDM commands
