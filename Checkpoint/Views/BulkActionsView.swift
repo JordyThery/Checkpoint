@@ -162,25 +162,28 @@ struct BulkActionsView: View {
                 Button("Release \(count(abmCount)) from Apple Business", role: .destructive) { pending = .release }
                     .disabled(abmCount == 0)
             }
-            if computerCount > 0 {
-                Section("Computer PreStage") {
-                    bulkPicker("PreStage", selection: $computerPrestageSelection, currentState: currentPrestageState(kind: .computer), noneLabel: "None", options: prestageOptions(kind: .computer).map { ($0.id, $0.displayName) })
-                    Button("Apply PreStage to \(count(computerCount))") { pending = .applyComputerPrestage }
-                        .disabled(computerPrestageSelection == .mixed || computerPrestageSelection == currentPrestageState(kind: .computer))
-                }
-            }
-            if mobileCount > 0 {
-                Section("Mobile Device PreStage") {
-                    bulkPicker("PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: prestageOptions(kind: .mobileDevice).map { ($0.id, $0.displayName) })
-                    Button("Apply PreStage to \(count(mobileCount))") { pending = .applyMobilePrestage }
-                        .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice))
-                }
-            }
-            if jamfCount > 0 && !model.sites.isEmpty {
-                Section("Jamf Pro Site") {
-                    bulkPicker("Site", selection: $siteSelection, currentState: currentSiteState, noneLabel: "None", options: model.sites.map { ($0.id, $0.name) })
-                    Button("Apply Site to \(count(jamfCount))") { pending = .applySite }
-                        .disabled(siteSelection == .mixed || siteSelection == currentSiteState)
+            // One Jamf Pro group, mirroring the device inspector. The PreStage
+            // pickers stay separate because each device kind has its own list,
+            // but that distinction belongs on the row rather than in a header.
+            if jamfCount > 0 || computerCount > 0 || mobileCount > 0 {
+                Section("Jamf Pro") {
+                    if jamfCount > 0 && !model.sites.isEmpty {
+                        bulkPicker("Site", selection: $siteSelection, currentState: currentSiteState, noneLabel: "None", options: model.sites.map { ($0.id, $0.name) })
+                        Button("Apply Site to \(count(jamfCount))") { pending = .applySite }
+                            .disabled(siteSelection == .mixed || siteSelection == currentSiteState)
+                    }
+                    if computerCount > 0 {
+                        bulkPicker("Computer PreStage", selection: $computerPrestageSelection, currentState: currentPrestageState(kind: .computer), noneLabel: "None", options: prestageOptions(kind: .computer).map { ($0.id, $0.displayName) })
+                        Button("Apply PreStage to \(count(computerCount))") { pending = .applyComputerPrestage }
+                            .disabled(computerPrestageSelection == .mixed || computerPrestageSelection == currentPrestageState(kind: .computer))
+                    }
+                    if mobileCount > 0 {
+                        bulkPicker("Mobile Device PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: prestageOptions(kind: .mobileDevice).map { ($0.id, $0.displayName) })
+                        Button("Apply PreStage to \(count(mobileCount))") { pending = .applyMobilePrestage }
+                            .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice))
+                    }
+                    Button("Remove \(count(jamfCount)) from Jamf Pro", role: .destructive) { pending = .deleteJamf }
+                        .disabled(jamfCount == 0)
                 }
             }
             Section("MDM Commands") {
@@ -197,8 +200,6 @@ struct BulkActionsView: View {
                     .disabled(unavailable != nil)
                     .help(unavailable ?? command.message)
                 }
-                Button("Remove \(count(jamfCount)) from Jamf Pro", role: .destructive) { pending = .deleteJamf }
-                    .disabled(jamfCount == 0)
                 let blocked = MDMCommand.allInDisplayOrder
                     .filter { commandCount($0) > 0 && model.unavailabilityReason(for: $0) != nil }
                     .map(\.title)
