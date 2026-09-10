@@ -347,9 +347,12 @@ struct MigrationCell: View {
                 Text(due == "—" ? (device.mdmMigrationStatus?.capitalized ?? "In progress") : due)
                     .foregroundStyle(.orange)
                     .help("Migration \(device.mdmMigrationStatus?.lowercased() ?? "in progress"), due by this date.")
-            } else if let status = device.mdmMigrationStatus?.uppercased() {
-                Text(status == "SUCCESS" ? "Migrated" : status.capitalized)
-                    .foregroundStyle(status == "SUCCESS" ? .green : .red)
+            } else if let outcome = device.migrationOutcome {
+                Text(outcome)
+                    .foregroundStyle(outcome == "Migrated" ? Color.green : Color.secondary)
+                    .help(outcome == "Migrated"
+                          ? "The device migrated to its assigned service."
+                          : "No migration is scheduled. Apple reports a cancelled migration and an unsuccessful one the same way, so this covers both. The Apple Business assignment is unaffected.")
             } else {
                 Text("—").foregroundStyle(.tertiary)
             }

@@ -161,11 +161,11 @@ struct DeviceDetailView: View {
         case .release:
             "The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .scheduleMigration:
-            "Nothing is erased. The device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened))."
+            "The Apple Business assignment changes immediately. Nothing is erased: the device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened))."
         case .updateDeadline:
             "A deadline earlier than the current one, or in the past, is enforced immediately without giving the user the option to delay."
         case .cancelMigration:
-            "The device stays with its current service. Its assignment is unchanged."
+            "Only the scheduled migration is cancelled. The device stays assigned to \(report.abm.value?.mdmServerName ?? "its assigned server") in Apple Business and keeps running under its current service. To undo the assignment as well, assign it back to the previous server."
         case .applyPrestage:
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
         case .applySite:
@@ -303,8 +303,8 @@ struct DeviceDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-        } else if let status = info.device.mdmMigrationStatus {
-            LabeledContent("Migration", value: status.capitalized)
+        } else if let outcome = info.device.migrationOutcome {
+            LabeledContent("Migration", value: outcome)
         }
 
         if !info.isReleased {
@@ -321,6 +321,9 @@ struct DeviceDetailView: View {
                 DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
                 Button("Update Deadline") { pending = .updateDeadline }
                 Button("Cancel Migration", role: .destructive) { pending = .cancelMigration }
+                Text("The device is already assigned to \(info.mdmServerName ?? "the new server"). Cancelling stops the migration only, it does not return the assignment.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else if info.device.isMdmMigrationCapable == true {
                 DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
                 Button("Assign with Migration Deadline") { pending = .scheduleMigration }

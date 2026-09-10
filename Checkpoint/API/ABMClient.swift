@@ -27,6 +27,19 @@ struct ABMDevice: Decodable, Sendable {
         let status = mdmMigrationStatus?.uppercased()
         return status == "REQUESTED" || status == "STARTED"
     }
+
+    /// How a finished migration should be described, or nil when none has been
+    /// requested. Apple reports a migration that was cancelled with the same
+    /// FAILED status as one that did not succeed, so neither is called a
+    /// failure here.
+    var migrationOutcome: String? {
+        switch mdmMigrationStatus?.uppercased() {
+        case "SUCCESS": "Migrated"
+        case "FAILED": "Not migrated"
+        case .some(let status) where !status.isEmpty: status.capitalized
+        default: nil
+        }
+    }
 }
 
 struct AppleCareCoverage: Sendable, Identifiable, Hashable {
