@@ -207,6 +207,9 @@ struct ContentView: View {
                 TableColumn("MDM Server Assignment") { (report: DeviceReport) in
                     FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
                 }
+                TableColumn("Migration") { (report: DeviceReport) in
+                    MigrationCell(state: report.abm)
+                }
                 TableColumn("Warranty Coverage") { (report: DeviceReport) in
                     FetchText(state: report.abm) { Self.coverageSummary($0) }
                 }
@@ -317,6 +320,39 @@ struct FetchText<Value: Sendable>: View {
                 .help(message)
         case .found(let value):
             Text(text(value))
+        }
+    }
+}
+
+/// Device management service migration state. Blank for the common case of a
+/// device that has never had one scheduled, so the column only draws attention
+/// when there is something to act on.
+struct MigrationCell: View {
+    let state: FetchState<ABMInfo>
+
+    var body: some View {
+        switch state {
+        case .pending:
+            Text("…").foregroundStyle(.tertiary)
+        case .notConfigured, .notFound:
+            Text("—").foregroundStyle(.tertiary)
+        case .failed(let message):
+            Label("Error", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .help(message)
+        case .found(let info):
+            let device = info.device
+            if device.hasActiveMigration {
+                let due = DateFormatting.short(device.mdmMigrationDeadlineDateTime)
+                Text(due == "—" ? (device.mdmMigrationStatus?.capitalized ?? "In progress") : due)
+                    .foregroundStyle(.orange)
+                    .help("Migration \(device.mdmMigrationStatus?.lowercased() ?? "in progress"), due by this date.")
+            } else if let status = device.mdmMigrationStatus?.uppercased() {
+                Text(status == "SUCCESS" ? "Migrated" : status.capitalized)
+                    .foregroundStyle(status == "SUCCESS" ? .green : .red)
+            } else {
+                Text("—").foregroundStyle(.tertiary)
+            }
         }
     }
 }
