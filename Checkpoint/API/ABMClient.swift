@@ -29,9 +29,8 @@ struct ABMDevice: Decodable, Sendable {
     }
 
     /// How a finished migration should be described, or nil when none has been
-    /// requested. Apple reports a migration that was cancelled with the same
-    /// FAILED status as one that did not succeed, so neither is called a
-    /// failure here.
+    /// requested. Apple reports a cancelled migration with the same FAILED
+    /// status as an unsuccessful one, so neither is called a failure here.
     var migrationOutcome: String? {
         switch mdmMigrationStatus?.uppercased() {
         case "SUCCESS": "Migrated"
@@ -210,7 +209,7 @@ actor ABMClient {
     // MARK: Activities
 
     /// Submits an org device activity and returns its ID. ABM processes these
-    /// asynchronously — poll with `waitForActivity` before re-reading state.
+    /// asynchronously. Poll with `waitForActivity` before re-reading state.
     @discardableResult
     func submitActivity(
         _ type: ActivityType,
@@ -254,7 +253,7 @@ actor ABMClient {
 
     /// Waits until the activity leaves the in-progress states or the timeout
     /// elapses, so a follow-up device fetch sees the new assignment. Returns
-    /// without throwing on timeout — the caller refreshes with whatever state
+    /// without throwing on timeout, so the caller refreshes with whatever state
     /// ABM reports at that point.
     func waitForActivity(id: String, timeout: TimeInterval = 30) async {
         struct Response: Decodable {

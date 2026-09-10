@@ -15,7 +15,7 @@ struct JamfComputerRecord: Sendable {
     let name: String?
     /// Last check-in (Jamf binary).
     let lastContactTime: String?
-    /// Last Contact (binary, MDM, or DDM — inventory attribute added in Jamf Pro 11.30).
+    /// Last Contact (binary, MDM, or DDM; inventory attribute added in Jamf Pro 11.30).
     let lastContact: String?
     let lastEnrolledDate: String?
     /// Last inventory update.
@@ -115,10 +115,9 @@ actor JamfClient {
     // MARK: Computers
 
     func computer(serial: String) async throws -> JamfComputerRecord? {
-        // v4 is the current computers-inventory endpoint. Jamf Pro still serves
-        // v3 and v1, but they no longer appear in the published spec, so they
-        // are kept only as fallbacks for older servers. The first version that
-        // answers cleanly wins, including when it finds no match.
+        // v4 is current. v3 and v1 are still served but no longer published, so
+        // they remain only as fallbacks for older servers. The first version to
+        // answer cleanly wins, including when it finds no match.
         var lastError: Error?
         for version in ["v4", "v3", "v1"] {
             do {
@@ -170,10 +169,8 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
         guard let item = try JSONDecoder().decode(Response.self, from: data).results.first else { return nil }
 
-        // v4 exposes a dedicated Last Contact attribute alongside the check-in.
-        // On v3 and v1 there is no such field, so fall back to scanning for any
-        // general key starting with "lastContact" other than the check-in one,
-        // which is how this worked before v4 existed.
+        // v4 has a dedicated Last Contact attribute. v3 and v1 do not, so fall
+        // back to scanning for a "lastContact" key other than the check-in one.
         var lastContact = item.general?.lastContact
         if lastContact == nil,
            let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -275,7 +272,7 @@ actor JamfClient {
     // MARK: MDM commands
 
     /// Sends a Classic API mobile device command. Only UpdateInventory still
-    /// goes through this route — Jamf Pro removed the security-sensitive
+    /// goes through this route: Jamf Pro removed the security-sensitive
     /// commands from the Classic API (they return HTTP 400 now).
     func sendMobileDeviceCommand(_ command: String, deviceID: String) async throws {
         let (data, status) = try await send(
@@ -303,7 +300,7 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
-    /// Queues a DeclarativeManagement sync command for the device — what the
+    /// Queues a DeclarativeManagement sync command for the device, which is what the
     /// Jamf Pro UI's blank push shows in the management history. Requires the
     /// "Send Declarative Management Command" privilege.
     func ddmSync(managementID: String) async throws {
@@ -469,7 +466,7 @@ actor JamfClient {
         for version in family.scopeVersions {
             let scopePath = "/api/\(version)/\(family.pathComponent)/\(prestageID)/scope"
             // Scope writes are optimistic-locked: read the current versionLock first.
-            // A failure here means this API version isn't served — try the next one.
+            // A failure here means this API version isn't served, so try the next one.
             let versionLock: Int
             do {
                 let (scopeData, scopeStatus) = try await send(path: scopePath)
@@ -574,10 +571,9 @@ actor JamfClient {
 
     /// Maps a Jamf Pro path onto the Platform API gateway, which fronts the
     /// Jamf Pro API under `/pro` and the Classic API under `/proclassic`. Both
-    /// prefixes *replace* the product segment rather than being prepended:
-    /// `/api/v1/sites` becomes `/pro/v1/sites`, and `/JSSResource/mobiledevices`
-    /// becomes `/proclassic/mobiledevices`. Keeping `/JSSResource` in place
-    /// returns 403.
+    /// prefixes replace the product segment rather than prefixing it, so
+    /// `/JSSResource/mobiledevices` becomes `/proclassic/mobiledevices`.
+    /// Keeping `/JSSResource` in place returns 403.
     nonisolated static func gatewayPath(for path: String) -> String {
         if path.hasPrefix("/api/") {
             return "/pro/" + path.dropFirst("/api/".count)
@@ -626,10 +622,9 @@ actor JamfClient {
         )
     }
 
-    /// The gateway's token endpoint takes the same client-credentials form and
-    /// returns the same fields as the Jamf Pro API client flow, so the only
-    /// difference is the URL. Tokens are region-locked, which is why this must
-    /// use the same regional host the requests go to.
+    /// Same client-credentials form and response fields as the Jamf Pro API
+    /// client flow, so only the URL differs. Tokens are region-locked, hence
+    /// the same regional host the requests go to.
     private func fetchGatewayToken() async throws -> String {
         try await fetchClientCredentialsToken(
             url: baseURL.appending(path: "/auth/token"),

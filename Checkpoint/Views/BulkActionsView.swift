@@ -46,7 +46,7 @@ struct BulkActionsView: View {
         case command(MDMCommand)
     }
 
-    /// Devices that are in ABM and not released — the ones ABM actions can touch.
+    /// Devices that are in ABM and not released, the ones ABM actions can touch.
     private var abmCount: Int {
         reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.count
     }
@@ -162,9 +162,9 @@ struct BulkActionsView: View {
                 Button("Release \(count(abmCount)) from Apple Business", role: .destructive) { pending = .release }
                     .disabled(abmCount == 0)
             }
-            // One Jamf Pro group, mirroring the device inspector. The PreStage
-            // pickers stay separate because each device kind has its own list,
-            // but that distinction belongs on the row rather than in a header.
+            // One Jamf Pro group, mirroring the device inspector. Each device
+            // kind keeps its own PreStage picker, distinguished by row label
+            // rather than by section header.
             if jamfCount > 0 || computerCount > 0 || mobileCount > 0 {
                 Section("Jamf Pro") {
                     if jamfCount > 0 && !model.sites.isEmpty {

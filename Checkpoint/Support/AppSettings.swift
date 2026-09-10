@@ -42,9 +42,9 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     var id = UUID()
     var name = ""
     /// The Jamf Pro server URL. API requests go here directly, except in
-    /// Platform API mode where they go to the regional gateway instead — but
-    /// this is always what links into the Jamf Pro web interface are built
-    /// from, because the gateway host cannot serve those.
+    /// Platform API mode where the regional gateway takes them. Links into the
+    /// Jamf Pro web interface are always built from this, since the gateway
+    /// host cannot serve them.
     var baseURL = ""
     var authMethod: JamfAuthMethod = .apiClient
     /// Client ID or username depending on `authMethod`. The matching secret
@@ -86,8 +86,8 @@ extension JamfServerConfig {
         authMethod = try container.decode(JamfAuthMethod.self, forKey: .authMethod)
         account = try container.decode(String.self, forKey: .account)
         // Added with Platform API support, so absent from servers saved by
-        // earlier versions. Defaulting keeps those servers decodable — without
-        // this the whole list would fail to decode and silently disappear.
+        // earlier versions. Without defaults the whole list fails to decode
+        // and silently disappears.
         region = try container.decodeIfPresent(JamfRegion.self, forKey: .region) ?? .us
         tenantID = try container.decodeIfPresent(String.self, forKey: .tenantID) ?? ""
     }

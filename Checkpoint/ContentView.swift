@@ -54,14 +54,12 @@ struct ContentView: View {
             }
             .navigationTitle("Checkpoint")
             .toolbar {
-                // Both pickers stay hidden until something is configured — an
-                // empty popup button is just unexplained chrome, and the
-                // configuration hint below already points at Settings.
+                // Hidden until something is configured: an empty popup button is
+                // unexplained chrome, and the hint below already points at Settings.
                 if !settings.abmOrgs.isEmpty {
                     ToolbarItem {
                         // Reads through selectedABMOrg so the popup shows the
-                        // organization actually in use, including the implicit
-                        // first one when nothing has been picked yet.
+                        // organization in use, including the implicit first one.
                         Picker("Apple Business organization", selection: Binding(
                             get: { model.selectedABMOrg?.id },
                             set: { model.selectedABMOrgID = $0 }

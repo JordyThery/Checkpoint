@@ -23,7 +23,7 @@ Enter serial numbers, typed, pasted, or imported from a text/CSV file, and Check
 - Last enrollment date, last inventory update, Last Contact, and last check-in
 - MDM profile expiration
 
-![Checkpoint showing four computers with their Apple Business and Jamf Pro status, with the device inspector open](docs/screenshot.png)
+![Checkpoint showing a Mac and an iPad with their Apple Business and Jamf Pro status side by side, with the bulk actions inspector open](docs/screenshot.png)
 
 ## Beyond reporting
 

@@ -100,15 +100,12 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
-    /// it can be. The Platform API gateway does not expose
-    /// `POST /pro/v2/mdm/commands` — its spec lists that path as GET only —
-    /// and that endpoint is how lock, wipe, restart and clear passcode are
-    /// sent. Erase and restart do exist on Jamf's separate Device Management
-    /// Actions API, but that needs an environment-scoped integration and
-    /// platform device UUIDs, neither of which Checkpoint supports yet.
+    /// it can be. The gateway's spec lists `POST /pro/v2/mdm/commands` as GET
+    /// only, and that endpoint carries lock, wipe, restart and clear passcode.
+    /// Erase and restart also exist on Jamf's Device Management Actions API,
+    /// which needs an environment-scoped integration Checkpoint lacks.
     ///
-    /// Keep this list together: it is the single place to revisit when Jamf
-    /// widens what the gateway exposes.
+    /// The single place to revisit when Jamf widens gateway coverage.
     func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
         guard authMethod == .platformGateway else { return nil }
         switch self {
@@ -149,7 +146,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
             return ["commandType": "RESTART_DEVICE"]
         case .clearPasscode, .blankPush, .updateInventory, .renewProfile, .redeployFramework:
             // Clear Passcode needs the per-device escrowed unlock token, so
-            // it cannot share one batched command body — sendCommand handles
+            // it cannot share one batched command body, so sendCommand handles
             // it separately.
             return nil
         }
@@ -209,7 +206,7 @@ nonisolated enum DateFormatting {
         return formatter.date(from: string)
     }
 
-    /// Jamf reports "never" as the Unix epoch — treat anything before 1971 as no value.
+    /// Jamf reports "never" as the Unix epoch, so treat anything before 1971 as no value.
     private static let earliestPlausibleDate = Date(timeIntervalSince1970: 365 * 24 * 3600)
 
     static func short(_ iso: String?) -> String {
@@ -248,11 +245,10 @@ final class LookupModel {
     var mobilePrestages: [JamfPrestage] = []
     var sites: [JamfSite] = []
 
-    // Clients are reused across lookups and actions: each new ABMClient
-    // requests a fresh OAuth token, and Apple rate-limits its token endpoint
-    // aggressively (HTTP 429 after a handful of sign-ins). One client is kept
-    // per configuration rather than one overall, so switching organizations or
-    // servers back and forth reuses the tokens instead of re-authenticating.
+    // One client per configuration, reused across lookups and actions. Each new
+    // ABMClient requests a fresh OAuth token and Apple rate-limits that endpoint
+    // hard (HTTP 429 after a few sign-ins), so switching organization or server
+    // must not cost a re-authentication.
     private var abmClients: [String: ABMClient] = [:]
     private var jamfClients: [String: JamfClient] = [:]
 
@@ -406,10 +402,9 @@ final class LookupModel {
         await refreshRows(inOrg.map(\.serial))
     }
 
-    /// Assigns the devices to an MDM server and schedules a migration that must
-    /// complete by `deadline`. Unlike a plain assignment the devices stay
-    /// enrolled in their current service until they migrate, so nothing is
-    /// erased; Apple prompts the user and enforces the deadline on-device.
+    /// Assigns the devices to an MDM server and schedules a migration due by
+    /// `deadline`. Unlike a plain assignment they stay enrolled in their
+    /// current service until they migrate, so nothing is erased.
     func scheduleMigration(reports: [DeviceReport], to serverID: String, deadline: Date) async throws {
         try await submitMigrationActivity(
             .assignWithMigrationDeadline,
@@ -508,7 +503,7 @@ final class LookupModel {
     }
 
     /// Moves the devices' Jamf Pro records to another site ("-1" for none).
-    /// Note this does not change which PreStages a device can join — that is
+    /// Note this does not change which PreStages a device can join. That is
     /// determined by the ADE token that synced it, not by the record's site.
     func setSite(reports: [DeviceReport], to siteID: String) async throws {
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
@@ -568,7 +563,7 @@ final class LookupModel {
                 throw ActionError(message: "No management IDs are known, so a blank push cannot be sent — run a fresh lookup first.")
             }
             // The Jamf Pro UI's blank push queues a DeclarativeManagement sync
-            // per device (POST /v1/ddm/{managementId}/sync) — that's the entry
+            // per device (POST /v1/ddm/{managementId}/sync), which is the entry
             // in the management history. Do the same, falling back to a
             // minimal DeviceInformation query for devices the DDM endpoint
             // rejects. Failures don't stop the push itself.
