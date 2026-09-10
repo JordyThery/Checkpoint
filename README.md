@@ -45,7 +45,7 @@ Migration requires an Apple Business tenant on a release that supports it. Devic
 
 ### Recovery secrets
 
-For Macs, Checkpoint can show the **FileVault personal recovery key** and the rotating **Recovery Lock password** from Jamf Pro. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
+For Macs, Checkpoint can show the **FileVault personal recovery key** and the **Recovery Lock password** from Jamf Pro. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
 
 ## Requirements
 

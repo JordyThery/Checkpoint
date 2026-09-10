@@ -522,7 +522,7 @@ actor JamfClient {
         )
     }
 
-    /// A computer's rotating Recovery Lock password. Requires the "View
+    /// A computer's Recovery Lock password, static or rotating. Requires the "View
     /// Recovery Lock" privilege, or `recovery-lock:read` through the gateway.
     /// Nil when no password is escrowed.
     func recoveryLockPassword(computerID: String) async throws -> String? {

@@ -468,7 +468,7 @@ final class LookupModel {
         return key
     }
 
-    /// A computer's rotating Recovery Lock password. Fetched on request only,
+    /// A computer's Recovery Lock password. Fetched on request only,
     /// on the same terms as the FileVault key.
     func recoveryLockPassword(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Recovery Lock passwords")
