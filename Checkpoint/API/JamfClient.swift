@@ -47,6 +47,13 @@ struct JamfSite: Sendable, Identifiable, Hashable {
     let name: String
 }
 
+struct JamfFileVaultKey: Sendable {
+    let personalRecoveryKey: String
+    /// Jamf Pro's assessment of the stored key, e.g. VALID or UNKNOWN.
+    let validityStatus: String?
+    let configurationName: String?
+}
+
 /// The two PreStage families in Jamf Pro. Endpoint versions differ per family,
 /// and older Jamf Pro versions serve older ones, hence the fallback lists.
 nonisolated enum JamfPrestageFamily: Sendable {
@@ -490,6 +497,41 @@ actor JamfClient {
             return
         }
         throw lastError ?? APIError(message: "Could not update the PreStage scope.")
+    }
+
+    // MARK: Recovery secrets
+
+    /// A computer's FileVault personal recovery key. Requires the "View Disk
+    /// Encryption Recovery Key" privilege, or `disk-encryption-recovery-key:read`
+    /// through the Platform API gateway. Nil when Jamf Pro holds no key.
+    func fileVaultRecoveryKey(computerID: String) async throws -> JamfFileVaultKey? {
+        struct Response: Decodable {
+            let personalRecoveryKey: String?
+            let individualRecoveryKeyValidityStatus: String?
+            let diskEncryptionConfigurationName: String?
+        }
+        let (data, status) = try await send(path: "/api/v4/computers-inventory/\(computerID)/filevault")
+        if status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        guard let key = decoded.personalRecoveryKey, !key.isEmpty else { return nil }
+        return JamfFileVaultKey(
+            personalRecoveryKey: key,
+            validityStatus: decoded.individualRecoveryKeyValidityStatus,
+            configurationName: decoded.diskEncryptionConfigurationName
+        )
+    }
+
+    /// A computer's rotating Recovery Lock password. Requires the "View
+    /// Recovery Lock" privilege, or `recovery-lock:read` through the gateway.
+    /// Nil when no password is escrowed.
+    func recoveryLockPassword(computerID: String) async throws -> String? {
+        struct Response: Decodable { let recoveryLockPassword: String? }
+        let (data, status) = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-recovery-lock-password")
+        if status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        let password = try JSONDecoder().decode(Response.self, from: data).recoveryLockPassword
+        return (password?.isEmpty ?? true) ? nil : password
     }
 
     // MARK: Sites

@@ -454,6 +454,41 @@ final class LookupModel {
         await refreshRows(serials)
     }
 
+    // MARK: Recovery secrets
+
+    /// A computer's FileVault personal recovery key. Fetched only on explicit
+    /// request: recovery secrets are never read during a lookup, and are not
+    /// stored on the report.
+    func fileVaultRecoveryKey(for report: DeviceReport) async throws -> JamfFileVaultKey {
+        let id = try computerID(for: report, action: "FileVault recovery keys")
+        guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        guard let key = try await jamf.fileVaultRecoveryKey(computerID: id) else {
+            throw ActionError(message: "Jamf Pro holds no FileVault recovery key for \(report.serial).")
+        }
+        return key
+    }
+
+    /// A computer's rotating Recovery Lock password. Fetched on request only,
+    /// on the same terms as the FileVault key.
+    func recoveryLockPassword(for report: DeviceReport) async throws -> String {
+        let id = try computerID(for: report, action: "Recovery Lock passwords")
+        guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        guard let password = try await jamf.recoveryLockPassword(computerID: id) else {
+            throw ActionError(message: "Jamf Pro holds no Recovery Lock password for \(report.serial).")
+        }
+        return password
+    }
+
+    private func computerID(for report: DeviceReport, action: String) throws -> String {
+        guard let info = report.jamf.value else {
+            throw ActionError(message: "\(report.serial) has no Jamf Pro record.")
+        }
+        guard info.kind == .computer else {
+            throw ActionError(message: "\(action) apply to Macs only.")
+        }
+        return info.computerID
+    }
+
     func deleteFromJamf(reports: [DeviceReport]) async throws {
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         let withRecords = reports.compactMap { report in

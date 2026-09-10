@@ -10,6 +10,15 @@ struct DeviceDetailView: View {
 
     @State private var mdmSelection: String?
     @State private var migrationDeadline = Date().addingTimeInterval(7 * 24 * 60 * 60)
+    @State private var revealedSecret: RevealedSecret?
+
+    /// A recovery secret held only for as long as its sheet is on screen.
+    private struct RevealedSecret: Identifiable {
+        let id = UUID()
+        let title: String
+        let value: String
+        let note: String?
+    }
     @State private var prestageSelection: String?
     @State private var siteSelection = "-1"
     @State private var isWorking = false
@@ -21,6 +30,7 @@ struct DeviceDetailView: View {
 
     private enum PendingAction {
         case applyMDM
+        case unassignMDM
         case release
         case scheduleMigration
         case updateDeadline
@@ -64,6 +74,32 @@ struct DeviceDetailView: View {
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
         .onChange(of: report.jamf.value?.siteID) { syncSelections() }
+        .sheet(item: $revealedSecret) { secret in
+            VStack(alignment: .leading, spacing: 16) {
+                Text(secret.title).font(.headline)
+                Text(report.serial).font(.caption).foregroundStyle(.secondary)
+                Text(secret.value)
+                    .font(.title3.monospaced())
+                    .textSelection(.enabled)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                if let note = secret.note {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(secret.value, forType: .string)
+                    }
+                    Spacer()
+                    Button("Done") { revealedSecret = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(20)
+            .frame(width: 380)
+        }
         .alert(
             "Action Failed",
             isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })
@@ -135,6 +171,8 @@ struct DeviceDetailView: View {
             } else {
                 "Unassign \(report.serial) from its MDM server?"
             }
+        case .unassignMDM:
+            "Unassign \(report.serial) from “\(report.abm.value?.mdmServerName ?? "its MDM server")”?"
         case .release:
             "Release \(report.serial) from Apple Business?"
         case .scheduleMigration:
@@ -164,6 +202,8 @@ struct DeviceDetailView: View {
         switch pending {
         case .applyMDM:
             "Apple processes MDM server assignments asynchronously — allow a moment before the new state appears."
+        case .unassignMDM:
+            "The device stays in your organization but is no longer assigned to any MDM server, so it will not enrol automatically until it is assigned again."
         case .release:
             "The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .scheduleMigration:
@@ -191,6 +231,10 @@ struct DeviceDetailView: View {
         case .applyMDM:
             Button(mdmSelection == nil ? "Unassign Device" : "Assign Device") {
                 run { try await model.setMDMServer(reports: [report], to: mdmSelection) }
+            }
+        case .unassignMDM:
+            Button("Unassign Device") {
+                run { try await model.setMDMServer(reports: [report], to: nil) }
             }
         case .release:
             Button("Release Device", role: .destructive) {
@@ -325,6 +369,8 @@ struct DeviceDetailView: View {
         }
         Button("Apply MDM Assignment") { pending = .applyMDM }
             .disabled(mdmSelection == info.mdmServerID)
+        Button("Unassign from MDM Server") { pending = .unassignMDM }
+            .disabled(info.mdmServerID == nil)
 
         if info.device.hasActiveMigration {
             DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
@@ -411,11 +457,41 @@ struct DeviceDetailView: View {
         }
         Button("Apply PreStage Change") { pending = .applyPrestage }
             .disabled(prestageSelection == info.prestageID)
+        // Recovery secrets are read on demand and never kept on the report, so
+        // they are not fetched by a lookup and do not appear in the table.
+        if info.kind == .computer {
+            Button("Show FileVault Recovery Key") {
+                reveal(title: "FileVault Recovery Key") {
+                    let key = try await model.fileVaultRecoveryKey(for: report)
+                    return (key.personalRecoveryKey, key.validityStatus.map { "Key status: \($0)" })
+                }
+            }
+            Button("Show Recovery Lock Password") {
+                reveal(title: "Recovery Lock Password") {
+                    (try await model.recoveryLockPassword(for: report), nil)
+                }
+            }
+        }
         if let url = info.webURL {
             Link("Open in Jamf Pro", destination: url)
         }
         // Destructive action last, matching Release in the Apple Business block.
         Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
+    }
+
+    /// Fetches a secret and shows it in a sheet. Nothing is retained after the
+    /// sheet is dismissed.
+    private func reveal(title: String, _ fetch: @escaping () async throws -> (String, String?)) {
+        isWorking = true
+        Task {
+            do {
+                let (value, note) = try await fetch()
+                revealedSecret = RevealedSecret(title: title, value: value, note: note)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isWorking = false
+        }
     }
 
     // MARK: MDM commands

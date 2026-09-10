@@ -30,6 +30,7 @@ Enter serial numbers, typed, pasted, or imported from a text/CSV file, and Check
 Checkpoint doesn't just surface discrepancies, it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
 - **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
+- **Recovery secrets** (Macs): show the FileVault personal recovery key and the rotating Recovery Lock password, fetched on request rather than during a lookup
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
 - **MDM commands**, computers: Lock, Wipe, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
@@ -67,6 +68,8 @@ Grant the API role only what you intend to use:
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Site display & changes | Read Sites, Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
+| FileVault recovery key | View Disk Encryption Recovery Key |
+| Recovery Lock password | View Recovery Lock |
 | MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
 | Send Blank Push | Send Declarative Management Command |
@@ -87,6 +90,7 @@ Permissions are granted per capability on the integration rather than per privil
 | Site display & changes | Organizational context: Read, Inventory: Update |
 | PreStage display & changes, ADE instances | Enrollment: Read, Enrollment: Update |
 | MDM commands | Device actions: Execute |
+| FileVault recovery key, Recovery Lock password | Device secrets: Read |
 
 **Not all commands are available over the Platform API.** Jamf does not expose Jamf Pro's MDM command endpoint through the gateway, so **Lock, Wipe, Restart and Clear Passcode** cannot be sent. Checkpoint dims those commands and explains why. Everything else, including lookups, PreStage and site changes, Send Blank Push, Renew MDM Profile, Redeploy Jamf Framework and Update Inventory, works normally. Use an API client connection when you need the full command set.
 

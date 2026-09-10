@@ -35,6 +35,7 @@ struct BulkActionsView: View {
 
     private enum PendingAction {
         case applyMDM
+        case unassignMDM
         case release
         case scheduleMigration
         case updateDeadline
@@ -49,6 +50,13 @@ struct BulkActionsView: View {
     /// Devices that are in ABM and not released, the ones ABM actions can touch.
     private var abmCount: Int {
         reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.count
+    }
+
+    /// Devices currently assigned to an MDM server, the only ones unassigning affects.
+    private var assignedCount: Int {
+        reports.filter { report in
+            report.abm.value.map { !$0.isReleased && $0.mdmServerID != nil } ?? false
+        }.count
     }
 
     /// Devices Apple reports as eligible for a device management service migration.
@@ -150,6 +158,8 @@ struct BulkActionsView: View {
                 bulkPicker("MDM Server", selection: $mdmSelection, currentState: currentMDMState, noneLabel: "Unassigned", options: model.mdmServers.map { ($0.id, $0.name) })
                 Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
                     .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
+                Button("Unassign \(count(assignedCount)) from MDM Server") { pending = .unassignMDM }
+                    .disabled(assignedCount == 0)
                 if migratableCount > 0 {
                     DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
                     Button("Assign with Migration Deadline to \(count(migratableCount))") { pending = .scheduleMigration }
@@ -307,6 +317,8 @@ struct BulkActionsView: View {
             } else {
                 "Unassign \(count(abmCount)) from their MDM server?"
             }
+        case .unassignMDM:
+            "Unassign \(count(assignedCount)) from their MDM server?"
         case .release:
             "Release \(count(abmCount)) from Apple Business?"
         case .scheduleMigration:
@@ -346,6 +358,8 @@ struct BulkActionsView: View {
         switch pending {
         case .applyMDM:
             "Devices that are released or not in Apple Business are skipped. Apple processes assignments asynchronously."
+        case .unassignMDM:
+            "The devices stay in your organization but are no longer assigned to any MDM server, so they will not enrol automatically until assigned again. Devices with no assignment are skipped."
         case .release:
             "The devices will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .scheduleMigration:
@@ -373,6 +387,10 @@ struct BulkActionsView: View {
         case .applyMDM:
             Button(mdmSelection == .none ? "Unassign Devices" : "Assign Devices") {
                 run { try await model.setMDMServer(reports: reports, to: mdmSelection.appliedID) }
+            }
+        case .unassignMDM:
+            Button("Unassign Devices") {
+                run { try await model.setMDMServer(reports: reports, to: nil) }
             }
         case .release:
             Button("Release Devices", role: .destructive) {
