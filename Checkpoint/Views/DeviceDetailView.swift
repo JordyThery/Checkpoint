@@ -9,6 +9,7 @@ struct DeviceDetailView: View {
     let report: DeviceReport
 
     @State private var mdmSelection: String?
+    @State private var migrationDeadline = Date().addingTimeInterval(7 * 24 * 60 * 60)
     @State private var prestageSelection: String?
     @State private var siteSelection = "-1"
     @State private var isWorking = false
@@ -21,6 +22,9 @@ struct DeviceDetailView: View {
     private enum PendingAction {
         case applyMDM
         case release
+        case scheduleMigration
+        case updateDeadline
+        case cancelMigration
         case applyPrestage
         case applySite
         case deleteJamf
@@ -127,6 +131,12 @@ struct DeviceDetailView: View {
             }
         case .release:
             "Release \(report.serial) from Apple Business?"
+        case .scheduleMigration:
+            "Migrate \(report.serial) to “\(selectedServerName ?? "the selected server")”?"
+        case .updateDeadline:
+            "Change the migration deadline for \(report.serial)?"
+        case .cancelMigration:
+            "Cancel the migration for \(report.serial)?"
         case .applyPrestage:
             if let selectedPrestageName {
                 "Move \(report.serial) to PreStage “\(selectedPrestageName)”?"
@@ -150,6 +160,12 @@ struct DeviceDetailView: View {
             "Apple processes MDM server assignments asynchronously — allow a moment before the new state appears."
         case .release:
             "The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
+        case .scheduleMigration:
+            "Nothing is erased. The device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened))."
+        case .updateDeadline:
+            "A deadline earlier than the current one, or in the past, is enforced immediately without giving the user the option to delay."
+        case .cancelMigration:
+            "The device stays with its current service. Its assignment is unchanged."
         case .applyPrestage:
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
         case .applySite:
@@ -173,6 +189,24 @@ struct DeviceDetailView: View {
         case .release:
             Button("Release Device", role: .destructive) {
                 run { try await model.releaseFromABM(reports: [report]) }
+            }
+        case .scheduleMigration:
+            Button("Schedule Migration") {
+                let server = mdmSelection
+                let deadline = migrationDeadline
+                run {
+                    guard let server else { return }
+                    try await model.scheduleMigration(reports: [report], to: server, deadline: deadline)
+                }
+            }
+        case .updateDeadline:
+            Button("Update Deadline") {
+                let deadline = migrationDeadline
+                run { try await model.updateMigrationDeadline(reports: [report], deadline: deadline) }
+            }
+        case .cancelMigration:
+            Button("Cancel Migration", role: .destructive) {
+                run { try await model.cancelMigration(reports: [report]) }
             }
         case .applyPrestage:
             Button("Change PreStage") {
@@ -259,6 +293,20 @@ struct DeviceDetailView: View {
             }
         }
 
+        if info.device.hasActiveMigration {
+            LabeledContent("Migration") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(info.device.mdmMigrationStatus?.capitalized ?? "In progress")
+                        .foregroundStyle(.orange)
+                    Text("by \(DateFormatting.short(info.device.mdmMigrationDeadlineDateTime))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        } else if let status = info.device.mdmMigrationStatus {
+            LabeledContent("Migration", value: status.capitalized)
+        }
+
         if !info.isReleased {
             Picker("MDM Server", selection: $mdmSelection) {
                 Text("Unassigned").tag(String?.none)
@@ -268,8 +316,28 @@ struct DeviceDetailView: View {
             }
             Button("Apply MDM Assignment") { pending = .applyMDM }
                 .disabled(mdmSelection == info.mdmServerID)
+
+            if info.device.hasActiveMigration {
+                DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
+                Button("Update Deadline") { pending = .updateDeadline }
+                Button("Cancel Migration", role: .destructive) { pending = .cancelMigration }
+            } else if info.device.isMdmMigrationCapable == true {
+                DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
+                Button("Assign with Migration Deadline") { pending = .scheduleMigration }
+                    .disabled(mdmSelection == nil || mdmSelection == info.mdmServerID)
+                Text("The device keeps running under its current service until it migrates, so nothing is erased. Apple prompts the user and enforces the deadline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Button("Release from Apple Business", role: .destructive) { pending = .release }
         }
+    }
+
+    /// Apple rejects anything beyond 90 days.
+    private var migrationDeadlineRange: ClosedRange<Date> {
+        let now = Date()
+        return now...now.addingTimeInterval(ABMClient.maximumMigrationDeadline)
     }
 
     // MARK: Jamf

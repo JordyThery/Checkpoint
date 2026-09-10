@@ -13,6 +13,20 @@ struct ABMDevice: Decodable, Sendable {
     let releasedFromOrgDateTime: String?
     let orderNumber: String?
     let purchaseSourceType: String?
+    /// Whether the device can be moved between device management services with
+    /// a deadline instead of being reassigned outright. Absent on tenants that
+    /// do not serve the migration release.
+    let isMdmMigrationCapable: Bool?
+    /// REQUESTED, STARTED, SUCCESS or FAILED. Only set once a migration has
+    /// been requested for the device.
+    let mdmMigrationStatus: String?
+    let mdmMigrationDeadlineDateTime: String?
+
+    /// A migration Apple has accepted but not yet completed.
+    var hasActiveMigration: Bool {
+        let status = mdmMigrationStatus?.uppercased()
+        return status == "REQUESTED" || status == "STARTED"
+    }
 }
 
 struct AppleCareCoverage: Sendable, Identifiable, Hashable {
@@ -53,7 +67,36 @@ actor ABMClient {
         case assign = "ASSIGN_DEVICES"
         case unassign = "UNASSIGN_DEVICES"
         case release = "RELEASE_DEVICES"
+        /// Assigns to a device management service and schedules a migration by
+        /// a deadline. The device stays enrolled in its current service until
+        /// it migrates, so nothing is erased.
+        case assignWithMigrationDeadline = "ASSIGN_DEVICES_WITH_MDM_MIGRATION_DEADLINE"
+        /// Moves the deadline of a migration already in progress. A deadline
+        /// earlier than the current one, or in the past, is enforced at once
+        /// without offering the user a chance to delay.
+        case updateMigrationDeadline = "UPDATE_MDM_MIGRATION_DEADLINE"
+        case cancelMigration = "CANCEL_MDM_MIGRATION"
+
+        /// Apple rejects the request without an `mdmServer` relationship.
+        var needsMDMServer: Bool {
+            self == .assign || self == .unassign || self == .assignWithMigrationDeadline
+        }
+
+        var needsDeadline: Bool {
+            self == .assignWithMigrationDeadline || self == .updateMigrationDeadline
+        }
     }
+
+    /// Apple rejects deadlines further out than this.
+    static let maximumMigrationDeadline: TimeInterval = 90 * 24 * 60 * 60
+
+    /// Apple's examples use an ISO 8601 timestamp in UTC with milliseconds.
+    private static let deadlineFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     private let clientID: String
     private let keyID: String
@@ -156,17 +199,34 @@ actor ABMClient {
     /// Submits an org device activity and returns its ID. ABM processes these
     /// asynchronously — poll with `waitForActivity` before re-reading state.
     @discardableResult
-    func submitActivity(_ type: ActivityType, serials: [String], mdmServerID: String? = nil) async throws -> String? {
+    func submitActivity(
+        _ type: ActivityType,
+        serials: [String],
+        mdmServerID: String? = nil,
+        migrationDeadline: Date? = nil
+    ) async throws -> String? {
         var relationships: [String: Any] = [
             "devices": ["data": serials.map { ["type": "orgDevices", "id": $0] }]
         ]
         if let mdmServerID {
             relationships["mdmServer"] = ["data": ["type": "mdmServers", "id": mdmServerID]]
         }
+        var attributes: [String: Any] = ["activityType": type.rawValue]
+        if type.needsDeadline {
+            guard let migrationDeadline else {
+                throw APIError(message: "\(type.rawValue) requires a migration deadline.")
+            }
+            guard migrationDeadline.timeIntervalSinceNow <= Self.maximumMigrationDeadline else {
+                throw APIError(message: "Apple Business will not accept a migration deadline more than 90 days from now.")
+            }
+            attributes["activityTypeMetadata"] = [
+                "mdmMigrationDeadlineDateTime": Self.deadlineFormatter.string(from: migrationDeadline)
+            ]
+        }
         let body = try JSONSerialization.data(withJSONObject: [
             "data": [
                 "type": "orgDeviceActivities",
-                "attributes": ["activityType": type.rawValue],
+                "attributes": attributes,
                 "relationships": relationships,
             ]
         ])

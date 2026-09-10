@@ -406,6 +406,59 @@ final class LookupModel {
         await refreshRows(inOrg.map(\.serial))
     }
 
+    /// Assigns the devices to an MDM server and schedules a migration that must
+    /// complete by `deadline`. Unlike a plain assignment the devices stay
+    /// enrolled in their current service until they migrate, so nothing is
+    /// erased; Apple prompts the user and enforces the deadline on-device.
+    func scheduleMigration(reports: [DeviceReport], to serverID: String, deadline: Date) async throws {
+        try await submitMigrationActivity(
+            .assignWithMigrationDeadline,
+            reports: reports.filter { $0.abm.value?.device.isMdmMigrationCapable == true },
+            mdmServerID: serverID,
+            deadline: deadline,
+            emptyMessage: "None of the selected devices can be migrated."
+        )
+    }
+
+    /// Moves the deadline of a migration already under way.
+    func updateMigrationDeadline(reports: [DeviceReport], deadline: Date) async throws {
+        try await submitMigrationActivity(
+            .updateMigrationDeadline,
+            reports: reports.filter { $0.abm.value?.device.hasActiveMigration == true },
+            deadline: deadline,
+            emptyMessage: "None of the selected devices have a migration in progress."
+        )
+    }
+
+    func cancelMigration(reports: [DeviceReport]) async throws {
+        try await submitMigrationActivity(
+            .cancelMigration,
+            reports: reports.filter { $0.abm.value?.device.hasActiveMigration == true },
+            emptyMessage: "None of the selected devices have a migration in progress."
+        )
+    }
+
+    private func submitMigrationActivity(
+        _ type: ABMClient.ActivityType,
+        reports: [DeviceReport],
+        mdmServerID: String? = nil,
+        deadline: Date? = nil,
+        emptyMessage: String
+    ) async throws {
+        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        let serials = reports.map(\.serial)
+        guard !serials.isEmpty else { throw ActionError(message: emptyMessage) }
+        let activityID = try await abm.submitActivity(
+            type,
+            serials: serials,
+            mdmServerID: mdmServerID,
+            migrationDeadline: deadline
+        )
+        // Apple applies activities asynchronously, so wait before re-reading.
+        if let activityID { await abm.waitForActivity(id: activityID) }
+        await refreshRows(serials)
+    }
+
     func deleteFromJamf(reports: [DeviceReport]) async throws {
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         let withRecords = reports.compactMap { report in

@@ -9,6 +9,7 @@ struct BulkActionsView: View {
     let reports: [DeviceReport]
 
     @State private var mdmSelection: BulkChoice = .none
+    @State private var migrationDeadline = Date().addingTimeInterval(7 * 24 * 60 * 60)
     @State private var computerPrestageSelection: BulkChoice = .none
     @State private var mobilePrestageSelection: BulkChoice = .none
     @State private var siteSelection: BulkChoice = .none
@@ -35,6 +36,9 @@ struct BulkActionsView: View {
     private enum PendingAction {
         case applyMDM
         case release
+        case scheduleMigration
+        case updateDeadline
+        case cancelMigration
         case applyComputerPrestage
         case applyMobilePrestage
         case applySite
@@ -45,6 +49,22 @@ struct BulkActionsView: View {
     /// Devices that are in ABM and not released — the ones ABM actions can touch.
     private var abmCount: Int {
         reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.count
+    }
+
+    /// Devices Apple reports as eligible for a device management service migration.
+    private var migratableCount: Int {
+        reports.filter { $0.abm.value?.device.isMdmMigrationCapable == true }.count
+    }
+
+    /// Devices with a migration already under way.
+    private var migratingCount: Int {
+        reports.filter { $0.abm.value?.device.hasActiveMigration == true }.count
+    }
+
+    /// Apple rejects anything beyond 90 days.
+    private var migrationDeadlineRange: ClosedRange<Date> {
+        let now = Date()
+        return now...now.addingTimeInterval(ABMClient.maximumMigrationDeadline)
     }
 
     /// Devices with a Jamf Pro record (computer or mobile device).
@@ -130,6 +150,15 @@ struct BulkActionsView: View {
                 bulkPicker("MDM Server", selection: $mdmSelection, currentState: currentMDMState, noneLabel: "Unassigned", options: model.mdmServers.map { ($0.id, $0.name) })
                 Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
                     .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
+                if migratableCount > 0 {
+                    DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
+                    Button("Assign with Migration Deadline to \(count(migratableCount))") { pending = .scheduleMigration }
+                        .disabled(mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
+                }
+                if migratingCount > 0 {
+                    Button("Update Deadline for \(count(migratingCount))") { pending = .updateDeadline }
+                    Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { pending = .cancelMigration }
+                }
                 Button("Release \(count(abmCount)) from Apple Business", role: .destructive) { pending = .release }
                     .disabled(abmCount == 0)
             }
@@ -279,6 +308,12 @@ struct BulkActionsView: View {
             }
         case .release:
             "Release \(count(abmCount)) from Apple Business?"
+        case .scheduleMigration:
+            "Migrate \(count(migratableCount)) to “\(selectedServerName ?? "the selected server")”?"
+        case .updateDeadline:
+            "Change the migration deadline for \(count(migratingCount))?"
+        case .cancelMigration:
+            "Cancel the migration for \(count(migratingCount))?"
         case .applyComputerPrestage:
             if let name = selectedPrestageName(computerPrestageSelection, in: model.prestages) {
                 "Move \(count(computerCount)) to PreStage “\(name)”?"
@@ -312,6 +347,12 @@ struct BulkActionsView: View {
             "Devices that are released or not in Apple Business are skipped. Apple processes assignments asynchronously."
         case .release:
             "The devices will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
+        case .scheduleMigration:
+            "Nothing is erased. Each device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened)). Devices Apple reports as not migration-capable are skipped."
+        case .updateDeadline:
+            "A deadline earlier than the current one, or in the past, is enforced immediately without giving users the option to delay. Devices with no migration in progress are skipped."
+        case .cancelMigration:
+            "The devices stay with their current service. Their assignments are unchanged."
         case .applyComputerPrestage, .applyMobilePrestage:
             "Devices are removed from their current PreStage scope and added to the selected one. Devices already in the selected PreStage, and devices of the other type, are skipped."
         case .applySite:
@@ -335,6 +376,24 @@ struct BulkActionsView: View {
         case .release:
             Button("Release Devices", role: .destructive) {
                 run { try await model.releaseFromABM(reports: reports) }
+            }
+        case .scheduleMigration:
+            Button("Schedule Migration") {
+                let server = mdmSelection.appliedID
+                let deadline = migrationDeadline
+                run {
+                    guard let server else { return }
+                    try await model.scheduleMigration(reports: reports, to: server, deadline: deadline)
+                }
+            }
+        case .updateDeadline:
+            Button("Update Deadline") {
+                let deadline = migrationDeadline
+                run { try await model.updateMigrationDeadline(reports: reports, deadline: deadline) }
+            }
+        case .cancelMigration:
+            Button("Cancel Migration", role: .destructive) {
+                run { try await model.cancelMigration(reports: reports) }
             }
         case .applyComputerPrestage:
             Button("Change PreStage") {
