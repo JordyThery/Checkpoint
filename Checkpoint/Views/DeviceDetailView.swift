@@ -411,10 +411,11 @@ struct DeviceDetailView: View {
         }
         Button("Apply PreStage Change") { pending = .applyPrestage }
             .disabled(prestageSelection == info.prestageID)
-        Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
         if let url = info.webURL {
             Link("Open in Jamf Pro", destination: url)
         }
+        // Destructive action last, matching Release in the Apple Business block.
+        Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
     }
 
     // MARK: MDM commands
