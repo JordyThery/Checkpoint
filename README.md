@@ -68,13 +68,26 @@ Grant the API role only what you intend to use:
 | Feature | Privilege |
 | --- | --- |
 | Device lookup | Read Computers, Read Mobile Devices |
-| PreStage display & changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
+| PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
-| Site display & changes | Read Sites, Update Computers, Update Mobile Devices |
+| Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | FileVault recovery key | View Disk Encryption Recovery Key |
 | Recovery Lock password | View Recovery Lock |
-| MDM commands | View MDM command information in Jamf Pro API, plus the per-command send privileges for the commands you use: Send Computer Remote Lock Command, Send Computer Remote Wipe Command, Send Mobile Device Remote Lock Command, Send Mobile Device Remote Wipe Command, Send Mobile Device Remove Passcode Command, Send Mobile Device Restart Device Command, Update Inventory for Mobile Devices |
+
+#### MDM commands
+
+Every command needs **View MDM command information in Jamf Pro API**, plus the privilege for that specific command:
+
+| Command | Privilege |
+| --- | --- |
+| Lock Computer | Send Computer Remote Lock Command |
+| Wipe Computer | Send Computer Remote Wipe Command |
+| Lock Device | Send Mobile Device Remote Lock Command |
+| Wipe Device | Send Mobile Device Remote Wipe Command |
+| Clear Passcode | Send Mobile Device Remove Passcode Command |
+| Restart Device | Send Mobile Device Restart Device Command |
+| Update Inventory | Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
 | Send Blank Push | Send Declarative Management Command |
 | Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
@@ -110,7 +123,7 @@ Open the project in Xcode 26 or later and build the `Checkpoint` scheme (⌘R). 
 
 ## Acknowledgements
 
-Inspired by [asbmutil](https://github.com/rodchristiansen/asbmutil) and [AxMJamfSync](https://github.com/karthikeyan-mac/AxMJamfSync).
+Inspired by [asbmutil](https://github.com/rodchristiansen/asbmutil), [AxMJamfSync](https://github.com/karthikeyan-mac/AxMJamfSync), amongst many others.
 
 ## Support
 
