@@ -114,15 +114,14 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         switch self {
         case .wipeComputer, .wipeMobile, .restartMobile:
             return """
-                \(title) is not available over the Platform API. Jamf exposes it on the \
-                Device Management Actions API, which needs an environment-scoped integration \
-                that Checkpoint does not support yet. Use an API client connection to send it.
+                \(title) needs an API client connection. Jamf offers it on the Device \
+                Management Actions API, which requires an environment-scoped integration \
+                that Checkpoint does not support yet.
                 """
         case .lockComputer, .lockMobile, .clearPasscode:
             return """
-                \(title) has no Platform API route: Jamf Pro's MDM command endpoint is not \
-                exposed through the gateway and there is no equivalent platform action. \
-                Use an API client connection to send it.
+                \(title) needs an API client connection. The Platform API has no route for \
+                it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
                 """
         case .blankPush, .renewProfile, .redeployFramework, .updateInventory:
             return nil

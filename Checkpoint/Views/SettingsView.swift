@@ -273,7 +273,7 @@ struct JamfServerEditor: View {
                 TextField("Name", text: $name, prompt: Text("Production"))
                 TextField("URL", text: $baseURL, prompt: Text("https://yourorg.jamfcloud.com"))
                 if isGateway {
-                    Text("Requests go to the regional gateway, but this URL is still needed so device rows can link to their records in Jamf Pro.")
+                    Text("Requests go to the gateway. This URL is still used to link devices to their Jamf Pro records.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -290,11 +290,6 @@ struct JamfServerEditor: View {
                     text: $secret,
                     prompt: hasStoredSecret ? Text("Stored in keychain — type to replace") : nil
                 )
-                if authMethod == .usernamePassword {
-                    Text("Jamf Pro can issue a token for a username and password that cannot read any records, which shows up as every device reporting no record. An API client is more reliable.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
             if isGateway {
                 Section("Platform API") {
@@ -304,13 +299,13 @@ struct JamfServerEditor: View {
                         }
                     }
                     TextField("Tenant ID", text: $tenantID, prompt: Text("00000000-0000-0000-0000-000000000000"))
-                    Text("Create an integration in Jamf Account, then copy its client ID, secret, and the tenant ID from the tenant pill in Integration details. A Jamf Pro API client will not work here. The region must match your tenant, because gateway tokens are region-locked.")
+                    Text("Requires an integration created in Jamf Account, not a Jamf Pro API client. Copy the tenant ID from its Integration details, and pick the region your tenant is in.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Section {
                     Label {
-                        Text("Lookups, PreStages, sites and enrollment all work over the Platform API, but Lock, Wipe, Restart and Clear Passcode do not: Jamf does not expose Jamf Pro's MDM command endpoint through the gateway. Those commands appear dimmed, and an API client connection can still send them.")
+                        Text("Lookups, PreStages and sites work over the Platform API. Lock, Wipe, Restart and Clear Passcode do not, because Jamf does not expose Jamf Pro's MDM command endpoint through the gateway.")
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)

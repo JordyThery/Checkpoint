@@ -159,9 +159,9 @@ struct ContentView: View {
             if !model.isABMConfigured && settings.jamfServers.isEmpty {
                 Text("Apple Business and Jamf Pro are not configured yet.")
             } else if !model.isABMConfigured {
-                Text("Apple Business is not configured — ABM columns will be empty.")
+                Text("Apple Business is not configured, so its columns will be empty.")
             } else {
-                Text("No Jamf Pro server is configured — Jamf columns will be empty.")
+                Text("No Jamf Pro server is configured, so its columns will be empty.")
             }
             Button("Open Settings…") { openSettings() }
                 .buttonStyle(.link)

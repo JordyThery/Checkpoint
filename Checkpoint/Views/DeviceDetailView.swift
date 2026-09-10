@@ -354,8 +354,11 @@ struct DeviceDetailView: View {
             .disabled(unavailable != nil)
             .help(unavailable ?? command.message)
         }
-        if model.isUsingPlatformAPI {
-            Text("Some MDM commands are unavailable over the Platform API. Hover a dimmed command to see why.")
+        let blocked = MDMCommand.commands(for: info.kind)
+            .filter { model.unavailabilityReason(for: $0) != nil }
+            .map(\.title)
+        if !blocked.isEmpty {
+            Text("\(blocked.formatted(.list(type: .and))) need an API client connection.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

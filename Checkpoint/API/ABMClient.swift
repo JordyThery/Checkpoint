@@ -286,7 +286,7 @@ actor ABMClient {
         do {
             key = try P256.Signing.PrivateKey(pemRepresentation: privateKeyPEM)
         } catch {
-            throw APIError(message: "Could not read the ABM private key (expected a PEM-encoded EC P-256 key): \(error.localizedDescription)")
+            throw APIError(message: "Could not read the Apple Business private key (expected a PEM-encoded EC P-256 key): \(error.localizedDescription)")
         }
         let now = Int(Date().timeIntervalSince1970)
         let header: [String: Any] = ["alg": "ES256", "kid": keyID, "typ": "JWT"]
