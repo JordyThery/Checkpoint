@@ -13,13 +13,14 @@ Enter serial numbers, typed, pasted, or imported from a text/CSV file, and Check
 **From Apple Business**
 
 - Assignment status (assigned / unassigned / released) and the assigned MDM server
+- MDM server migration status and deadline
 - Warranty and AppleCare coverage
 - Model, order number, and purchase source
 
 **From Jamf Pro**
 
 - Whether a device record exists, and its name
-- PreStage enrollment scope
+- PreStage enrollment scope and site
 - Last enrollment date, last inventory update, Last Contact, and last check-in
 - MDM profile expiration
 
@@ -30,7 +31,6 @@ Enter serial numbers, typed, pasted, or imported from a text/CSV file, and Check
 Checkpoint doesn't just surface discrepancies, it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
 - **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
-- **Recovery secrets** (Macs): show the FileVault personal recovery key and the rotating Recovery Lock password, fetched on request rather than during a lookup
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
 - **MDM commands**, computers: Lock, Wipe, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
@@ -42,6 +42,10 @@ Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. produc
 Assigning a device to a different MDM server normally takes effect on the next wipe or enrollment. Apple Business can instead schedule a *migration*: the device keeps running under its current service until it moves, nothing is erased, and Apple prompts the user and enforces the deadline on-device. Checkpoint shows the migration status and deadline for each device, and can schedule, reschedule or cancel one, individually or in bulk. Deadlines cannot be more than 90 days out, and shortening a deadline (or setting one in the past) applies immediately without giving the user a chance to delay.
 
 Migration requires an Apple Business tenant on a release that supports it. Devices Apple reports as not migration-capable are skipped, and the option only appears when a device is eligible.
+
+### Recovery secrets
+
+For Macs, Checkpoint can show the **FileVault personal recovery key** and the rotating **Recovery Lock password** from Jamf Pro. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
 
 ## Requirements
 
@@ -96,7 +100,9 @@ Permissions are granted per capability on the integration rather than per privil
 
 ## Security
 
-Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the login keychain, non-secret configuration in user defaults. The app is sandboxed and talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
+Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
+
+FileVault recovery keys and Recovery Lock passwords are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 
 ## Building
 
