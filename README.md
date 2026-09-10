@@ -40,9 +40,10 @@ Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. produc
 
 - macOS 15 or later
 - An Apple Business API account per organization (Apple Business → Settings → Integrations → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
-- A Jamf Pro server. Both authentication methods are supported:
+- A Jamf Pro server. Three connection methods are supported:
   - **API client** (recommended): create one under Settings → API Roles and Clients
   - **Username / password** (bearer token)
+  - **Platform API**: an integration in Jamf Account, routed through Jamf's Platform API gateway
 - Jamf Pro 11.30+ for the Last Contact attribute (older versions simply show "—")
 
 ### Apple Business API access
@@ -64,6 +65,24 @@ Grant the API role only what you intend to use:
 | Renew MDM Profile | Send MDM Check In Command |
 | Send Blank Push | Send Declarative Management Command |
 | Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
+
+### Platform API (optional)
+
+Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. Create an integration in **Jamf Account**, then in Checkpoint choose the **Platform API** method and supply the client ID, client secret, gateway region, and tenant ID. The tenant ID is on the tenant pill in the integration's **Integration details** panel.
+
+A Jamf Pro API client will not work here, and the region must match your tenant because gateway tokens are region-locked. The Jamf Pro URL is still required, because device rows link to their records in the Jamf Pro web interface and the gateway host cannot serve those.
+
+Permissions are granted per capability on the integration rather than per privilege:
+
+| Feature | Capability |
+| --- | --- |
+| Device lookup | Inventory: Read |
+| Delete device record | Inventory: Delete |
+| Site display & changes | Organizational context: Read, Inventory: Update |
+| PreStage display & changes, ADE instances | Enrollment: Read, Enrollment: Update |
+| MDM commands | Device actions: Execute |
+
+**Not all commands are available over the Platform API.** Jamf does not expose Jamf Pro's MDM command endpoint through the gateway, so **Lock, Wipe, Restart and Clear Passcode** cannot be sent. Checkpoint dims those commands and explains why. Everything else, including lookups, PreStage and site changes, Send Blank Push, Renew MDM Profile, Redeploy Jamf Framework and Update Inventory, works normally. Use an API client connection when you need the full command set.
 
 ## Security
 

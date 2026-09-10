@@ -63,7 +63,9 @@ nonisolated enum JamfPrestageFamily: Sendable {
     var listVersions: [String] {
         switch self {
         case .computer: ["v3", "v2"]
-        case .mobileDevice: ["v2", "v1"]
+        // v3 is the only mobile PreStage version still in the published spec;
+        // the older ones remain as fallbacks for older servers.
+        case .mobileDevice: ["v3", "v2", "v1"]
         }
     }
 
@@ -97,26 +99,35 @@ actor JamfClient {
     private let authMethod: JamfAuthMethod
     private let account: String
     private let secret: String
+    /// Platform API only: sent as `X-Tenant-Id` on every request.
+    private let tenantID: String
     private var cachedToken: (value: String, expiry: Date)?
 
     init?(config: JamfServerConfig, secret: String) {
-        guard let url = URL(string: config.normalizedBaseURL), url.host() != nil else { return nil }
+        guard let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         self.baseURL = url
         self.authMethod = config.authMethod
         self.account = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
         self.secret = secret
+        self.tenantID = config.tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: Computers
 
     func computer(serial: String) async throws -> JamfComputerRecord? {
-        // v3 is the current computers-inventory endpoint; fall back to v1 for
-        // older Jamf Pro versions.
-        do {
-            return try await computerLookup(apiVersion: "v3", serial: serial)
-        } catch {
-            return try await computerLookup(apiVersion: "v1", serial: serial)
+        // v4 is the current computers-inventory endpoint. Jamf Pro still serves
+        // v3 and v1, but they no longer appear in the published spec, so they
+        // are kept only as fallbacks for older servers. The first version that
+        // answers cleanly wins, including when it finds no match.
+        var lastError: Error?
+        for version in ["v4", "v3", "v1"] {
+            do {
+                return try await computerLookup(apiVersion: version, serial: serial)
+            } catch {
+                lastError = error
+            }
         }
+        throw lastError ?? APIError(message: "Could not look up the computer.")
     }
 
     private func computerLookup(apiVersion: String, serial: String) async throws -> JamfComputerRecord? {
@@ -129,10 +140,15 @@ actor JamfClient {
             }
             struct General: Decodable {
                 let name: String?
+                /// v4 name for the Jamf binary check-in. v1 and v3 call the
+                /// same value lastContactTime.
+                let lastCheckIn: String?
                 let lastContactTime: String?
+                /// Dedicated Last Contact attribute, present from the v4 schema.
+                let lastContact: String?
                 let lastEnrolledDate: String?
                 let reportDate: String?
-                // v1 name / v3 name for the same value.
+                // v1 name / v3+ name for the same value.
                 let mdmProfileExpiration: String?
                 let mdmCertificateExpiration: String?
                 let managementId: String?
@@ -154,12 +170,13 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
         guard let item = try JSONDecoder().decode(Response.self, from: data).results.first else { return nil }
 
-        // Computers have no distinct Last Contact field in the API —
-        // lastContactTime is the check-in. Accept any future general key
-        // starting with "lastContact" other than the check-in field, so a
-        // dedicated attribute is picked up automatically if Jamf adds one.
-        var lastContact: String?
-        if let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        // v4 exposes a dedicated Last Contact attribute alongside the check-in.
+        // On v3 and v1 there is no such field, so fall back to scanning for any
+        // general key starting with "lastContact" other than the check-in one,
+        // which is how this worked before v4 existed.
+        var lastContact = item.general?.lastContact
+        if lastContact == nil,
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let results = root["results"] as? [[String: Any]],
            let general = results.first?["general"] as? [String: Any] {
             lastContact = general.first { key, value in
@@ -172,7 +189,7 @@ actor JamfClient {
             udid: item.udid,
             managementID: item.general?.managementId,
             name: item.general?.name,
-            lastContactTime: item.general?.lastContactTime,
+            lastContactTime: item.general?.lastCheckIn ?? item.general?.lastContactTime,
             lastContact: lastContact,
             lastEnrolledDate: item.general?.lastEnrolledDate,
             reportDate: item.general?.reportDate,
@@ -534,7 +551,7 @@ actor JamfClient {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError(message: "Invalid Jamf Pro server URL")
         }
-        components.path = path
+        components.path = authMethod == .platformGateway ? Self.gatewayPath(for: path) : path
         if !queryItems.isEmpty { components.queryItems = queryItems }
         guard let url = components.url else {
             throw APIError(message: "Invalid Jamf Pro request URL")
@@ -543,6 +560,9 @@ actor JamfClient {
         request.httpMethod = method
         request.setValue("Bearer \(try await bearerToken())", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if authMethod == .platformGateway, !tenantID.isEmpty {
+            request.setValue(tenantID, forHTTPHeaderField: "X-Tenant-Id")
+        }
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -550,6 +570,22 @@ actor JamfClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return (data, status)
+    }
+
+    /// Maps a Jamf Pro path onto the Platform API gateway, which fronts the
+    /// Jamf Pro API under `/pro` and the Classic API under `/proclassic`. Both
+    /// prefixes *replace* the product segment rather than being prepended:
+    /// `/api/v1/sites` becomes `/pro/v1/sites`, and `/JSSResource/mobiledevices`
+    /// becomes `/proclassic/mobiledevices`. Keeping `/JSSResource` in place
+    /// returns 403.
+    nonisolated static func gatewayPath(for path: String) -> String {
+        if path.hasPrefix("/api/") {
+            return "/pro/" + path.dropFirst("/api/".count)
+        }
+        if path.hasPrefix("/JSSResource/") {
+            return "/proclassic/" + path.dropFirst("/JSSResource/".count)
+        }
+        return path
     }
 
     private func throwIfError(status: Int, data: Data) throws {
@@ -578,15 +614,35 @@ actor JamfClient {
             return try await fetchOAuthToken()
         case .usernamePassword:
             return try await fetchBasicAuthToken()
+        case .platformGateway:
+            return try await fetchGatewayToken()
         }
     }
 
     private func fetchOAuthToken() async throws -> String {
+        try await fetchClientCredentialsToken(
+            url: baseURL.appending(path: "/api/oauth/token"),
+            hint: "Check the API client ID and secret."
+        )
+    }
+
+    /// The gateway's token endpoint takes the same client-credentials form and
+    /// returns the same fields as the Jamf Pro API client flow, so the only
+    /// difference is the URL. Tokens are region-locked, which is why this must
+    /// use the same regional host the requests go to.
+    private func fetchGatewayToken() async throws -> String {
+        try await fetchClientCredentialsToken(
+            url: baseURL.appending(path: "/auth/token"),
+            hint: "Check the Platform API client ID and secret, and that the region matches your tenant."
+        )
+    }
+
+    private func fetchClientCredentialsToken(url: URL, hint: String) async throws -> String {
         struct TokenResponse: Decodable {
             let access_token: String
             let expires_in: Int
         }
-        var request = URLRequest(url: baseURL.appending(path: "/api/oauth/token"))
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = FormURLEncoding.body([
@@ -596,7 +652,7 @@ actor JamfClient {
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw APIError(message: "Jamf Pro sign-in failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)). Check the API client ID and secret.")
+            throw APIError(message: "Jamf Pro sign-in failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)). \(hint)")
         }
         let token = try JSONDecoder().decode(TokenResponse.self, from: data)
         cachedToken = (token.access_token, Date().addingTimeInterval(TimeInterval(max(token.expires_in - 60, 60))))

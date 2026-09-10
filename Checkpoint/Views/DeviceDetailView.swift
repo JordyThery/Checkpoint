@@ -342,6 +342,7 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func commandButtons(_ info: JamfInfo) -> some View {
         ForEach(MDMCommand.commands(for: info.kind), id: \.self) { command in
+            let unavailable = model.unavailabilityReason(for: command)
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
                 if command.needsPIN {
                     pin = ""
@@ -350,6 +351,13 @@ struct DeviceDetailView: View {
                     pending = .command(command)
                 }
             }
+            .disabled(unavailable != nil)
+            .help(unavailable ?? command.message)
+        }
+        if model.isUsingPlatformAPI {
+            Text("Some MDM commands are unavailable over the Platform API. Hover a dimmed command to see why.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

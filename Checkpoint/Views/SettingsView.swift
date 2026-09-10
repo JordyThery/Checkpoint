@@ -259,15 +259,24 @@ struct JamfServerEditor: View {
     @State private var authMethod: JamfAuthMethod = .apiClient
     @State private var account = ""
     @State private var secret = ""
+    @State private var region: JamfRegion = .us
+    @State private var tenantID = ""
     @State private var hasStoredSecret = false
     @State private var statusMessage: String?
     @State private var isTesting = false
+
+    private var isGateway: Bool { authMethod == .platformGateway }
 
     var body: some View {
         Form {
             Section("Server") {
                 TextField("Name", text: $name, prompt: Text("Production"))
                 TextField("URL", text: $baseURL, prompt: Text("https://yourorg.jamfcloud.com"))
+                if isGateway {
+                    Text("Requests go to the regional gateway, but this URL is still needed so device rows can link to their records in Jamf Pro.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("Authentication") {
                 Picker("Method", selection: $authMethod) {
@@ -275,12 +284,39 @@ struct JamfServerEditor: View {
                         Text(method.label).tag(method)
                     }
                 }
-                TextField(authMethod == .apiClient ? "Client ID" : "Username", text: $account)
+                TextField(authMethod == .usernamePassword ? "Username" : "Client ID", text: $account)
                 SecureField(
-                    authMethod == .apiClient ? "Client Secret" : "Password",
+                    authMethod == .usernamePassword ? "Password" : "Client Secret",
                     text: $secret,
                     prompt: hasStoredSecret ? Text("Stored in keychain — type to replace") : nil
                 )
+                if authMethod == .usernamePassword {
+                    Text("Jamf Pro can issue a token for a username and password that cannot read any records, which shows up as every device reporting no record. An API client is more reliable.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if isGateway {
+                Section("Platform API") {
+                    Picker("Region", selection: $region) {
+                        ForEach(JamfRegion.allCases) { region in
+                            Text(region.label).tag(region)
+                        }
+                    }
+                    TextField("Tenant ID", text: $tenantID, prompt: Text("00000000-0000-0000-0000-000000000000"))
+                    Text("Create an integration in Jamf Account, then copy its client ID, secret, and the tenant ID from the tenant pill in Integration details. A Jamf Pro API client will not work here. The region must match your tenant, because gateway tokens are region-locked.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Section {
+                    Label {
+                        Text("Lookups, PreStages, sites and enrollment all work over the Platform API, but Lock, Wipe, Restart and Clear Passcode do not: Jamf does not expose Jamf Pro's MDM command endpoint through the gateway. Those commands appear dimmed, and an API client connection can still send them.")
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .font(.callout)
+                }
             }
             Section {
                 HStack {
@@ -302,6 +338,8 @@ struct JamfServerEditor: View {
             baseURL = config.baseURL
             authMethod = config.authMethod
             account = config.account
+            region = config.region
+            tenantID = config.tenantID
             hasStoredSecret = Keychain.get(config.secretKeychainKey) != nil
         }
     }
@@ -312,6 +350,8 @@ struct JamfServerEditor: View {
         settings.jamfServers[index].baseURL = baseURL
         settings.jamfServers[index].authMethod = authMethod
         settings.jamfServers[index].account = account
+        settings.jamfServers[index].region = region
+        settings.jamfServers[index].tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !secret.isEmpty {
             Keychain.set(secret, for: config.secretKeychainKey)
             hasStoredSecret = true

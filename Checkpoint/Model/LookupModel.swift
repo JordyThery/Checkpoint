@@ -99,6 +99,36 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         Self.commands(for: kind).contains(self)
     }
 
+    /// Why this command cannot be sent over the given connection, or nil when
+    /// it can be. The Platform API gateway does not expose
+    /// `POST /pro/v2/mdm/commands` — its spec lists that path as GET only —
+    /// and that endpoint is how lock, wipe, restart and clear passcode are
+    /// sent. Erase and restart do exist on Jamf's separate Device Management
+    /// Actions API, but that needs an environment-scoped integration and
+    /// platform device UUIDs, neither of which Checkpoint supports yet.
+    ///
+    /// Keep this list together: it is the single place to revisit when Jamf
+    /// widens what the gateway exposes.
+    func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
+        guard authMethod == .platformGateway else { return nil }
+        switch self {
+        case .wipeComputer, .wipeMobile, .restartMobile:
+            return """
+                \(title) is not available over the Platform API. Jamf exposes it on the \
+                Device Management Actions API, which needs an environment-scoped integration \
+                that Checkpoint does not support yet. Use an API client connection to send it.
+                """
+        case .lockComputer, .lockMobile, .clearPasscode:
+            return """
+                \(title) has no Platform API route: Jamf Pro's MDM command endpoint is not \
+                exposed through the gateway and there is no equivalent platform action. \
+                Use an API client connection to send it.
+                """
+        case .blankPush, .renewProfile, .redeployFramework, .updateInventory:
+            return nil
+        }
+    }
+
     /// Body for the modern /v2/mdm/commands endpoint. Nil when the command is
     /// served by a Classic or dedicated endpoint instead.
     func modernCommandData(for kind: JamfDeviceKind, passcode: String?) -> [String: any Sendable]? {
@@ -250,6 +280,17 @@ final class LookupModel {
     /// access tokens survive; clearing the list must not cost a fresh sign-in.
     func clearReports() {
         reports = []
+    }
+
+    /// True when the selected Jamf Pro server talks to the Platform API
+    /// gateway, which exposes a narrower set of MDM commands.
+    var isUsingPlatformAPI: Bool {
+        selectedJamfServer?.authMethod == .platformGateway
+    }
+
+    /// Why the given command cannot be sent to the selected server, or nil.
+    func unavailabilityReason(for command: MDMCommand) -> String? {
+        command.unavailabilityReason(via: selectedJamfServer?.authMethod ?? .apiClient)
     }
 
     // MARK: Lookup
@@ -447,6 +488,11 @@ final class LookupModel {
     @discardableResult
     func sendCommand(_ command: MDMCommand, reports: [DeviceReport], passcode: String? = nil) async throws -> Int {
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        // Fail before doing any work, so a command the connection cannot carry
+        // never gets as far as a confirmation prompt.
+        if let reason = unavailabilityReason(for: command) {
+            throw ActionError(message: reason)
+        }
         let targets = reports.compactMap { report in
             report.jamf.value.map { (serial: report.serial, info: $0) }
         }.filter { command.applies(to: $0.info.kind) }

@@ -156,6 +156,7 @@ struct BulkActionsView: View {
             }
             Section("MDM Commands") {
                 ForEach(MDMCommand.allInDisplayOrder.filter { commandCount($0) > 0 }, id: \.self) { command in
+                    let unavailable = model.unavailabilityReason(for: command)
                     Button("\(command.title) (\(commandCount(command)))", role: command.isDestructive ? .destructive : nil) {
                         if command.needsPIN {
                             pin = ""
@@ -164,9 +165,16 @@ struct BulkActionsView: View {
                             pending = .command(command)
                         }
                     }
+                    .disabled(unavailable != nil)
+                    .help(unavailable ?? command.message)
                 }
                 Button("Remove \(count(jamfCount)) from Jamf Pro", role: .destructive) { pending = .deleteJamf }
                     .disabled(jamfCount == 0)
+                if model.isUsingPlatformAPI {
+                    Text("Some MDM commands are unavailable over the Platform API. Hover a dimmed command to see why.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .formStyle(.grouped)

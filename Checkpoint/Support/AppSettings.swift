@@ -4,6 +4,7 @@ import Observation
 nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {
     case apiClient
     case usernamePassword
+    case platformGateway
 
     var id: String { rawValue }
 
@@ -11,18 +12,49 @@ nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .apiClient: "API Client (ID + Secret)"
         case .usernamePassword: "Username + Password"
+        case .platformGateway: "Platform API (Jamf Account)"
         }
     }
+}
+
+/// Regions the Platform API gateway is hosted in. Gateway tokens are
+/// region-locked: a token must be requested from the same host the subsequent
+/// requests are sent to.
+nonisolated enum JamfRegion: String, Codable, CaseIterable, Identifiable {
+    case us
+    case eu
+    case apac
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .us: "United States (us)"
+        case .eu: "Europe (eu)"
+        case .apac: "Asia Pacific (apac)"
+        }
+    }
+
+    var gatewayHost: String { "https://\(rawValue).api.jamfcloud.com" }
 }
 
 nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     var id = UUID()
     var name = ""
+    /// The Jamf Pro server URL. API requests go here directly, except in
+    /// Platform API mode where they go to the regional gateway instead — but
+    /// this is always what links into the Jamf Pro web interface are built
+    /// from, because the gateway host cannot serve those.
     var baseURL = ""
     var authMethod: JamfAuthMethod = .apiClient
     /// Client ID or username depending on `authMethod`. The matching secret
     /// (client secret or password) lives in the keychain under `secretKeychainKey`.
     var account = ""
+    /// Platform API only: which regional gateway to talk to.
+    var region: JamfRegion = .us
+    /// Platform API only: the tenant to act on, sent as `X-Tenant-Id`. Copy it
+    /// from the tenant pill in the integration's details in Jamf Account.
+    var tenantID = ""
 
     var secretKeychainKey: String { "jamf.\(id.uuidString)" }
 
@@ -36,6 +68,28 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
         while url.hasSuffix("/") { url.removeLast() }
         if !url.isEmpty && !url.contains("://") { url = "https://" + url }
         return url
+    }
+
+    /// Host that API requests are sent to.
+    var apiBaseURL: String {
+        authMethod == .platformGateway ? region.gatewayHost : normalizedBaseURL
+    }
+}
+
+// Declared in an extension so the memberwise initialiser is still synthesised.
+extension JamfServerConfig {
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        baseURL = try container.decode(String.self, forKey: .baseURL)
+        authMethod = try container.decode(JamfAuthMethod.self, forKey: .authMethod)
+        account = try container.decode(String.self, forKey: .account)
+        // Added with Platform API support, so absent from servers saved by
+        // earlier versions. Defaulting keeps those servers decodable — without
+        // this the whole list would fail to decode and silently disappear.
+        region = try container.decodeIfPresent(JamfRegion.self, forKey: .region) ?? .us
+        tenantID = try container.decodeIfPresent(String.self, forKey: .tenantID) ?? ""
     }
 }
 
