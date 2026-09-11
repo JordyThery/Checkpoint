@@ -32,7 +32,7 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 
 - **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands**, computers: Lock, Wipe, Unmanage, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Unmanage, Send Blank Push, Renew MDM Profile
+- **MDM commands**, computers: Lock, Wipe, Remove MDM Profile, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -84,10 +84,10 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 | --- | --- |
 | Lock Computer | Send Computer Remote Lock Command |
 | Wipe Computer | Send Computer Remote Wipe Command |
-| Unmanage Device (Mac) | Send Computer Unmanage Command |
+| Remove MDM Profile (Mac) | Send Computer Unmanage Command |
 | Lock Device | Send Mobile Device Remote Lock Command |
 | Wipe Device | Send Mobile Device Remote Wipe Command |
-| Unmanage Device (mobile) | Unmanage Mobile Devices |
+| Remove MDM Profile (mobile) | Unmanage Mobile Devices |
 | Clear Passcode | Send Mobile Device Remove Passcode Command |
 | Restart Device | Send Mobile Device Restart Device Command |
 | Update Inventory | Update Inventory for Mobile Devices |
@@ -110,10 +110,10 @@ Permissions are granted per capability on the integration rather than per privil
 | Site display and changes | Organizational context: Read, Inventory: Update |
 | PreStage display and changes, ADE instances | Enrollment: Read, Enrollment: Update |
 | MDM commands | Device actions: Execute |
-| Wipe and Unmanage | Destructive device actions: Execute |
+| Wipe and Remove MDM Profile | Destructive device actions: Execute |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
 
-**Not all commands are available over the Platform API.** Jamf does not expose Jamf Pro's batched MDM command endpoint through the gateway, and **Lock, Clear Passcode and Restart** exist only as command types on it, so those cannot be sent. Checkpoint dims them and explains why. Everything else works normally, including Wipe and Unmanage, which have dedicated per-device endpoints the gateway does expose. Use an API client connection when you need the full command set.
+**Not all commands are available over the Platform API.** Jamf does not expose Jamf Pro's batched MDM command endpoint through the gateway, and **Lock, Clear Passcode and Restart** exist only as command types on it, so those cannot be sent. Checkpoint dims them and explains why. Everything else works normally, including Wipe and Remove MDM Profile, which have dedicated per-device endpoints the gateway does expose. Use an API client connection when you need the full command set.
 
 ## Security
 

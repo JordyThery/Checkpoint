@@ -86,7 +86,9 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
         case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
-        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .blankPush, .renewProfile, .unmanage]
+        // Remove MDM Profile is kept away from Renew MDM Profile: one letter
+        // apart, and one of them is destructive.
+        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
         }
     }
 
@@ -157,7 +159,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .redeployFramework: "Redeploy Jamf Framework"
         case .updateInventory: "Update Inventory"
         case .lockMobile: "Lock Device"
-        case .unmanage: "Unmanage Device"
+        case .unmanage: "Remove MDM Profile"
         case .clearPasscode: "Clear Passcode"
         case .restartMobile: "Restart Device"
         case .wipeMobile: "Wipe Device"
