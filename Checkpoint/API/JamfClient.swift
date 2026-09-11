@@ -797,6 +797,8 @@ actor JamfClient {
     /// prefixes replace the product segment rather than prefixing it, so
     /// `/JSSResource/mobiledevices` becomes `/proclassic/mobiledevices`.
     /// Keeping `/JSSResource` in place returns 403.
+    ///
+    /// This prefix behaviour is described for users in `docs/platform-api.md`.
     nonisolated static func gatewayPath(for path: String) -> String {
         if path.hasPrefix("/api/") {
             return "/pro/" + path.dropFirst("/api/".count)

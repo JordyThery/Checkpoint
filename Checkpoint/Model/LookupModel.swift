@@ -89,6 +89,10 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// Shut Down is mobile only, because Jamf Pro has no computer privilege
     /// for it. Remove MDM Profile is kept clear of Renew MDM Profile, whose
     /// name reads alike though only one of them is destructive.
+    ///
+    /// Adding or removing a command means a row in the privileges table in
+    /// `docs/permissions.md`, and one in `docs/platform-api.md` if the gateway
+    /// cannot carry it.
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
         case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
@@ -124,7 +128,10 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// reaches the gateway through a per-device Jamf Pro endpoint or the
     /// platform device actions API.
     ///
-    /// The single place to revisit when Jamf widens gateway coverage.
+    /// The single place to revisit when Jamf widens gateway coverage. The list
+    /// of what the gateway cannot carry is repeated for users in
+    /// `docs/platform-api.md`, and in the warning shown when a Platform API
+    /// connection is chosen in Settings; change all three together.
     private var worksOverGateway: Bool {
         switch self {
         case .lockComputer, .lockMobile, .clearPasscode, .renewProfile: false

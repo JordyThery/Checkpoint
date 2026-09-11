@@ -49,87 +49,23 @@ For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Rec
 
 ### Activity log
 
-Window → Activity Log (⌥⌘L) shows what Checkpoint asked the two services to do and how they answered, in two tiers: the action you requested, and each HTTP request made to carry it out, with its status, duration and bodies. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
+Window → Activity Log (⌥⌘L) shows what Checkpoint asked the two services to do and how they answered, in two tiers: the action you requested, and each HTTP request made to carry it out. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
 
-The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk.
+The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely.
 
-Secrets never reach it. Request headers are not recorded at all, which keeps access tokens out by construction; sign-ins are logged without their request or response, since one carries the client secret and the other the token; and the endpoints serving a FileVault key, Recovery Lock password, device lock PIN, escrowed unlock token or erase PIN withhold both bodies, marked as withheld. A list of known secret field names is applied on top of that as a backstop.
-
-Copy and export come in two forms. The masked form replaces serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognisable across the log without being named. Use it when attaching a log to a bug report.
+Copy and export each come in a masked form, replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognisable without being named. Use it when attaching a log to a bug report.
 
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business API account per organization (Apple Business → Settings → Integrations → API). You need the Client ID, Key ID, and the downloaded `.pem` private key.
-- A Jamf Pro server. Three connection methods are supported:
-  - **API client** (recommended): create one under Settings → API Roles and Clients
-  - **Username / password** (bearer token)
-  - **Platform API**: an integration in Jamf Account, routed through Jamf's Platform API gateway
+- An Apple Business API account per organization, with the **Device Enrollment Manager** role or higher
+- A Jamf Pro server, connected by **API client** (recommended), **username and password**, or the **Platform API** gateway
 - Jamf Pro 11.30+ for the Last Contact attribute (older versions simply show "—")
 
-### Apple Business API access
+## Setting it up
 
-In Apple Business, go to Settings → Integrations → API and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API. Each organization needs its own API account.
-
-### Jamf Pro API privileges
-
-Grant the API role only what you intend to use:
-
-| Feature | Privilege |
-| --- | --- |
-| Device lookup | Read Computers, Read Mobile Devices |
-| PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
-| PreStage filtering per ADE token | Read Device Enrollment Program Instances |
-| Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
-| Delete records | Delete Computers, Delete Mobile Devices |
-| FileVault recovery key | View Disk Encryption Recovery Key |
-| Recovery Lock password | View Recovery Lock |
-| Device lock PIN | View Computer Device Lock Pin |
-
-#### MDM commands
-
-Every command needs **View MDM command information in Jamf Pro API**, plus the privilege for that specific command:
-
-| Command | Privilege |
-| --- | --- |
-| Lock Computer | Send Computer Remote Lock Command |
-| Wipe Computer | Send Computer Remote Wipe Command |
-| Remove MDM Profile (Mac) | Send Computer Unmanage Command |
-| Lock Device | Send Mobile Device Remote Lock Command |
-| Wipe Device | Send Mobile Device Remote Wipe Command |
-| Remove MDM Profile (mobile) | Unmanage Mobile Devices |
-| Clear Passcode | Send Mobile Device Remove Passcode Command |
-| Restart Device | Send Mobile Device Restart Device Command |
-| Shut Down Device | Send Mobile Device Shut Down Command |
-| Update Inventory | Update Inventory for Mobile Devices |
-| Renew MDM Profile | Send MDM Check In Command |
-| Send Blank Push | Send Declarative Management Command |
-| Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
-
-### Platform API (optional)
-
-Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. Create an **environment-scoped** integration in **Jamf Account**, then in Checkpoint choose the **Platform API** method and supply the client ID, client secret, gateway region, and environment ID. The environment ID is on the environment pill in the integration's **Integration details** panel.
-
-Environment scope is required rather than tenant scope: the Jamf Pro passthrough accepts either, but Restart and Shut Down run on Jamf's platform device actions, which accept only an environment ID. Most Jamf Account instances already have an environment grouping their tenants, and you can create one if not.
-
-A Jamf Pro API client will not work here, and the region must match your environment because gateway tokens are region-locked. The Jamf Pro URL is still required, because device rows link to their records in the Jamf Pro web interface and the gateway host cannot serve those.
-
-Permissions are granted per capability on the integration rather than per privilege:
-
-| Feature | Capability |
-| --- | --- |
-| Device lookup | Inventory: Read |
-| Delete device record | Inventory: Delete |
-| Site display and changes | Organizational context: Read, Inventory: Update |
-| PreStage display and changes, ADE instances | Enrollment: Read, Enrollment: Update |
-| MDM commands, except the two rows below | Device actions: Execute |
-| Wipe and Remove MDM Profile | Destructive device actions: Execute |
-| Restart and Shut Down | Device actions: Execute, plus Inventory: Read to resolve the device |
-| FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
-
-**Three commands are unavailable over the Platform API.** **Lock** and **Clear Passcode** exist only as command types on Jamf Pro's batched MDM command endpoint, which the gateway does not expose. **Renew MDM Profile** is accepted there but renews nothing, returning every device as unprocessed, for computers and mobile devices alike. Checkpoint dims all three and explains why.
-
-Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need the three above.
+- **[Permissions](docs/permissions.md)** — the Apple Business role, and the Jamf Pro privileges each feature and command needs
+- **[Platform API](docs/platform-api.md)** — optional: connecting through Jamf's gateway, the capabilities it takes, and the three commands it cannot carry
 
 ## Security
 
