@@ -106,8 +106,8 @@ actor JamfClient {
     private let authMethod: JamfAuthMethod
     private let account: String
     private let secret: String
-    /// Platform API only: sent as `X-Tenant-Id` on every request.
-    private let tenantID: String
+    /// Platform API only: sent as `X-Environment-Id` on every request.
+    private let environmentID: String
     private var cachedToken: (value: String, expiry: Date)?
 
     init?(config: JamfServerConfig, secret: String) {
@@ -116,7 +116,7 @@ actor JamfClient {
         self.authMethod = config.authMethod
         self.account = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
         self.secret = secret
-        self.tenantID = config.tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.environmentID = config.environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: Computers
@@ -543,6 +543,51 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
+    // MARK: Platform device actions
+
+    // Restart and shut down live on Jamf's platform Device Management Actions
+    // API rather than the Jamf Pro passthrough, so they are reachable only
+    // through the gateway, and only with an environment-scoped integration.
+    // They also address devices by platform UUID rather than Jamf Pro record
+    // ID, hence the lookup below.
+
+    /// Resolves a serial to the platform device UUID the actions below expect.
+    /// Nil when the platform inventory does not know the serial.
+    func platformDeviceID(serial: String) async throws -> String? {
+        struct Response: Decodable {
+            let results: [Item]?
+            struct Item: Decodable { let id: String }
+        }
+        let (data, status) = try await send(
+            path: "/v1/devices",
+            queryItems: [
+                URLQueryItem(name: "PageSize", value: "1"),
+                URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\""),
+            ]
+        )
+        if status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        return try JSONDecoder().decode(Response.self, from: data).results?.first?.id
+    }
+
+    func platformRestart(deviceID: String) async throws {
+        try await platformAction(deviceID: deviceID, action: "restart")
+    }
+
+    func platformShutDown(deviceID: String) async throws {
+        try await platformAction(deviceID: deviceID, action: "shutdown")
+    }
+
+    private func platformAction(deviceID: String, action: String) async throws {
+        let (data, status) = try await send(path: "/v1/devices/\(deviceID)/\(action)", method: "POST")
+        // 422 means the device is unmanaged, personal, or on an OS that does
+        // not support the action, which is worth saying rather than the raw code.
+        if status == 422 {
+            throw APIError(message: "Jamf Pro cannot \(action) this device. It may be unmanaged, personally owned, or on an OS version that does not support it.")
+        }
+        try throwIfError(status: status, data: data)
+    }
+
     // MARK: Recovery secrets
 
     /// A computer's FileVault personal recovery key. Requires the "View Disk
@@ -656,8 +701,8 @@ actor JamfClient {
         request.httpMethod = method
         request.setValue("Bearer \(try await bearerToken())", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if authMethod == .platformGateway, !tenantID.isEmpty {
-            request.setValue(tenantID, forHTTPHeaderField: "X-Tenant-Id")
+        if authMethod == .platformGateway, !environmentID.isEmpty {
+            request.setValue(environmentID, forHTTPHeaderField: "X-Environment-Id")
         }
         if let body {
             request.httpBody = body

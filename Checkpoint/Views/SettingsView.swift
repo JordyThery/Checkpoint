@@ -260,7 +260,7 @@ struct JamfServerEditor: View {
     @State private var account = ""
     @State private var secret = ""
     @State private var region: JamfRegion = .us
-    @State private var tenantID = ""
+    @State private var environmentID = ""
     @State private var hasStoredSecret = false
     @State private var statusMessage: String?
     @State private var isTesting = false
@@ -298,8 +298,8 @@ struct JamfServerEditor: View {
                             Text(region.label).tag(region)
                         }
                     }
-                    TextField("Tenant ID", text: $tenantID, prompt: Text("00000000-0000-0000-0000-000000000000"))
-                    Text("Requires an integration created in Jamf Account, not a Jamf Pro API client. Copy the tenant ID from its Integration details, and pick the region your tenant is in.")
+                    TextField("Environment ID", text: $environmentID, prompt: Text("00000000-0000-0000-0000-000000000000"))
+                    Text("Requires an integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in. Jamf recommends environment-scoped integrations; a tenant-scoped one cannot send Restart or Shut Down.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -334,7 +334,7 @@ struct JamfServerEditor: View {
             authMethod = config.authMethod
             account = config.account
             region = config.region
-            tenantID = config.tenantID
+            environmentID = config.environmentID
             hasStoredSecret = Keychain.get(config.secretKeychainKey) != nil
         }
     }
@@ -346,7 +346,7 @@ struct JamfServerEditor: View {
         settings.jamfServers[index].authMethod = authMethod
         settings.jamfServers[index].account = account
         settings.jamfServers[index].region = region
-        settings.jamfServers[index].tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.jamfServers[index].environmentID = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !secret.isEmpty {
             Keychain.set(secret, for: config.secretKeychainKey)
             hasStoredSecret = true

@@ -52,9 +52,12 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     var account = ""
     /// Platform API only: which regional gateway to talk to.
     var region: JamfRegion = .us
-    /// Platform API only: the tenant to act on, sent as `X-Tenant-Id`. Copy it
-    /// from the tenant pill in the integration's details in Jamf Account.
-    var tenantID = ""
+    /// Platform API only: the environment to act on, sent as `X-Environment-Id`.
+    /// Copy it from the environment pill in the integration's details in Jamf
+    /// Account. Jamf recommends environment-scoped integrations: the Jamf Pro
+    /// passthrough accepts either scope, but the platform device actions only
+    /// accept this one.
+    var environmentID = ""
 
     var secretKeychainKey: String { "jamf.\(id.uuidString)" }
 
@@ -89,7 +92,10 @@ extension JamfServerConfig {
         // earlier versions. Without defaults the whole list fails to decode
         // and silently disappears.
         region = try container.decodeIfPresent(JamfRegion.self, forKey: .region) ?? .us
-        tenantID = try container.decodeIfPresent(String.self, forKey: .tenantID) ?? ""
+        // Servers saved before the move to environment scope carry a tenant ID
+        // instead. It is a different identifier, so it is not carried over and
+        // the environment ID has to be entered again.
+        environmentID = try container.decodeIfPresent(String.self, forKey: .environmentID) ?? ""
     }
 }
 

@@ -82,20 +82,21 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     case restartMobile
     case wipeMobile
     case unmanage
+    case shutDown
 
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
-        case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
+        case .computer: [.lockComputer, .renewProfile, .redeployFramework, .shutDown, .wipeComputer, .blankPush, .unmanage]
         // Remove MDM Profile is kept away from Renew MDM Profile: the names
         // read alike and only one of them is destructive.
-        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
+        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDown, .wipeMobile, .unmanage, .blankPush, .renewProfile]
         }
     }
 
     /// Display order when a mixed selection is shown.
     static let allInDisplayOrder: [MDMCommand] = [
         .updateInventory, .lockComputer, .lockMobile, .clearPasscode,
-        .restartMobile, .renewProfile, .redeployFramework, .blankPush, .unmanage, .wipeComputer, .wipeMobile,
+        .restartMobile, .shutDown, .renewProfile, .redeployFramework, .blankPush, .unmanage, .wipeComputer, .wipeMobile,
     ]
 
     func applies(to kind: JamfDeviceKind) -> Bool {
@@ -113,18 +114,13 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
         guard authMethod == .platformGateway else { return nil }
         switch self {
-        case .restartMobile:
-            return """
-                \(title) needs an API client connection. Jamf offers it on the Device \
-                Management Actions API, which requires an environment-scoped integration \
-                that Checkpoint does not support yet.
-                """
         case .lockComputer, .lockMobile, .clearPasscode:
             return """
                 \(title) needs an API client connection. The Platform API has no route for \
                 it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
                 """
-        case .wipeComputer, .wipeMobile, .unmanage, .blankPush, .renewProfile, .redeployFramework, .updateInventory:
+        case .restartMobile, .shutDown, .wipeComputer, .wipeMobile, .unmanage,
+             .blankPush, .renewProfile, .redeployFramework, .updateInventory:
             return nil
         }
     }
@@ -142,6 +138,8 @@ nonisolated enum MDMCommand: Hashable, Sendable {
             return ["commandType": "DEVICE_LOCK"]
         case .restartMobile:
             return ["commandType": "RESTART_DEVICE"]
+        case .shutDown:
+            return ["commandType": "SHUT_DOWN_DEVICE"]
         case .wipeComputer, .wipeMobile, .unmanage, .clearPasscode,
              .blankPush, .updateInventory, .renewProfile, .redeployFramework:
             // Each of these has its own endpoint, or needs per-device data that
@@ -162,6 +160,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .unmanage: "Remove MDM Profile"
         case .clearPasscode: "Clear Passcode"
         case .restartMobile: "Restart Device"
+        case .shutDown: "Shut Down Device"
         case .wipeMobile: "Wipe Device"
         }
     }
@@ -190,6 +189,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .unmanage: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
         case .clearPasscode: "The device passcode will be removed."
         case .restartMobile: "The device will restart immediately."
+        case .shutDown: "The device will shut down immediately and stay off until someone powers it back on."
         case .wipeMobile: "All data on the device will be erased. This cannot be undone."
         }
     }
@@ -666,6 +666,30 @@ final class LookupModel {
                         commandData: ["commandType": "CLEAR_PASSCODE", "unlockToken": unlockToken],
                         managementIDs: [managementID]
                     )
+                    sent += 1
+                } catch {
+                    failures.append("\(target.serial): \(error.localizedDescription)")
+                }
+            }
+            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+            return sent
+        }
+
+        // Restart and shut down have no Jamf Pro route, only the platform
+        // Device Management Actions API, which the gateway reaches. On a direct
+        // connection they fall through to the batched command endpoint below.
+        if isUsingPlatformAPI, command == .shutDown || command == .restartMobile {
+            for target in targets {
+                do {
+                    guard let deviceID = try await jamf.platformDeviceID(serial: target.serial) else {
+                        failures.append("\(target.serial): not in the platform device inventory.")
+                        continue
+                    }
+                    if command == .shutDown {
+                        try await jamf.platformShutDown(deviceID: deviceID)
+                    } else {
+                        try await jamf.platformRestart(deviceID: deviceID)
+                    }
                     sent += 1
                 } catch {
                     failures.append("\(target.serial): \(error.localizedDescription)")

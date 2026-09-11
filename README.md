@@ -32,7 +32,7 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 
 - **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
+- **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Shut Down, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -90,6 +90,7 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 | Remove MDM Profile (mobile) | Unmanage Mobile Devices |
 | Clear Passcode | Send Mobile Device Remove Passcode Command |
 | Restart Device | Send Mobile Device Restart Device Command |
+| Shut Down Device | The Shut Down send privilege for each device type you target |
 | Update Inventory | Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
 | Send Blank Push | Send Declarative Management Command |
@@ -97,7 +98,9 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 
 ### Platform API (optional)
 
-Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. Create an integration in **Jamf Account**, then in Checkpoint choose the **Platform API** method and supply the client ID, client secret, gateway region, and tenant ID. The tenant ID is on the tenant pill in the integration's **Integration details** panel.
+Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. Create an **environment-scoped** integration in **Jamf Account**, then in Checkpoint choose the **Platform API** method and supply the client ID, client secret, gateway region, and environment ID. The environment ID is on the environment pill in the integration's **Integration details** panel.
+
+Jamf recommends environment scope over tenant scope, and Checkpoint requires it. The Jamf Pro passthrough accepts either, but Restart and Shut Down run on Jamf's platform device actions, which accept only an environment ID. Most Jamf Account instances already have an environment grouping their tenants; if not, you can create one.
 
 A Jamf Pro API client will not work here, and the region must match your tenant because gateway tokens are region-locked. The Jamf Pro URL is still required, because device rows link to their records in the Jamf Pro web interface and the gateway host cannot serve those.
 
@@ -109,11 +112,12 @@ Permissions are granted per capability on the integration rather than per privil
 | Delete device record | Inventory: Delete |
 | Site display and changes | Organizational context: Read, Inventory: Update |
 | PreStage display and changes, ADE instances | Enrollment: Read, Enrollment: Update |
-| MDM commands, except the two below | Device actions: Execute |
+| MDM commands, except the two rows below | Device actions: Execute |
 | Wipe and Remove MDM Profile | Destructive device actions: Execute |
+| Restart and Shut Down | Device actions: Execute (platform device actions) |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
 
-**Not all commands are available over the Platform API.** Jamf does not expose Jamf Pro's batched MDM command endpoint through the gateway, and **Lock, Clear Passcode and Restart** exist only as command types on it, so those cannot be sent. Checkpoint dims them and explains why. Everything else works normally, including Wipe and Remove MDM Profile, which have dedicated per-device endpoints the gateway does expose. Use an API client connection when you need the full command set.
+**Two commands are unavailable over the Platform API.** Jamf does not expose Jamf Pro's batched MDM command endpoint through the gateway, and **Lock and Clear Passcode** exist only as command types on it, so they cannot be sent. Checkpoint dims them and explains why. Everything else works, including Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need those two.
 
 ## Security
 
