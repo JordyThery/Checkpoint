@@ -201,7 +201,7 @@ struct DeviceDetailView: View {
     private var pendingMessage: String {
         switch pending {
         case .applyMDM:
-            "Apple processes MDM server assignments asynchronously — allow a moment before the new state appears."
+            "Apple processes MDM server assignments asynchronously, so allow a moment before the new state appears."
         case .unassignMDM:
             "The device stays in your organization but is no longer assigned to any MDM server, so it will not enrol automatically until it is assigned again."
         case .release:
@@ -215,7 +215,7 @@ struct DeviceDetailView: View {
         case .applyPrestage:
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
         case .applySite:
-            "Only the Jamf Pro record moves to the other site. The PreStages the device can join stay the same — they follow the ADE token that synced it."
+            "Only the Jamf Pro record moves to the other site. The PreStages the device can join stay the same, because they follow the ADE token that synced it."
         case .deleteJamf:
             "The record will be deleted from the selected Jamf Pro server."
         case .command(let command):
@@ -292,7 +292,7 @@ struct DeviceDetailView: View {
             Text("Add your Apple Business API credentials in Settings to see device status, warranty, and MDM assignment.")
                 .foregroundStyle(.secondary)
         case .notFound:
-            Text("This serial number is not part of your organization — it was never added, or it has been released.")
+            Text("This serial number is not part of your organization. It was never added, or it has been released.")
                 .foregroundStyle(.secondary)
         case .failed(let message):
             Text(message).foregroundStyle(.red)

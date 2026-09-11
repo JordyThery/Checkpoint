@@ -117,9 +117,9 @@ Permissions are granted per capability on the integration rather than per privil
 | Restart and Shut Down | Device actions: Execute, plus Inventory: Read to resolve the device |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
 
-**Two commands are unavailable over the Platform API.** **Lock** and **Clear Passcode** exist only as command types on Jamf Pro's batched MDM command endpoint, which the gateway does not expose, so Checkpoint dims them and explains why. Everything else works, including Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need those two.
+**Three commands are unavailable over the Platform API.** **Lock** and **Clear Passcode** exist only as command types on Jamf Pro's batched MDM command endpoint, which the gateway does not expose. **Renew MDM Profile** is accepted there but renews nothing, returning every device as unprocessed, for computers and mobile devices alike. Checkpoint dims all three and explains why.
 
-**Renew MDM Profile** has been seen to renew nothing over the gateway, returning success while reporting every device as unprocessed. It is left enabled, and Checkpoint reports which devices Jamf Pro skipped rather than claiming success.
+Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need the three above.
 
 ## Security
 

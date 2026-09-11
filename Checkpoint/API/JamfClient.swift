@@ -586,25 +586,25 @@ actor JamfClient {
             $0.serialNumber?.caseInsensitiveCompare(serial) == .orderedSame
         }) else {
             if results.isEmpty { return nil }
-            throw APIError(message: "The platform device inventory returned \(results.count) device(s) for \(serial), none matching that serial. Refusing to act on the wrong device.")
+            throw APIError(message: "The platform device inventory returned \(results.count) result(s) for \(serial), none with that serial number. No command was sent.")
         }
         return match.id
     }
 
     func platformRestart(deviceID: String) async throws {
-        try await platformAction(deviceID: deviceID, action: "restart")
+        try await platformAction(deviceID: deviceID, path: "restart", verb: "restart")
     }
 
     func platformShutDown(deviceID: String) async throws {
-        try await platformAction(deviceID: deviceID, action: "shutdown")
+        try await platformAction(deviceID: deviceID, path: "shutdown", verb: "shut down")
     }
 
-    private func platformAction(deviceID: String, action: String) async throws {
-        let (data, status) = try await send(path: "/device-actions/v1/devices/\(deviceID)/\(action)", method: "POST")
-        // 422 means the device is unmanaged, personal, or on an OS that does
-        // not support the action, which is worth saying rather than the raw code.
+    private func platformAction(deviceID: String, path: String, verb: String) async throws {
+        let (data, status) = try await send(path: "/device-actions/v1/devices/\(deviceID)/\(path)", method: "POST")
+        // 422 is Jamf's answer for a device it will not act on, which is worth
+        // explaining rather than reporting as a bare status.
         if status == 422 {
-            throw APIError(message: "Jamf Pro cannot \(action) this device. It may be unmanaged, personally owned, or on an OS version that does not support it.")
+            throw APIError(message: "Jamf Pro will not \(verb) this device. It may be unmanaged, personally owned, or running an OS version that does not support the command.")
         }
         try throwIfError(status: status, data: data)
     }

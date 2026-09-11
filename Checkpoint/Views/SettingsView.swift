@@ -183,7 +183,7 @@ struct ABMOrgEditor: View {
         Task {
             do {
                 let count = try await client.verify()
-                statusMessage = "Connected — \(count) MDM server\(count == 1 ? "" : "s") visible."
+                statusMessage = "Connected. \(count) MDM server\(count == 1 ? "" : "s") visible."
             } catch {
                 statusMessage = error.localizedDescription
             }
@@ -288,7 +288,7 @@ struct JamfServerEditor: View {
                 SecureField(
                     authMethod == .usernamePassword ? "Password" : "Client Secret",
                     text: $secret,
-                    prompt: hasStoredSecret ? Text("Stored in keychain — type to replace") : nil
+                    prompt: hasStoredSecret ? Text("Stored in keychain, type to replace") : nil
                 )
             }
             if isGateway {
@@ -305,7 +305,7 @@ struct JamfServerEditor: View {
                 }
                 Section {
                     Label {
-                        Text("Lookups, PreStages and sites work over the Platform API. Lock, Wipe, Restart and Clear Passcode do not, because Jamf does not expose Jamf Pro's MDM command endpoint through the gateway.")
+                        Text("Lock, Clear Passcode and Renew MDM Profile cannot be sent over the Platform API. Everything else works, including lookups, PreStages, sites, Wipe, Restart and Shut Down.")
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)

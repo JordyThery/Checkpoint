@@ -371,7 +371,7 @@ struct BulkActionsView: View {
         case .applyComputerPrestage, .applyMobilePrestage:
             "Devices are removed from their current PreStage scope and added to the selected one. Devices already in the selected PreStage, and devices of the other type, are skipped."
         case .applySite:
-            "Only the Jamf Pro records move to the other site. The PreStages each device can join stay the same — they follow the ADE token that synced it."
+            "Only the Jamf Pro records move to the other site. The PreStages each device can join stay the same, because they follow the ADE token that synced it."
         case .deleteJamf:
             "The computer and mobile device records will be deleted from the selected Jamf Pro server."
         case .command(let command):

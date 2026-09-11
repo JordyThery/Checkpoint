@@ -107,9 +107,10 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
-    /// it can be. Only lock and clear passcode are blocked: they exist solely
-    /// as command types on `POST /v2/mdm/commands`, which the gateway lists as
-    /// GET only. Everything else reaches the gateway another way, either a
+    /// it can be. Three are blocked on the Platform API: lock and clear
+    /// passcode exist solely as command types on `POST /v2/mdm/commands`,
+    /// which the gateway lists as GET only, and renew profile is accepted but
+    /// does nothing. Everything else reaches the gateway either through a
     /// per-device Jamf Pro endpoint or the platform device actions API.
     ///
     /// The single place to revisit when Jamf widens gateway coverage.
@@ -121,12 +122,18 @@ nonisolated enum MDMCommand: Hashable, Sendable {
                 \(title) needs an API client connection. The Platform API has no route for \
                 it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
                 """
-        // Renew MDM Profile is left enabled although it was seen to renew
-        // nothing over the gateway, answering 200 with every UDID under
-        // udidsNotProcessed. sendCommand surfaces that, so a silent failure
-        // is reported rather than hidden.
+        case .renewProfile:
+            // The request matches Jamf's reference exactly and is accepted,
+            // but every UDID comes back under udidsNotProcessed and no profile
+            // is renewed. Confirmed for computers and mobile devices, against
+            // the same Jamf Pro instance that renews them over a direct
+            // connection.
+            return """
+                \(title) needs an API client connection. The Platform API accepts the \
+                request but Jamf Pro renews nothing.
+                """
         case .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
-             .blankPush, .renewProfile, .redeployFramework, .updateInventory:
+             .blankPush, .redeployFramework, .updateInventory:
             return nil
         }
     }
@@ -604,12 +611,16 @@ final class LookupModel {
             guard !udids.isEmpty else {
                 throw ActionError(message: "No device UDIDs are known, so the MDM profile cannot be renewed.")
             }
+            // The endpoint answers with success even when it renews nothing,
+            // naming the devices it skipped, so report those rather than
+            // treating the status alone as the result.
             let notProcessed = Set(try await jamf.renewMDMProfile(udids: udids))
             guard notProcessed.isEmpty else {
-                let skipped = targets
+                let serials = targets
                     .filter { notProcessed.contains($0.info.udid ?? "") }
                     .map(\.serial)
-                throw ActionError(message: "Jamf Pro accepted the request but renewed nothing for: \(skipped.isEmpty ? notProcessed.joined(separator: ", ") : skipped.joined(separator: ", "))")
+                let named = serials.isEmpty ? Array(notProcessed) : serials
+                throw ActionError(message: "Jamf Pro accepted the request but renewed no profile for: \(named.joined(separator: ", "))")
             }
             return udids.count
         }
@@ -618,7 +629,7 @@ final class LookupModel {
             let pushTargets = targets.filter { $0.info.managementID != nil }
             let managementIDs = pushTargets.compactMap(\.info.managementID)
             guard !managementIDs.isEmpty else {
-                throw ActionError(message: "No management IDs are known, so a blank push cannot be sent — run a fresh lookup first.")
+                throw ActionError(message: "No management IDs are known, so a blank push cannot be sent. Run a fresh lookup first.")
             }
             // The Jamf Pro UI's blank push queues a DeclarativeManagement sync
             // per device (POST /v1/ddm/{managementId}/sync), which is the entry
@@ -666,7 +677,7 @@ final class LookupModel {
         if command == .clearPasscode {
             for target in targets where target.info.kind == .mobileDevice {
                 guard let managementID = target.info.managementID else {
-                    failures.append("\(target.serial): the record has no management ID — run a fresh lookup first.")
+                    failures.append("\(target.serial): the record has no management ID. Run a fresh lookup first.")
                     continue
                 }
                 guard let unlockToken = target.info.unlockToken, !unlockToken.isEmpty else {
@@ -757,7 +768,7 @@ final class LookupModel {
             let kindTargets = targets.filter { $0.info.kind == kind }
             guard !kindTargets.isEmpty else { continue }
             for target in kindTargets where target.info.managementID == nil {
-                failures.append("\(target.serial): the record has no management ID — run a fresh lookup first.")
+                failures.append("\(target.serial): the record has no management ID. Run a fresh lookup first.")
             }
             let managementIDs = kindTargets.compactMap(\.info.managementID)
             guard !managementIDs.isEmpty else { continue }
