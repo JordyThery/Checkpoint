@@ -32,7 +32,7 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 
 - **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Shut Down, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
+- **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -90,7 +90,7 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 | Remove MDM Profile (mobile) | Unmanage Mobile Devices |
 | Clear Passcode | Send Mobile Device Remove Passcode Command |
 | Restart Device | Send Mobile Device Restart Device Command |
-| Shut Down Device | The Shut Down send privilege for each device type you target |
+| Shut Down Device | Send Mobile Device Shut Down Command |
 | Update Inventory | Update Inventory for Mobile Devices |
 | Renew MDM Profile | Send MDM Check In Command |
 | Send Blank Push | Send Declarative Management Command |
