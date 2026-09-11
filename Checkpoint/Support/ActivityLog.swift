@@ -238,6 +238,16 @@ nonisolated enum ActivityRedaction {
     static let placeholder = "••••••"
     static let maximumBodyLength = 20_000
 
+    /// Bodies larger than this are not recorded at all.
+    ///
+    /// Parsing and re-serialising every response has to stay cheap: walking the
+    /// device-enrolment pages produces the largest bodies in the app, 500
+    /// devices at a time, and none of them are read by eye. Recording an
+    /// excerpt instead would be worse than nothing, because identifiers are
+    /// collected during the parse, so an unparsed excerpt could carry serial
+    /// numbers that a masked export would then not know to replace.
+    static let maximumRecordedBodySize = 256 * 1024
+
     struct Body: Sendable {
         let text: String
         let identifiers: Set<String>
@@ -247,6 +257,10 @@ nonisolated enum ActivityRedaction {
     /// pretty-printed with sorted keys so entries can be compared by eye.
     static func readableBody(_ data: Data?) -> Body? {
         guard let data, !data.isEmpty else { return nil }
+        guard data.count <= maximumRecordedBodySize else {
+            let size = ByteCountFormatStyle().format(Int64(data.count))
+            return Body(text: "Not recorded: the body is \(size).", identifiers: [])
+        }
         guard let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else {
             // Not JSON: record it as text, without trying to find secrets in it.
             let text = String(data: data, encoding: .utf8) ?? "(\(data.count) bytes)"
