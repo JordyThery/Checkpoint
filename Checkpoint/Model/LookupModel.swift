@@ -121,15 +121,12 @@ nonisolated enum MDMCommand: Hashable, Sendable {
                 \(title) needs an API client connection. The Platform API has no route for \
                 it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
                 """
-        case .renewProfile:
-            // The gateway accepts the request with HTTP 200 and then reports
-            // every UDID under udidsNotProcessed, so it silently does nothing.
-            return """
-                \(title) needs an API client connection. Over the Platform API the request \
-                is accepted but Jamf Pro renews nothing.
-                """
+        // Renew MDM Profile is left enabled although it was seen to renew
+        // nothing over the gateway, answering 200 with every UDID under
+        // udidsNotProcessed. sendCommand surfaces that, so a silent failure
+        // is reported rather than hidden.
         case .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
-             .blankPush, .redeployFramework, .updateInventory:
+             .blankPush, .renewProfile, .redeployFramework, .updateInventory:
             return nil
         }
     }
