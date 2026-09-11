@@ -301,10 +301,19 @@ actor JamfClient {
     }
 
     /// Renews the MDM enrollment profile for the given device UDIDs.
-    func renewMDMProfile(udids: [String]) async throws {
+    /// Returns the UDIDs Jamf Pro declined to renew. The endpoint answers 200
+    /// even when it renewed nothing, listing the ones it skipped, so the status
+    /// alone would report success wrongly.
+    @discardableResult
+    func renewMDMProfile(udids: [String]) async throws -> [String] {
+        struct Response: Decodable {
+            let udidsNotProcessed: Wrapper?
+            struct Wrapper: Decodable { let udids: [String]? }
+        }
         let body = try JSONSerialization.data(withJSONObject: ["udids": udids])
         let (data, status) = try await send(path: "/api/v1/mdm/renew-profile", method: "POST", body: body)
         try throwIfError(status: status, data: data)
+        return (try? JSONDecoder().decode(Response.self, from: data))?.udidsNotProcessed?.udids ?? []
     }
 
     /// Queues a DeclarativeManagement sync command for the device, which is what the
@@ -545,9 +554,11 @@ actor JamfClient {
 
     // MARK: Platform device actions
 
-    // Restart and shut down live on Jamf's platform Device Management Actions
-    // API rather than the Jamf Pro passthrough, so they are reachable only
-    // through the gateway, and only with an environment-scoped integration.
+    // Restart and shut down live on Jamf's platform APIs rather than the Jamf
+    // Pro passthrough, so they are reachable only through the gateway, and
+    // only with an environment-scoped integration. Each platform API has its
+    // own prefix, and the paths in Jamf's reference are relative to it: the
+    // documented /v1/devices/{id}/restart is really /device-actions/v1/... .
     // They also address devices by platform UUID rather than Jamf Pro record
     // ID, hence the lookup below.
 
@@ -556,18 +567,28 @@ actor JamfClient {
     func platformDeviceID(serial: String) async throws -> String? {
         struct Response: Decodable {
             let results: [Item]?
-            struct Item: Decodable { let id: String }
+            struct Item: Decodable {
+                let id: String
+                let serialNumber: String?
+            }
         }
         let (data, status) = try await send(
-            path: "/v1/devices",
-            queryItems: [
-                URLQueryItem(name: "PageSize", value: "1"),
-                URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\""),
-            ]
+            path: "/devices/v1/devices",
+            queryItems: [URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\"")]
         )
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
-        return try JSONDecoder().decode(Response.self, from: data).results?.first?.id
+        let results = try JSONDecoder().decode(Response.self, from: data).results ?? []
+        // Match on the serial rather than trusting the first row. These IDs are
+        // handed to restart and shut down, so a filter the server ignored must
+        // not become an action against somebody else's device.
+        guard let match = results.first(where: {
+            $0.serialNumber?.caseInsensitiveCompare(serial) == .orderedSame
+        }) else {
+            if results.isEmpty { return nil }
+            throw APIError(message: "The platform device inventory returned \(results.count) device(s) for \(serial), none matching that serial. Refusing to act on the wrong device.")
+        }
+        return match.id
     }
 
     func platformRestart(deviceID: String) async throws {
@@ -579,7 +600,7 @@ actor JamfClient {
     }
 
     private func platformAction(deviceID: String, action: String) async throws {
-        let (data, status) = try await send(path: "/v1/devices/\(deviceID)/\(action)", method: "POST")
+        let (data, status) = try await send(path: "/device-actions/v1/devices/\(deviceID)/\(action)", method: "POST")
         // 422 means the device is unmanaged, personal, or on an OS that does
         // not support the action, which is worth saying rather than the raw code.
         if status == 422 {

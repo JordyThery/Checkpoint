@@ -121,8 +121,15 @@ nonisolated enum MDMCommand: Hashable, Sendable {
                 \(title) needs an API client connection. The Platform API has no route for \
                 it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
                 """
+        case .renewProfile:
+            // The gateway accepts the request with HTTP 200 and then reports
+            // every UDID under udidsNotProcessed, so it silently does nothing.
+            return """
+                \(title) needs an API client connection. Over the Platform API the request \
+                is accepted but Jamf Pro renews nothing.
+                """
         case .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
-             .blankPush, .renewProfile, .redeployFramework, .updateInventory:
+             .blankPush, .redeployFramework, .updateInventory:
             return nil
         }
     }
@@ -600,7 +607,13 @@ final class LookupModel {
             guard !udids.isEmpty else {
                 throw ActionError(message: "No device UDIDs are known, so the MDM profile cannot be renewed.")
             }
-            try await jamf.renewMDMProfile(udids: udids)
+            let notProcessed = Set(try await jamf.renewMDMProfile(udids: udids))
+            guard notProcessed.isEmpty else {
+                let skipped = targets
+                    .filter { notProcessed.contains($0.info.udid ?? "") }
+                    .map(\.serial)
+                throw ActionError(message: "Jamf Pro accepted the request but renewed nothing for: \(skipped.isEmpty ? notProcessed.joined(separator: ", ") : skipped.joined(separator: ", "))")
+            }
             return udids.count
         }
 
