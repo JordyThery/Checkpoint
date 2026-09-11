@@ -107,34 +107,29 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
-    /// it can be. Three are blocked on the Platform API: lock and clear
-    /// passcode exist solely as command types on `POST /v2/mdm/commands`,
-    /// which the gateway lists as GET only, and renew profile is accepted but
-    /// does nothing. Everything else reaches the gateway either through a
-    /// per-device Jamf Pro endpoint or the platform device actions API.
+    /// it can be. The wording is the same for every blocked command: the
+    /// reasons differ but the remedy does not.
+    func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
+        guard authMethod == .platformGateway, !worksOverGateway else { return nil }
+        return "This command is currently unavailable over the Platform API and requires an API client connection."
+    }
+
+    /// Whether the Platform API gateway can carry this command.
+    ///
+    /// Lock and clear passcode exist solely as command types on
+    /// `POST /v2/mdm/commands`, which the gateway publishes as GET only. Renew
+    /// profile is accepted there but renews nothing, returning every UDID
+    /// under `udidsNotProcessed`, confirmed for both device kinds against an
+    /// instance that renews them over a direct connection. Everything else
+    /// reaches the gateway through a per-device Jamf Pro endpoint or the
+    /// platform device actions API.
     ///
     /// The single place to revisit when Jamf widens gateway coverage.
-    func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
-        guard authMethod == .platformGateway else { return nil }
+    private var worksOverGateway: Bool {
         switch self {
-        case .lockComputer, .lockMobile, .clearPasscode:
-            return """
-                \(title) needs an API client connection. The Platform API has no route for \
-                it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
-                """
-        case .renewProfile:
-            // The request matches Jamf's reference exactly and is accepted,
-            // but every UDID comes back under udidsNotProcessed and no profile
-            // is renewed. Confirmed for computers and mobile devices, against
-            // the same Jamf Pro instance that renews them over a direct
-            // connection.
-            return """
-                \(title) needs an API client connection. The Platform API accepts the \
-                request but Jamf Pro renews nothing.
-                """
+        case .lockComputer, .lockMobile, .clearPasscode, .renewProfile: false
         case .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
-             .blankPush, .redeployFramework, .updateInventory:
-            return nil
+             .blankPush, .redeployFramework, .updateInventory: true
         }
     }
 
