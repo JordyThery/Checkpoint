@@ -53,10 +53,8 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     /// Platform API only: which regional gateway to talk to.
     var region: JamfRegion = .us
     /// Platform API only: the environment to act on, sent as `X-Environment-Id`.
-    /// Copy it from the environment pill in the integration's details in Jamf
-    /// Account. Jamf recommends environment-scoped integrations: the Jamf Pro
-    /// passthrough accepts either scope, but the platform device actions only
-    /// accept this one.
+    /// Environment scope is required rather than tenant scope, because the
+    /// platform device actions accept no other.
     var environmentID = ""
 
     var secretKeychainKey: String { "jamf.\(id.uuidString)" }

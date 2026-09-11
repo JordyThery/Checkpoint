@@ -84,13 +84,14 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     case unmanage
     case shutDownMobile
 
+    /// Commands offered for a device kind, in the order they are shown.
+    ///
+    /// Shut Down is mobile only, because Jamf Pro has no computer privilege
+    /// for it. Remove MDM Profile is kept clear of Renew MDM Profile, whose
+    /// name reads alike though only one of them is destructive.
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
-        // Shut Down is mobile only: Jamf Pro has no computer privilege for it,
-        // so it would fail on a Mac over a direct connection.
         case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
-        // Remove MDM Profile is kept away from Renew MDM Profile: the names
-        // read alike and only one of them is destructive.
         case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDownMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
         }
     }
@@ -106,11 +107,10 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
-    /// it can be. The gateway's spec lists `POST /pro/v2/mdm/commands` as GET
-    /// only, and lock and clear passcode exist nowhere else: they are command
-    /// types on that endpoint rather than routes of their own, in the direct
-    /// API too. Wipe and Remove MDM Profile have dedicated per-device
-    /// endpoints the gateway does expose, so they work everywhere.
+    /// it can be. Only lock and clear passcode are blocked: they exist solely
+    /// as command types on `POST /v2/mdm/commands`, which the gateway lists as
+    /// GET only. Everything else reaches the gateway another way, either a
+    /// per-device Jamf Pro endpoint or the platform device actions API.
     ///
     /// The single place to revisit when Jamf widens gateway coverage.
     func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {

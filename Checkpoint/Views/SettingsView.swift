@@ -299,7 +299,7 @@ struct JamfServerEditor: View {
                         }
                     }
                     TextField("Environment ID", text: $environmentID, prompt: Text("00000000-0000-0000-0000-000000000000"))
-                    Text("Requires an integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in. Jamf recommends environment-scoped integrations; a tenant-scoped one cannot send Restart or Shut Down.")
+                    Text("Requires an environment-scoped integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

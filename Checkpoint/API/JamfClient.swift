@@ -772,7 +772,7 @@ actor JamfClient {
     private func fetchGatewayToken() async throws -> String {
         try await fetchClientCredentialsToken(
             url: baseURL.appending(path: "/auth/token"),
-            hint: "Check the Platform API client ID and secret, and that the region matches your tenant."
+            hint: "Check the Platform API client ID and secret, and that the region matches your environment."
         )
     }
 

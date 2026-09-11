@@ -100,9 +100,9 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 
 Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. Create an **environment-scoped** integration in **Jamf Account**, then in Checkpoint choose the **Platform API** method and supply the client ID, client secret, gateway region, and environment ID. The environment ID is on the environment pill in the integration's **Integration details** panel.
 
-Jamf recommends environment scope over tenant scope, and Checkpoint requires it. The Jamf Pro passthrough accepts either, but Restart and Shut Down run on Jamf's platform device actions, which accept only an environment ID. Most Jamf Account instances already have an environment grouping their tenants; if not, you can create one.
+Environment scope is required rather than tenant scope: the Jamf Pro passthrough accepts either, but Restart and Shut Down run on Jamf's platform device actions, which accept only an environment ID. Most Jamf Account instances already have an environment grouping their tenants, and you can create one if not.
 
-A Jamf Pro API client will not work here, and the region must match your tenant because gateway tokens are region-locked. The Jamf Pro URL is still required, because device rows link to their records in the Jamf Pro web interface and the gateway host cannot serve those.
+A Jamf Pro API client will not work here, and the region must match your environment because gateway tokens are region-locked. The Jamf Pro URL is still required, because device rows link to their records in the Jamf Pro web interface and the gateway host cannot serve those.
 
 Permissions are granted per capability on the integration rather than per privilege:
 
@@ -114,7 +114,7 @@ Permissions are granted per capability on the integration rather than per privil
 | PreStage display and changes, ADE instances | Enrollment: Read, Enrollment: Update |
 | MDM commands, except the two rows below | Device actions: Execute |
 | Wipe and Remove MDM Profile | Destructive device actions: Execute |
-| Restart and Shut Down | Device actions: Execute (platform device actions) |
+| Restart and Shut Down | Device actions: Execute, plus Inventory: Read to resolve the device |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
 
 **Two commands are unavailable over the Platform API.** Jamf does not expose Jamf Pro's batched MDM command endpoint through the gateway, and **Lock and Clear Passcode** exist only as command types on it, so they cannot be sent. Checkpoint dims them and explains why. Everything else works, including Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need those two.
