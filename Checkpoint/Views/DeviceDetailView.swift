@@ -471,6 +471,11 @@ struct DeviceDetailView: View {
                     (try await model.recoveryLockPassword(for: report), nil)
                 }
             }
+            Button("Show Device Lock PIN") {
+                reveal(title: "Device Lock PIN") {
+                    (try await model.deviceLockPIN(for: report), "Set when the Mac was locked through Jamf Pro.")
+                }
+            }
         }
         if let url = info.webURL {
             Link("Open in Jamf Pro", destination: url)

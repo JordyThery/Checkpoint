@@ -81,18 +81,19 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     case clearPasscode
     case restartMobile
     case wipeMobile
+    case unmanage
 
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
-        case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush]
-        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .blankPush, .renewProfile]
+        case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
+        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .blankPush, .renewProfile, .unmanage]
         }
     }
 
     /// Display order when a mixed selection is shown.
     static let allInDisplayOrder: [MDMCommand] = [
         .updateInventory, .lockComputer, .lockMobile, .clearPasscode,
-        .restartMobile, .renewProfile, .redeployFramework, .blankPush, .wipeComputer, .wipeMobile,
+        .restartMobile, .renewProfile, .redeployFramework, .blankPush, .unmanage, .wipeComputer, .wipeMobile,
     ]
 
     func applies(to kind: JamfDeviceKind) -> Bool {
@@ -101,15 +102,16 @@ nonisolated enum MDMCommand: Hashable, Sendable {
 
     /// Why this command cannot be sent over the given connection, or nil when
     /// it can be. The gateway's spec lists `POST /pro/v2/mdm/commands` as GET
-    /// only, and that endpoint carries lock, wipe, restart and clear passcode.
-    /// Erase and restart also exist on Jamf's Device Management Actions API,
-    /// which needs an environment-scoped integration Checkpoint lacks.
+    /// only, and lock and clear passcode exist nowhere else: they are command
+    /// types on that endpoint rather than routes of their own, in the direct
+    /// API too. Wipe and unmanage have dedicated per-device endpoints the
+    /// gateway does expose, so they work everywhere.
     ///
     /// The single place to revisit when Jamf widens gateway coverage.
     func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
         guard authMethod == .platformGateway else { return nil }
         switch self {
-        case .wipeComputer, .wipeMobile, .restartMobile:
+        case .restartMobile:
             return """
                 \(title) needs an API client connection. Jamf offers it on the Device \
                 Management Actions API, which requires an environment-scoped integration \
@@ -120,7 +122,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
                 \(title) needs an API client connection. The Platform API has no route for \
                 it: Jamf Pro's MDM command endpoint is not exposed through the gateway.
                 """
-        case .blankPush, .renewProfile, .redeployFramework, .updateInventory:
+        case .wipeComputer, .wipeMobile, .unmanage, .blankPush, .renewProfile, .redeployFramework, .updateInventory:
             return nil
         }
     }
@@ -134,20 +136,14 @@ nonisolated enum MDMCommand: Hashable, Sendable {
             var data: [String: any Sendable] = ["commandType": "DEVICE_LOCK"]
             if let passcode { data["pin"] = passcode }
             return data
-        case .wipeComputer:
-            var data: [String: any Sendable] = ["commandType": "ERASE_DEVICE"]
-            if let passcode { data["pin"] = passcode }
-            return data
         case .lockMobile:
             return ["commandType": "DEVICE_LOCK"]
-        case .wipeMobile:
-            return ["commandType": "ERASE_DEVICE"]
         case .restartMobile:
             return ["commandType": "RESTART_DEVICE"]
-        case .clearPasscode, .blankPush, .updateInventory, .renewProfile, .redeployFramework:
-            // Clear Passcode needs the per-device escrowed unlock token, so
-            // it cannot share one batched command body, so sendCommand handles
-            // it separately.
+        case .wipeComputer, .wipeMobile, .unmanage, .clearPasscode,
+             .blankPush, .updateInventory, .renewProfile, .redeployFramework:
+            // Each of these has its own endpoint, or needs per-device data that
+            // cannot share one batched body. sendCommand routes them.
             return nil
         }
     }
@@ -161,6 +157,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .redeployFramework: "Redeploy Jamf Framework"
         case .updateInventory: "Update Inventory"
         case .lockMobile: "Lock Device"
+        case .unmanage: "Unmanage Device"
         case .clearPasscode: "Clear Passcode"
         case .restartMobile: "Restart Device"
         case .wipeMobile: "Wipe Device"
@@ -169,7 +166,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
 
     var isDestructive: Bool {
         switch self {
-        case .wipeComputer, .wipeMobile, .lockComputer, .lockMobile: true
+        case .wipeComputer, .wipeMobile, .lockComputer, .lockMobile, .unmanage: true
         default: false
         }
     }
@@ -188,6 +185,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .redeployFramework: "Reinstalls the Jamf management framework (jamf binary) on the Mac through MDM. Use when a Mac has stopped checking in but still responds to MDM."
         case .updateInventory: "The device will be asked to submit a fresh inventory report."
         case .lockMobile: "The device will lock immediately; the owner's passcode unlocks it."
+        case .unmanage: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
         case .clearPasscode: "The device passcode will be removed."
         case .restartMobile: "The device will restart immediately."
         case .wipeMobile: "All data on the device will be erased. This cannot be undone."
@@ -479,6 +477,17 @@ final class LookupModel {
         return password
     }
 
+    /// The PIN a Mac was locked with. Fetched on request, like the other
+    /// recovery secrets.
+    func deviceLockPIN(for report: DeviceReport) async throws -> String {
+        let id = try computerID(for: report, action: "Device lock PINs")
+        guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        guard let pin = try await jamf.deviceLockPIN(computerID: id) else {
+            throw ActionError(message: "Jamf Pro holds no device lock PIN for \(report.serial). One exists only after the Mac has been locked through Jamf Pro.")
+        }
+        return pin
+    }
+
     private func computerID(for report: DeviceReport, action: String) throws -> String {
         guard let info = report.jamf.value else {
             throw ActionError(message: "\(report.serial) has no Jamf Pro record.")
@@ -655,6 +664,32 @@ final class LookupModel {
                         commandData: ["commandType": "CLEAR_PASSCODE", "unlockToken": unlockToken],
                         managementIDs: [managementID]
                     )
+                    sent += 1
+                } catch {
+                    failures.append("\(target.serial): \(error.localizedDescription)")
+                }
+            }
+            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+            return sent
+        }
+
+        // Wipe and unmanage use per-device endpoints rather than the batched
+        // command endpoint, which is also why they work over the Platform API.
+        if command == .wipeComputer || command == .wipeMobile || command == .unmanage {
+            for target in targets {
+                do {
+                    switch (command, target.info.kind) {
+                    case (.wipeComputer, .computer):
+                        try await jamf.eraseComputer(computerID: target.info.computerID, pin: passcode)
+                    case (.wipeMobile, .mobileDevice):
+                        try await jamf.eraseMobileDevice(deviceID: target.info.computerID)
+                    case (.unmanage, .computer):
+                        try await jamf.removeMDMProfile(computerID: target.info.computerID)
+                    case (.unmanage, .mobileDevice):
+                        try await jamf.unmanageMobileDevice(deviceID: target.info.computerID)
+                    default:
+                        continue
+                    }
                     sent += 1
                 } catch {
                     failures.append("\(target.serial): \(error.localizedDescription)")

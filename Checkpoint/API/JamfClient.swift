@@ -499,6 +499,50 @@ actor JamfClient {
         throw lastError ?? APIError(message: "Could not update the PreStage scope.")
     }
 
+    // MARK: Destructive per-device actions
+
+    // These have dedicated per-device endpoints taking the Jamf Pro record ID,
+    // unlike the batched /v2/mdm/commands route. The gateway exposes them, so
+    // they work over the Platform API where /v2/mdm/commands does not.
+
+    /// Erases a Mac. `pin` is the six digits needed to unlock it afterwards.
+    func eraseComputer(computerID: String, pin: String?) async throws {
+        let body = try JSONSerialization.data(withJSONObject: pin.map { ["pin": $0] } ?? [:])
+        let (data, status) = try await send(
+            path: "/api/v4/computers-inventory/\(computerID)/erase",
+            method: "POST",
+            body: body
+        )
+        try throwIfError(status: status, data: data)
+    }
+
+    func eraseMobileDevice(deviceID: String) async throws {
+        let (data, status) = try await send(
+            path: "/api/v2/mobile-devices/\(deviceID)/erase",
+            method: "POST",
+            body: try JSONSerialization.data(withJSONObject: [:] as [String: Any])
+        )
+        try throwIfError(status: status, data: data)
+    }
+
+    /// Unmanages a Mac by removing its MDM profile, which is what Jamf Pro
+    /// calls the same action for computers.
+    func removeMDMProfile(computerID: String) async throws {
+        let (data, status) = try await send(
+            path: "/api/v4/computers-inventory/\(computerID)/remove-mdm-profile",
+            method: "POST"
+        )
+        try throwIfError(status: status, data: data)
+    }
+
+    func unmanageMobileDevice(deviceID: String) async throws {
+        let (data, status) = try await send(
+            path: "/api/v2/mobile-devices/\(deviceID)/unmanage",
+            method: "POST"
+        )
+        try throwIfError(status: status, data: data)
+    }
+
     // MARK: Recovery secrets
 
     /// A computer's FileVault personal recovery key. Requires the "View Disk
@@ -520,6 +564,20 @@ actor JamfClient {
             validityStatus: decoded.individualRecoveryKeyValidityStatus,
             configurationName: decoded.diskEncryptionConfigurationName
         )
+    }
+
+    /// The PIN set when a Mac was locked through Jamf Pro, needed to unlock it.
+    /// Requires the "View Computer Device Lock Pin" privilege, or
+    /// `computer-device-lock-pin:read` through the gateway. Nil when the Mac
+    /// has not been locked. Macs only: iOS and iPadOS lock with the owner's
+    /// own passcode, so there is no PIN for Jamf Pro to hold.
+    func deviceLockPIN(computerID: String) async throws -> String? {
+        struct Response: Decodable { let pin: String? }
+        let (data, status) = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin")
+        if status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        let pin = try JSONDecoder().decode(Response.self, from: data).pin
+        return (pin?.isEmpty ?? true) ? nil : pin
     }
 
     /// A computer's Recovery Lock password, static or rotating. Requires the "View
