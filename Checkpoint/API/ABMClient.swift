@@ -116,11 +116,17 @@ actor ABMClient {
     private let baseURL = URL(string: "https://api-business.apple.com")!
     private let tokenURL = URL(string: "https://account.apple.com/auth/oauth2/v2/token")!
     private var cachedToken: (value: String, expiry: Date)?
+    private let log: ActivityLog?
+    /// Organization name, recorded with each entry so a log covering several
+    /// organizations says which one it went to.
+    private let connectionName: String
 
-    init(clientID: String, keyID: String, privateKeyPEM: String) {
+    init(clientID: String, keyID: String, privateKeyPEM: String, connectionName: String = "", log: ActivityLog? = nil) {
         self.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPEM = privateKeyPEM
+        self.connectionName = connectionName
+        self.log = log
     }
 
     // MARK: Devices
@@ -290,6 +296,10 @@ actor ABMClient {
         return try await send(url: url.absoluteURL, method: method, body: body)
     }
 
+    /// The single point every Apple Business request goes through, and so the
+    /// single point the activity log is fed from. Request headers are
+    /// deliberately never recorded, which keeps the bearer token out of the log
+    /// by construction rather than by filtering.
     private func send(url: URL, method: String = "GET", body: Data? = nil) async throws -> (Data, Int) {
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -299,9 +309,35 @@ actor ABMClient {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        return (data, status)
+
+        let loggedPath = [url.path(), url.query()].compactMap { $0 }.joined(separator: "?")
+        let started = Date()
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            log?.recordRequest(
+                service: .appleBusiness,
+                connection: connectionName,
+                method: method,
+                path: loggedPath,
+                status: status,
+                duration: Date().timeIntervalSince(started),
+                requestBody: body,
+                responseBody: data,
+                withholdBodies: false
+            )
+            return (data, status)
+        } catch {
+            log?.recordFailure(
+                service: .appleBusiness,
+                connection: connectionName,
+                method: method,
+                path: loggedPath,
+                duration: Date().timeIntervalSince(started),
+                message: error.localizedDescription
+            )
+            throw error
+        }
     }
 
     private func throwIfError(status: Int, data: Data) throws {
@@ -325,6 +361,30 @@ actor ABMClient {
 
     private func bearerToken() async throws -> String {
         if let cachedToken, cachedToken.expiry > Date() { return cachedToken.value }
+        // Recorded, but never with its bodies: the request carries the signed
+        // client assertion, which is itself a credential, and the response
+        // carries the access token.
+        do {
+            let token = try await fetchToken()
+            log?.recordSignIn(
+                service: .appleBusiness,
+                connection: connectionName,
+                summary: "Signed in to Apple Business",
+                outcome: .succeeded
+            )
+            return token
+        } catch {
+            log?.recordSignIn(
+                service: .appleBusiness,
+                connection: connectionName,
+                summary: "Sign-in failed: \(error.localizedDescription)",
+                outcome: .failed
+            )
+            throw error
+        }
+    }
+
+    private func fetchToken() async throws -> String {
         let assertion = try makeClientAssertion()
         let params: [(String, String)] = [
             ("grant_type", "client_credentials"),

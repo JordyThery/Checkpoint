@@ -35,7 +35,7 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 - **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
-Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
+Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).
 
 ### MDM server migration
 
@@ -46,6 +46,16 @@ Migration requires an Apple Business tenant on a release that supports it. Devic
 ### Recovery secrets
 
 For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, and the **device lock PIN** from Jamf Pro. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
+
+### Activity log
+
+Window → Activity Log (⌥⌘L) shows what Checkpoint asked the two services to do and how they answered, in two tiers: the action you requested, and each HTTP request made to carry it out, with its status, duration and bodies. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
+
+The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk.
+
+Secrets never reach it. Request headers are not recorded at all, which keeps access tokens out by construction; sign-ins are logged without their request or response, since one carries the client secret and the other the token; and the endpoints serving a FileVault key, Recovery Lock password, device lock PIN, escrowed unlock token or erase PIN withhold both bodies, marked as withheld. A list of known secret field names is applied on top of that as a backstop.
+
+Copy and export come in two forms. The masked form replaces serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognisable across the log without being named. Use it when attaching a log to a bug report.
 
 ## Requirements
 
@@ -126,6 +136,8 @@ Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Pro
 Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
 
 Recovery keys, Recovery Lock passwords and device lock PINs are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
+
+The activity log is kept in memory only, never written to disk, and never records a secret. See [Activity log](#activity-log) for what it holds and what it withholds.
 
 ## Building
 

@@ -94,6 +94,7 @@ struct ABMSettingsTab: View {
 
 struct ABMOrgEditor: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(ActivityLog.self) private var log
     let config: ABMConfig
 
     @State private var name = ""
@@ -178,7 +179,13 @@ struct ABMOrgEditor: View {
             statusMessage = "Add the private key first."
             return
         }
-        let client = ABMClient(clientID: clientID, keyID: keyID, privateKeyPEM: pem)
+        let client = ABMClient(
+            clientID: clientID,
+            keyID: keyID,
+            privateKeyPEM: pem,
+            connectionName: name.isEmpty ? config.displayName : name,
+            log: log
+        )
         isTesting = true
         Task {
             do {
@@ -252,6 +259,7 @@ struct JamfSettingsTab: View {
 
 struct JamfServerEditor: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(ActivityLog.self) private var log
     let config: JamfServerConfig
 
     @State private var name = ""
@@ -366,7 +374,7 @@ struct JamfServerEditor: View {
         current.baseURL = baseURL
         current.authMethod = authMethod
         current.account = account
-        guard let client = JamfClient(config: current, secret: effectiveSecret) else {
+        guard let client = JamfClient(config: current, secret: effectiveSecret, log: log) else {
             statusMessage = "Enter a valid server URL first."
             return
         }

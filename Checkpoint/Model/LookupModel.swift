@@ -243,6 +243,7 @@ nonisolated enum DateFormatting {
 @Observable
 final class LookupModel {
     private let settings: AppSettings
+    let log: ActivityLog
 
     var reports: [DeviceReport] = []
     var isLoading = false
@@ -260,10 +261,47 @@ final class LookupModel {
     private var abmClients: [String: ABMClient] = [:]
     private var jamfClients: [String: JamfClient] = [:]
 
-    init(settings: AppSettings) {
+    init(settings: AppSettings, log: ActivityLog? = nil) {
         self.settings = settings
+        self.log = log ?? ActivityLog()
         selectedABMOrgID = settings.abmOrgs.first?.id
         selectedJamfServerID = settings.jamfServers.first?.id
+    }
+
+    /// Records the outcome of a user-requested action, alongside the individual
+    /// requests the clients log. This tier is what makes the log readable:
+    /// it says what was asked for and what came of it, in the app's own words.
+    private func recordAction(
+        _ service: ActivityService,
+        _ summary: String,
+        serials: [String],
+        outcome: ActivityOutcome = .succeeded
+    ) {
+        log.recordAction(
+            service: service,
+            connection: service == .appleBusiness ? selectedABMOrg?.displayName : selectedJamfServer?.displayName,
+            summary: summary,
+            outcome: outcome,
+            serials: serials
+        )
+    }
+
+    /// Runs an action and records its outcome either way, then rethrows so the
+    /// view still reports the failure to the user.
+    private func recording<T>(
+        _ service: ActivityService,
+        _ summary: String,
+        serials: [String],
+        operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            let result = try await operation()
+            recordAction(service, summary, serials: serials)
+            return result
+        } catch {
+            recordAction(service, "\(summary) — \(error.localizedDescription)", serials: serials, outcome: .failed)
+            throw error
+        }
     }
 
     var selectedABMOrg: ABMConfig? {
@@ -369,13 +407,43 @@ final class LookupModel {
         var errorDescription: String? { message }
     }
 
+    // MARK: Activity log phrasing
+
+    /// "1 device" or "3 devices", so log summaries read as sentences.
+    static func deviceCount(_ count: Int) -> String {
+        "\(count) device\(count == 1 ? "" : "s")"
+    }
+
+    static func deviceCount(_ serials: [String]) -> String { deviceCount(serials.count) }
+
+    static func deviceCount(_ reports: [DeviceReport]) -> String { deviceCount(reports.count) }
+
+    /// Summarises an action that reports per-device failures rather than
+    /// throwing on the first one, so a partial result is not logged as either
+    /// a clean success or a total failure.
+    static func partialSummary(
+        _ verb: String,
+        noun: String,
+        of total: Int,
+        failed: Int,
+        from source: String?
+    ) -> String {
+        let suffix = source.map { " from \($0)" } ?? ""
+        guard failed > 0 else {
+            return "\(verb) \(total) \(noun)\(total == 1 ? "" : "s")\(suffix)"
+        }
+        return "\(verb) \(total - failed) of \(total) \(noun)\(total == 1 ? "" : "s")\(suffix)"
+    }
+
     /// Permanently releases the devices from Apple Business.
     func releaseFromABM(reports: [DeviceReport]) async throws {
         guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
-        let activityID = try await abm.submitActivity(.release, serials: serials)
-        if let activityID { await abm.waitForActivity(id: activityID) }
+        try await recording(.appleBusiness, "Released \(Self.deviceCount(serials)) from Apple Business", serials: serials) {
+            let activityID = try await abm.submitActivity(.release, serials: serials)
+            if let activityID { await abm.waitForActivity(id: activityID) }
+        }
         await refreshRows(serials)
     }
 
@@ -384,29 +452,42 @@ final class LookupModel {
         guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let inOrg = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }
         guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
-        var activityIDs: [String] = []
-        if let serverID {
-            if let id = try await abm.submitActivity(.assign, serials: inOrg.map(\.serial), mdmServerID: serverID) {
-                activityIDs.append(id)
-            }
-        } else {
-            // Unassigning requires naming the current server, so batch per server.
-            var byServer: [String: [String]] = [:]
+
+        // Unassigning requires naming the current server, so batch per server.
+        // Devices with no current assignment have nothing to unassign, and if
+        // that leaves nothing at all there is no action to take or to log.
+        var unassignByServer: [String: [String]] = [:]
+        if serverID == nil {
             for report in inOrg {
                 if let current = report.abm.value?.mdmServerID {
-                    byServer[current, default: []].append(report.serial)
+                    unassignByServer[current, default: []].append(report.serial)
                 }
             }
-            guard !byServer.isEmpty else { return }
-            for (server, serials) in byServer {
-                if let id = try await abm.submitActivity(.unassign, serials: serials, mdmServerID: server) {
+            guard !unassignByServer.isEmpty else { return }
+        }
+
+        let serials = serverID == nil ? unassignByServer.values.flatMap { $0 } : inOrg.map(\.serial)
+        let serverName = serverID.flatMap { id in mdmServers.first { $0.id == id }?.name } ?? serverID
+        let summary = serverName.map { "Assigned \(Self.deviceCount(serials)) to \($0)" }
+            ?? "Unassigned \(Self.deviceCount(serials)) from device management"
+
+        try await recording(.appleBusiness, summary, serials: serials) {
+            var activityIDs: [String] = []
+            if let serverID {
+                if let id = try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID) {
                     activityIDs.append(id)
                 }
+            } else {
+                for (server, batch) in unassignByServer {
+                    if let id = try await abm.submitActivity(.unassign, serials: batch, mdmServerID: server) {
+                        activityIDs.append(id)
+                    }
+                }
             }
+            // ABM applies activities asynchronously; wait for them so the refresh
+            // below reads the new assignment instead of the old one.
+            for id in activityIDs { await abm.waitForActivity(id: id) }
         }
-        // ABM applies activities asynchronously; wait for them so the refresh
-        // below reads the new assignment instead of the old one.
-        for id in activityIDs { await abm.waitForActivity(id: id) }
         await refreshRows(inOrg.map(\.serial))
     }
 
@@ -451,14 +532,33 @@ final class LookupModel {
         guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
         let serials = reports.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: emptyMessage) }
-        let activityID = try await abm.submitActivity(
-            type,
-            serials: serials,
-            mdmServerID: mdmServerID,
-            migrationDeadline: deadline
-        )
-        // Apple applies activities asynchronously, so wait before re-reading.
-        if let activityID { await abm.waitForActivity(id: activityID) }
+
+        var summary: String
+        switch type {
+        case .assignWithMigrationDeadline:
+            let name = mdmServerID.flatMap { id in mdmServers.first { $0.id == id }?.name } ?? "another service"
+            summary = "Scheduled migration of \(Self.deviceCount(serials)) to \(name)"
+        case .updateMigrationDeadline:
+            summary = "Moved the migration deadline for \(Self.deviceCount(serials))"
+        case .cancelMigration:
+            summary = "Cancelled the migration of \(Self.deviceCount(serials))"
+        default:
+            summary = "\(type.rawValue) for \(Self.deviceCount(serials))"
+        }
+        if let deadline {
+            summary += ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
+        }
+
+        try await recording(.appleBusiness, summary, serials: serials) {
+            let activityID = try await abm.submitActivity(
+                type,
+                serials: serials,
+                mdmServerID: mdmServerID,
+                migrationDeadline: deadline
+            )
+            // Apple applies activities asynchronously, so wait before re-reading.
+            if let activityID { await abm.waitForActivity(id: activityID) }
+        }
         await refreshRows(serials)
     }
 
@@ -470,10 +570,15 @@ final class LookupModel {
     func fileVaultRecoveryKey(for report: DeviceReport) async throws -> JamfFileVaultKey {
         let id = try computerID(for: report, action: "FileVault recovery keys")
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
-        guard let key = try await jamf.fileVaultRecoveryKey(computerID: id) else {
-            throw ActionError(message: "Jamf Pro holds no FileVault recovery key for \(report.serial).")
+        // The activity log records that a key was read, never the key itself.
+        // Jamf Pro keeps its own audit entry for this; ours makes it visible
+        // without having to go and look.
+        return try await recording(.jamfPro, "Read the FileVault recovery key for \(report.serial)", serials: [report.serial]) {
+            guard let key = try await jamf.fileVaultRecoveryKey(computerID: id) else {
+                throw ActionError(message: "Jamf Pro holds no FileVault recovery key for \(report.serial).")
+            }
+            return key
         }
-        return key
     }
 
     /// A computer's Recovery Lock password. Fetched on request only,
@@ -481,10 +586,12 @@ final class LookupModel {
     func recoveryLockPassword(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Recovery Lock passwords")
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
-        guard let password = try await jamf.recoveryLockPassword(computerID: id) else {
-            throw ActionError(message: "Jamf Pro holds no Recovery Lock password for \(report.serial).")
+        return try await recording(.jamfPro, "Read the Recovery Lock password for \(report.serial)", serials: [report.serial]) {
+            guard let password = try await jamf.recoveryLockPassword(computerID: id) else {
+                throw ActionError(message: "Jamf Pro holds no Recovery Lock password for \(report.serial).")
+            }
+            return password
         }
-        return password
     }
 
     /// The PIN a Mac was locked with. Fetched on request, like the other
@@ -492,10 +599,12 @@ final class LookupModel {
     func deviceLockPIN(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Device lock PINs")
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
-        guard let pin = try await jamf.deviceLockPIN(computerID: id) else {
-            throw ActionError(message: "Jamf Pro holds no device lock PIN for \(report.serial). One exists only after the Mac has been locked through Jamf Pro.")
+        return try await recording(.jamfPro, "Read the device lock PIN for \(report.serial)", serials: [report.serial]) {
+            guard let pin = try await jamf.deviceLockPIN(computerID: id) else {
+                throw ActionError(message: "Jamf Pro holds no device lock PIN for \(report.serial). One exists only after the Mac has been locked through Jamf Pro.")
+            }
+            return pin
         }
-        return pin
     }
 
     private func computerID(for report: DeviceReport, action: String) throws -> String {
@@ -527,6 +636,12 @@ final class LookupModel {
                 failures.append("\(entry.serial): \(error.localizedDescription)")
             }
         }
+        recordAction(
+            .jamfPro,
+            Self.partialSummary("Deleted", noun: "record", of: withRecords.count, failed: failures.count, from: "Jamf Pro"),
+            serials: withRecords.map(\.serial),
+            outcome: failures.isEmpty ? .succeeded : .failed
+        )
         await refreshRows(withRecords.map(\.serial))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
     }
@@ -547,11 +662,17 @@ final class LookupModel {
             affected.append(report.serial)
         }
         guard !affected.isEmpty else { return }
-        for (prestage, serials) in removeByPrestage {
-            try await jamf.removeFromPrestage(family: family, prestageID: prestage, serials: serials)
-        }
-        if let newID {
-            try await jamf.addToPrestage(family: family, prestageID: newID, serials: affected)
+        let all = kind == .computer ? prestages : mobilePrestages
+        let name = newID.flatMap { id in all.first { $0.id == id }?.displayName }
+        let summary = name.map { "Added \(Self.deviceCount(affected)) to PreStage \($0)" }
+            ?? "Removed \(Self.deviceCount(affected)) from their PreStage"
+        try await recording(.jamfPro, summary, serials: affected) {
+            for (prestage, serials) in removeByPrestage {
+                try await jamf.removeFromPrestage(family: family, prestageID: prestage, serials: serials)
+            }
+            if let newID {
+                try await jamf.addToPrestage(family: family, prestageID: newID, serials: affected)
+            }
         }
         await refreshRows(affected)
     }
@@ -578,6 +699,14 @@ final class LookupModel {
                 failures.append("\(entry.serial): \(error.localizedDescription)")
             }
         }
+        let siteName = siteID == "-1" ? "no site" : (sites.first { $0.id == siteID }?.name ?? siteID)
+        recordAction(
+            .jamfPro,
+            Self.partialSummary("Moved", noun: "device", of: withRecords.count, failed: failures.count, from: nil)
+                + " to \(siteName)",
+            serials: withRecords.map(\.serial),
+            outcome: failures.isEmpty ? .succeeded : .failed
+        )
         await refreshRows(withRecords.map(\.serial))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
     }
@@ -601,6 +730,29 @@ final class LookupModel {
             throw ActionError(message: "\(command.title) doesn't apply to any of the selected devices.")
         }
 
+        let serials = targets.map(\.serial)
+        do {
+            let sent = try await route(command, jamf: jamf, targets: targets, passcode: passcode)
+            recordAction(.jamfPro, "Sent \(command.title) to \(Self.deviceCount(sent))", serials: serials)
+            return sent
+        } catch {
+            recordAction(
+                .jamfPro,
+                "\(command.title) failed — \(error.localizedDescription)",
+                serials: serials,
+                outcome: .failed
+            )
+            throw error
+        }
+    }
+
+    /// Routes a command to whichever endpoint carries it for these targets.
+    private func route(
+        _ command: MDMCommand,
+        jamf: JamfClient,
+        targets: [(serial: String, info: JamfInfo)],
+        passcode: String?
+    ) async throws -> Int {
         if command == .renewProfile {
             let udids = targets.compactMap(\.info.udid).filter { !$0.isEmpty }
             guard !udids.isEmpty else {
@@ -797,7 +949,13 @@ final class LookupModel {
               let pem = Keychain.get(config.privateKeyKeychainKey), !pem.isEmpty else { return nil }
         let key = [config.id.uuidString, config.clientID, config.keyID, pem].joined(separator: "|")
         if let cached = abmClients[key] { return cached }
-        let client = ABMClient(clientID: config.clientID, keyID: config.keyID, privateKeyPEM: pem)
+        let client = ABMClient(
+            clientID: config.clientID,
+            keyID: config.keyID,
+            privateKeyPEM: pem,
+            connectionName: config.displayName,
+            log: log
+        )
         abmClients[key] = client
         return client
     }
@@ -807,7 +965,7 @@ final class LookupModel {
               let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
         if let cached = jamfClients[key] { return cached }
-        guard let client = JamfClient(config: config, secret: secret) else { return nil }
+        guard let client = JamfClient(config: config, secret: secret, log: log) else { return nil }
         jamfClients[key] = client
         return client
     }

@@ -23,7 +23,16 @@ import SwiftUI
         Settings {
             SettingsView()
                 .environment(settings)
+                .environment(model.log)
                 .preferredColorScheme(colorScheme)
         }
+        // A single window rather than a group: one log, brought forward again
+        // when the shortcut is used a second time.
+        Window("Activity Log", id: "activity-log") {
+            ActivityLogView()
+                .environment(model.log)
+                .preferredColorScheme(colorScheme)
+        }
+        .keyboardShortcut("l", modifiers: [.command, .option])
     }
 }
