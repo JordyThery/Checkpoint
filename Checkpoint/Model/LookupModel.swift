@@ -86,8 +86,8 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
         switch kind {
         case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
-        // Remove MDM Profile is kept away from Renew MDM Profile: one letter
-        // apart, and one of them is destructive.
+        // Remove MDM Profile is kept away from Renew MDM Profile: the names
+        // read alike and only one of them is destructive.
         case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
         }
     }
@@ -106,8 +106,8 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// it can be. The gateway's spec lists `POST /pro/v2/mdm/commands` as GET
     /// only, and lock and clear passcode exist nowhere else: they are command
     /// types on that endpoint rather than routes of their own, in the direct
-    /// API too. Wipe and unmanage have dedicated per-device endpoints the
-    /// gateway does expose, so they work everywhere.
+    /// API too. Wipe and Remove MDM Profile have dedicated per-device
+    /// endpoints the gateway does expose, so they work everywhere.
     ///
     /// The single place to revisit when Jamf widens gateway coverage.
     func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
@@ -675,8 +675,8 @@ final class LookupModel {
             return sent
         }
 
-        // Wipe and unmanage use per-device endpoints rather than the batched
-        // command endpoint, which is also why they work over the Platform API.
+        // Wipe and Remove MDM Profile use per-device endpoints rather than the
+        // batched one, which is also why they work over the Platform API.
         if command == .wipeComputer || command == .wipeMobile || command == .unmanage {
             for target in targets {
                 do {

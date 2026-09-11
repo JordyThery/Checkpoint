@@ -501,9 +501,9 @@ actor JamfClient {
 
     // MARK: Destructive per-device actions
 
-    // These have dedicated per-device endpoints taking the Jamf Pro record ID,
-    // unlike the batched /v2/mdm/commands route. The gateway exposes them, so
-    // they work over the Platform API where /v2/mdm/commands does not.
+    // Each takes the Jamf Pro record ID and has its own endpoint, rather than
+    // going through the batched /v2/mdm/commands route the gateway withholds,
+    // which is why these work over the Platform API.
 
     /// Erases a Mac. `pin` is the six digits needed to unlock it afterwards.
     func eraseComputer(computerID: String, pin: String?) async throws {
@@ -525,8 +525,8 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
-    /// Unmanages a Mac by removing its MDM profile, which is what Jamf Pro
-    /// calls the same action for computers.
+    /// Removes a Mac's MDM profile, which unmanages it. Jamf Pro names the
+    /// mobile device equivalent differently; see `unmanageMobileDevice`.
     func removeMDMProfile(computerID: String) async throws {
         let (data, status) = try await send(
             path: "/api/v4/computers-inventory/\(computerID)/remove-mdm-profile",
@@ -566,11 +566,10 @@ actor JamfClient {
         )
     }
 
-    /// The PIN set when a Mac was locked through Jamf Pro, needed to unlock it.
-    /// Requires the "View Computer Device Lock Pin" privilege, or
-    /// `computer-device-lock-pin:read` through the gateway. Nil when the Mac
-    /// has not been locked. Macs only: iOS and iPadOS lock with the owner's
-    /// own passcode, so there is no PIN for Jamf Pro to hold.
+    /// The PIN a Mac was locked with, needed to unlock it. Requires "View
+    /// Computer Device Lock Pin", or `computer-device-lock-pin:read` through
+    /// the gateway. Nil when the Mac has never been locked. Macs only: iOS and
+    /// iPadOS lock with the owner's own passcode, so no PIN exists to hold.
     func deviceLockPIN(computerID: String) async throws -> String? {
         struct Response: Decodable { let pin: String? }
         let (data, status) = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin")

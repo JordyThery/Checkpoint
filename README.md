@@ -32,7 +32,7 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 
 - **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands**, computers: Lock, Wipe, Remove MDM Profile, Renew MDM Profile, Redeploy Jamf Framework, Send Blank Push; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
+- **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
 Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar.
@@ -109,7 +109,7 @@ Permissions are granted per capability on the integration rather than per privil
 | Delete device record | Inventory: Delete |
 | Site display and changes | Organizational context: Read, Inventory: Update |
 | PreStage display and changes, ADE instances | Enrollment: Read, Enrollment: Update |
-| MDM commands | Device actions: Execute |
+| MDM commands, except the two below | Device actions: Execute |
 | Wipe and Remove MDM Profile | Destructive device actions: Execute |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
 
@@ -119,7 +119,7 @@ Permissions are granted per capability on the integration rather than per privil
 
 Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
 
-FileVault recovery keys and Recovery Lock passwords are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
+Recovery keys, Recovery Lock passwords and device lock PINs are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 
 ## Building
 
