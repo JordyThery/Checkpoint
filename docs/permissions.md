@@ -41,7 +41,9 @@ Each key carries its own list of permitted methods, chosen when you create it. G
 
 **What Jamf School cannot report**, and therefore what Checkpoint leaves out entirely for it: FileVault state, MDM profile expiration, software update state, last enrollment date, last inventory update, sites, PreStage scope, and all four recovery secrets. `hardwareEncryptionEnabled` is not FileVault and is not used.
 
-Two differences worth knowing. There is no computer/mobile split: one device resource serves both, so Wipe and Remove MDM Profile reach a Mac through the same call as an iPad, and Restart is offered for Macs too. And **Move to Trash is not Jamf Pro's delete**: the record is recoverable in Jamf School, and the device stops being managed.
+Three differences worth knowing. There is no computer/mobile split: one device resource serves both, so Wipe and Remove MDM Profile reach a Mac through the same call as an iPad, and Restart is offered for Macs too. **Move to Trash is not Jamf Pro's delete**: the record is recoverable in Jamf School, and the device stops being managed. And **a device with an assigned owner cannot change location** unless the owner is in the district or Cross Location Enrollment is enabled — Jamf School refuses the move, and Checkpoint names the devices it would not move rather than reporting a success.
+
+Location changes are sent twenty devices at a time, which is the API's own limit, so a larger selection is split across several requests.
 
 Timestamps come back in the instance's own time zone with no offset attached. Checkpoint reads the zone from the device record and converts, so a check-in reads correctly wherever you are.
 

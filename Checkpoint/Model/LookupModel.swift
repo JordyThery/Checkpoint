@@ -1054,7 +1054,23 @@ final class LookupModel {
         let name = jamfLocations.first { $0.id == locationID }?.name ?? locationID
         let summary = "Moved \(Self.deviceCount(moving.map(\.serial))) to \(name)"
         try await recording(.jamfSchool, summary, serials: moving.map(\.serial)) {
-            try await school.move(udids: moving.map(\.info.computerID), toLocation: locationID)
+            let outcome = try await school.move(udids: moving.map(\.info.computerID), toLocation: locationID)
+            // The endpoint reports per device inside a success, so a device
+            // that never moved has to be named here or the action would claim
+            // to have moved it.
+            guard outcome.unmoved.isEmpty else {
+                let unmoved = Set(outcome.unmoved)
+                let serials = moving
+                    .filter { unmoved.contains($0.info.computerID) }
+                    .map(\.serial)
+                let named = serials.isEmpty ? outcome.unmoved : serials
+                // Nearly always the owner: Jamf School refuses to move a
+                // device away from the location its assigned user is in.
+                throw ActionError(message: """
+                    Jamf School did not move: \(named.joined(separator: ", ")).
+                    A device with an assigned owner can only change location if the owner is in the district, or if Cross Location Enrollment is enabled.
+                    """)
+            }
         }
         await refreshRows(moving.map(\.serial))
     }

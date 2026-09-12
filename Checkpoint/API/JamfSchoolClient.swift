@@ -70,6 +70,23 @@ struct JamfSchoolLocation: Sendable, Identifiable, Hashable {
     let isDistrict: Bool
 }
 
+/// What became of each device in a location move.
+///
+/// The move endpoint reports per device rather than succeeding or failing as
+/// a whole, so the caller has to read these rather than the status: a device
+/// that was not found or could not be moved comes back under HTTP 200 with
+/// everything else. Devices already in the target location are listed too,
+/// and are not a failure.
+struct JamfSchoolMoveOutcome: Sendable {
+    var moved: [String] = []
+    var notFound: [String] = []
+    var alreadyThere: [String] = []
+    var failed: [String] = []
+
+    /// UDIDs that did not end up where they were asked to go.
+    var unmoved: [String] { notFound + failed }
+}
+
 /// Decodes a flag that Jamf School reports as a boolean on one endpoint and as
 /// 0/1 on another, for the same field.
 private struct LenientBool: Decodable, Sendable {
@@ -369,21 +386,44 @@ actor JamfSchoolClient {
     /// Always the bulk endpoint, even for one device. The single-device path
     /// takes an `:id` parameter that is documented nowhere and is spelled
     /// differently from the `:udid` every sibling endpoint uses, whereas this
-    /// one takes UDIDs explicitly. Apple's cap of twenty per request is the
-    /// API's own, so callers are chunked.
-    func move(udids: [String], toLocation locationID: String) async throws {
+    /// one takes UDIDs explicitly. The cap of twenty per request is the API's
+    /// own, so callers are chunked.
+    ///
+    /// The body here is JSON, unlike the commands, which take form encoding.
+    /// This is the one endpoint that is a PUT, and a form-encoded PUT is
+    /// rejected with `UDIDArrayEmpty`: the service never sees the array,
+    /// because PHP populates its form data for POST requests only.
+    @discardableResult
+    func move(udids: [String], toLocation locationID: String) async throws -> JamfSchoolMoveOutcome {
+        struct Response: Decodable {
+            let devicesMoved: [String]?
+            let devicesNotFound: [String]?
+            let devicesLocationSame: [String]?
+            let devicesMoveFailed: [String]?
+        }
+        var outcome = JamfSchoolMoveOutcome()
         for chunk in stride(from: 0, to: udids.count, by: Self.moveChunkSize).map({
             Array(udids[$0..<min($0 + Self.moveChunkSize, udids.count)])
         }) {
-            var parameters = chunk.map { ("udids[]", $0) }
-            parameters.append(("locationId", locationID))
+            let body = try JSONSerialization.data(
+                withJSONObject: ["udids": chunk, "locationId": locationID]
+            )
             let (data, status) = try await send(
                 path: "/api/devices/migrate",
                 method: "PUT",
-                body: FormURLEncoding.body(parameters)
+                body: body,
+                contentType: "application/json"
             )
             try throwIfError(status: status, data: data)
+            // Read the per-device result rather than trusting the status: a
+            // device that could not be moved is reported inside a success.
+            let reported = try? JSONDecoder().decode(Response.self, from: data)
+            outcome.moved += reported?.devicesMoved ?? []
+            outcome.notFound += reported?.devicesNotFound ?? []
+            outcome.alreadyThere += reported?.devicesLocationSame ?? []
+            outcome.failed += reported?.devicesMoveFailed ?? []
         }
+        return outcome
     }
 
     /// The API rejects a move of more than twenty devices with TooManyDevices.
@@ -403,7 +443,8 @@ actor JamfSchoolClient {
         path: String,
         method: String = "GET",
         queryItems: [URLQueryItem] = [],
-        body: Data? = nil
+        body: Data? = nil,
+        contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
     ) async throws -> (Data, Int) {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError(message: "Invalid Jamf School URL")
@@ -419,10 +460,7 @@ actor JamfSchoolClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if let body {
             request.httpBody = body
-            request.setValue(
-                "application/x-www-form-urlencoded; charset=utf-8",
-                forHTTPHeaderField: "Content-Type"
-            )
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
         // X-Server-Protocol-Version is deliberately not sent. The documented
         // endpoint versions suggest it matters, but the devices and locations
