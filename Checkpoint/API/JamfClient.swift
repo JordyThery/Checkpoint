@@ -326,14 +326,21 @@ actor JamfClient {
         // DISK_ENCRYPTION reports FileVault state and costs about 500 bytes.
         // It deliberately carries no recovery key, so the lookup stays within
         // Read Computers and the response is safe to record in the log.
+        //
+        // Asked for on v4 only. v3 and v1 are unpublished fallbacks for older
+        // servers, so whether they accept the section cannot be checked; one
+        // rejecting it would fail the whole lookup rather than omit a row.
+        var queryItems = [URLQueryItem(name: "section", value: "GENERAL")]
+        if apiVersion == "v4" {
+            queryItems.append(URLQueryItem(name: "section", value: "DISK_ENCRYPTION"))
+        }
+        queryItems += [
+            URLQueryItem(name: "page-size", value: "10"),
+            URLQueryItem(name: "filter", value: "hardware.serialNumber==\"\(serial)\""),
+        ]
         let (data, status) = try await send(
             path: "/api/\(apiVersion)/computers-inventory",
-            queryItems: [
-                URLQueryItem(name: "section", value: "GENERAL"),
-                URLQueryItem(name: "section", value: "DISK_ENCRYPTION"),
-                URLQueryItem(name: "page-size", value: "10"),
-                URLQueryItem(name: "filter", value: "hardware.serialNumber==\"\(serial)\""),
-            ]
+            queryItems: queryItems
         )
         try throwIfError(status: status, data: data)
         guard let item = try JSONDecoder().decode(Response.self, from: data).results.first else { return nil }
