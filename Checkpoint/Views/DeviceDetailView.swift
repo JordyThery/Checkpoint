@@ -66,6 +66,9 @@ struct DeviceDetailView: View {
                 LabeledContent("Serial Number") {
                     Text(report.serial).monospaced().textSelection(.enabled)
                 }
+                if let url = report.jamf.value?.webURL {
+                    Link("Open in Jamf Pro", destination: url)
+                }
             }
             // Read-only detail and the actions that act on it are kept in
             // separate sections, so the form reads as facts then choices.
@@ -609,9 +612,6 @@ struct DeviceDetailView: View {
                     (try await model.deviceLockPIN(for: report), "Set when the Mac was locked through Jamf Pro.")
                 }
             }
-        }
-        if let url = info.webURL {
-            Link("Open in Jamf Pro", destination: url)
         }
         // Destructive action last, matching Release in the Apple Business block.
         Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
