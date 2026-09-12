@@ -30,6 +30,9 @@ struct DeviceDetailView: View {
     @State private var localAdmins: [JamfLocalAdminAccount] = []
     @State private var rotationTime: TimeInterval?
     @State private var softwareUpdate: JamfSoftwareUpdateStatus?
+    /// AppleCare coverage fetched on selection, when the lookup read Apple
+    /// Business in bulk and therefore could not include it.
+    @State private var loadedCoverage: [AppleCareCoverage]?
 
     private enum PendingAction {
         case applyMDM
@@ -89,7 +92,7 @@ struct DeviceDetailView: View {
             }
         }
         .onAppear(perform: syncSelections)
-        .task(id: report.jamf.value?.computerID) { await loadDeviceDetail() }
+        .task(id: report.serial) { await loadDeviceDetail() }
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
@@ -349,10 +352,15 @@ struct DeviceDetailView: View {
         LabeledContent("Order", value: info.device.orderNumber ?? "—")
         LabeledContent("Purchase Source", value: info.device.purchaseSourceType ?? "—")
 
-        if info.coverage.isEmpty {
+        let coverage = loadedCoverage ?? info.coverage
+        if !info.coverageLoaded && loadedCoverage == nil {
+            LabeledContent("Warranty Coverage") {
+                ProgressView().controlSize(.small)
+            }
+        } else if coverage.isEmpty {
             LabeledContent("Warranty Coverage", value: "No coverage found")
         } else {
-            ForEach(info.coverage) { coverage in
+            ForEach(coverage) { coverage in
                 LabeledContent("Warranty Coverage") {
                     VStack(alignment: .trailing, spacing: 2) {
                         Text(coverage.displayStatus)
@@ -483,28 +491,22 @@ struct DeviceDetailView: View {
     private func fileVaultRow(_ encryption: JamfDiskEncryption) -> some View {
         LabeledContent("FileVault") {
             VStack(alignment: .trailing, spacing: 2) {
-                if encryption.fileVaultEnabled == true {
-                    Text("Enabled").foregroundStyle(.green)
-                } else if encryption.fileVaultEnabled == false {
-                    Text("Not enabled").foregroundStyle(.orange)
-                } else {
-                    Text("—")
-                }
-                if encryption.stateAddsDetail, let state = encryption.displayState {
-                    // A percentage only means something mid-flight; a settled
-                    // partition always reads 0 or 100.
-                    let percent = encryption.bootPartitionPercent
-                    let suffix = (!encryption.isSettled && percent != nil) ? " \(percent!)%" : ""
-                    Text(state + suffix)
-                        .font(.caption)
-                        .foregroundStyle(encryption.isSettled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
-                }
+                Text(encryption.displaySummary)
+                    .foregroundStyle(encryptionTint(encryption.status))
                 if let warning = encryption.keyValidityWarning {
                     Text(warning)
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
             }
+        }
+    }
+
+    private func encryptionTint(_ status: JamfDiskEncryption.Status) -> AnyShapeStyle {
+        switch status {
+        case .enabled: AnyShapeStyle(.green)
+        case .notEnabled, .inProgress: AnyShapeStyle(.orange)
+        case .ineligible, .unknown: AnyShapeStyle(.secondary)
         }
     }
 
@@ -541,16 +543,22 @@ struct DeviceDetailView: View {
     private func softwareUpdateRow(_ update: JamfSoftwareUpdateStatus) -> some View {
         LabeledContent("Software Update") {
             VStack(alignment: .trailing, spacing: 2) {
-                Text(update.displayStatus)
-                if let remaining = update.deferralsRemaining, let maximum = update.maxDeferrals {
-                    Text("\(remaining) of \(maximum) deferrals left")
-                        .font(.caption)
-                        .foregroundStyle(remaining == 0 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
-                }
-                if let next = update.nextScheduledInstall {
-                    Text("Installs \(DateFormatting.short(next))")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                // Jamf Pro answers for a device with no declarative plan by
+                // reporting UNKNOWN, which is worth saying plainly rather than
+                // leaving the row out and looking broken.
+                Text(update.isMeaningful ? update.displayStatus : "No update plan")
+                    .foregroundStyle(update.isMeaningful ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                if update.isMeaningful {
+                    if let remaining = update.deferralsRemaining, let maximum = update.maxDeferrals {
+                        Text("\(remaining) of \(maximum) deferrals left")
+                            .font(.caption)
+                            .foregroundStyle(remaining == 0 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    }
+                    if let next = update.nextScheduledInstall {
+                        Text("Installs \(DateFormatting.short(next))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -579,12 +587,18 @@ struct DeviceDetailView: View {
         // Recovery secrets are read on demand and never kept on the report, so
         // they are not fetched by a lookup and do not appear in the table.
         if info.kind == .computer {
+            // Dimmed only when the disk is known not to be encrypted. While
+            // encrypting, or when the state cannot be read, the key may still
+            // exist, so the button stays available.
+            let noKeyExpected = info.encryption?.isEncrypted == false
             Button("Show FileVault Recovery Key") {
                 reveal(title: "FileVault Recovery Key") {
                     let key = try await model.fileVaultRecoveryKey(for: report)
                     return (key.personalRecoveryKey, key.validityStatus.map { "Key status: \($0)" })
                 }
             }
+            .disabled(noKeyExpected)
+            .help(noKeyExpected ? "FileVault is not enabled on this Mac." : "")
             Button("Show Recovery Lock Password") {
                 reveal(title: "Recovery Lock Password") {
                     (try await model.recoveryLockPassword(for: report), nil)
@@ -631,6 +645,8 @@ struct DeviceDetailView: View {
         localAdmins = []
         rotationTime = nil
         softwareUpdate = nil
+        loadedCoverage = nil
+        loadedCoverage = await model.appleCareCoverage(for: report)
         guard report.jamf.value != nil else { return }
         softwareUpdate = await model.softwareUpdateStatus(for: report)
         guard report.jamf.value?.kind == .computer else { return }
@@ -661,6 +677,7 @@ struct DeviceDetailView: View {
     private func commandButtons(_ info: JamfInfo) -> some View {
         ForEach(MDMCommand.commands(for: info.kind), id: \.self) { command in
             let unavailable = model.unavailabilityReason(for: command)
+                ?? command.inapplicabilityReason(for: info)
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
                 if command.needsPIN {
                     pin = ""

@@ -12,13 +12,15 @@ struct ContentView: View {
     @State private var importMessage: String?
     @State private var deviceFilter: DeviceFilter = .all
     @State private var showingGroupPicker = false
+    @State private var showingOrderPicker = false
     @State private var pendingGroup: PendingGroup?
 
-    /// A chosen group, held until its size has been confirmed. A group can
-    /// hold several hundred devices, which the name alone does not reveal.
+    /// A chosen group or order, held until its size has been confirmed.
+    /// Either can hold several hundred devices, which the name alone does
+    /// not reveal.
     private struct PendingGroup: Identifiable {
         let id = UUID()
-        let group: JamfGroup
+        let name: String
         let serials: [String]
     }
 
@@ -125,12 +127,18 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingGroupPicker) {
             GroupPickerView { group, serials in
-                handleGroup(group, serials: serials)
+                loadSerials(named: group.name, serials: serials)
+            }
+            .environment(model)
+        }
+        .sheet(isPresented: $showingOrderPicker) {
+            OrderPickerView { order, serials in
+                loadSerials(named: order, serials: serials)
             }
             .environment(model)
         }
         .alert(
-            pendingGroup.map { "Look up \(LookupModel.deviceCount($0.serials)) from “\($0.group.name)”?" } ?? "",
+            pendingGroup.map { "Look up \(LookupModel.deviceCount($0.serials)) from “\($0.name)”?" } ?? "",
             isPresented: Binding(get: { pendingGroup != nil }, set: { if !$0 { pendingGroup = nil } })
         ) {
             Button("Cancel", role: .cancel) {}
@@ -167,6 +175,9 @@ struct ContentView: View {
             Button("Group…") { showingGroupPicker = true }
                 .help("Look up every device in a Jamf Pro group")
                 .disabled(model.isLoading || settings.jamfServers.isEmpty)
+            Button("Order…") { showingOrderPicker = true }
+                .help("Look up every device on an Apple Business order")
+                .disabled(model.isLoading || !model.isABMConfigured)
             Button("Clear") { clear() }
                 .help("Remove every device from the list")
                 .disabled(model.isLoading || (model.reports.isEmpty && serialsText.isEmpty))
@@ -181,8 +192,16 @@ struct ContentView: View {
                     ProgressView()
                         .controlSize(.small)
                     // Lookups run through a fixed window, so a large list
-                    // takes long enough to be worth counting down.
-                    if model.totalLookups > Self.confirmGroupLookupAbove {
+                    // takes long enough to be worth counting down. Reading
+                    // the organization comes first and has no known total.
+                    if model.isBuildingSnapshot {
+                        Text(model.snapshotProgress > 0
+                             ? "Reading Apple Business… \(model.snapshotProgress)"
+                             : "Reading Apple Business…")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    } else if model.totalLookups > Self.confirmGroupLookupAbove {
                         Text("\(model.completedLookups) of \(model.totalLookups)")
                             .font(.callout)
                             .foregroundStyle(.secondary)
@@ -303,13 +322,13 @@ struct ContentView: View {
         Task { await model.lookUp(serialsText: text) }
     }
 
-    /// Puts a group's serials in the field, then either looks them up or asks
-    /// first, depending on how many there are. The field is filled either way,
-    /// so declining the confirmation leaves the serials ready to run manually.
-    private func handleGroup(_ group: JamfGroup, serials: [String]) {
+    /// Puts a group's or order's serials in the field, then either looks them
+    /// up or asks first, depending on how many there are. The field is filled
+    /// either way, so declining leaves the serials ready to run manually.
+    private func loadSerials(named name: String, serials: [String]) {
         serialsText = serials.joined(separator: "\n")
         if serials.count > Self.confirmGroupLookupAbove {
-            pendingGroup = PendingGroup(group: group, serials: serials)
+            pendingGroup = PendingGroup(name: name, serials: serials)
         } else {
             lookUp()
         }
@@ -348,6 +367,9 @@ struct ContentView: View {
     }
 
     static func coverageSummary(_ info: ABMInfo) -> String {
+        // A bulk lookup has no coverage to show: Apple offers no way to read
+        // it for many devices, so it is fetched when a device is selected.
+        guard info.coverageLoaded else { return "Select to load" }
         guard let coverage = info.coverage.first else { return "No coverage found" }
         let status = coverage.displayStatus
         guard let end = coverage.endDateTime else { return status }

@@ -64,6 +64,45 @@ struct MDMServer: Sendable, Identifiable, Hashable {
     let name: String
 }
 
+/// Everything Apple Business will report about an organization in bulk.
+///
+/// Apple allows an organization only about twenty requests a minute and
+/// offers no way to filter the device list, so asking per device does not
+/// scale: a few hundred devices would take the best part of an hour. Reading
+/// the whole organization instead costs one request per thousand devices plus
+/// one per device management service, which is about twenty requests for any
+/// realistic organization.
+///
+/// AppleCare coverage is the one thing not included: it has no bulk endpoint
+/// and is fetched per device, on demand.
+nonisolated struct ABMSnapshot: Sendable {
+    /// Keyed by serial number, uppercased.
+    let devices: [String: ABMDevice]
+    /// Serial number to the ID of the device management service it is
+    /// assigned to. Absent means unassigned.
+    let serverIDBySerial: [String: String]
+    let capturedAt: Date
+
+    /// Order numbers present in the organization, most devices first.
+    var orders: [(number: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for device in devices.values {
+            guard let order = device.orderNumber?.trimmingCharacters(in: .whitespaces), !order.isEmpty else { continue }
+            counts[order, default: 0] += 1
+        }
+        return counts
+            .map { (number: $0.key, count: $0.value) }
+            .sorted { ($0.count, $1.number) > ($1.count, $0.number) }
+    }
+
+    func serials(inOrder order: String) -> [String] {
+        devices.values
+            .filter { $0.orderNumber == order }
+            .map(\.serialNumber)
+            .sorted()
+    }
+}
+
 // MARK: - Client
 
 /// Client for the Apple Business API (`api-business.apple.com`).
@@ -212,6 +251,73 @@ actor ABMClient {
         return servers
     }
 
+    // MARK: Organization snapshot
+
+    /// The attributes `ABMDevice` decodes. Asking for only these cuts the
+    /// device list by about 80%, which matters when reading thousands.
+    private static let deviceFields = [
+        "serialNumber", "deviceModel", "productFamily", "status",
+        "addedToOrgDateTime", "releasedFromOrgDateTime", "orderNumber",
+        "purchaseSourceType", "isMdmMigrationCapable",
+        "mdmMigrationStatus", "mdmMigrationDeadlineDateTime",
+    ].joined(separator: ",")
+
+    /// Reads the whole organization: every device, and which management
+    /// service each is assigned to. `progress` reports devices read so far,
+    /// since Apple returns a cursor but never a total.
+    func organizationSnapshot(progress: (@Sendable (Int) -> Void)? = nil) async throws -> ABMSnapshot {
+        struct DeviceResponse: Decodable {
+            let data: [Item]
+            let links: Links?
+            struct Item: Decodable { let attributes: ABMDevice }
+            struct Links: Decodable { let next: String? }
+        }
+        var devices: [String: ABMDevice] = [:]
+        var next: URL? = URL(
+            string: "/v1/orgDevices?limit=1000&fields%5BorgDevices%5D=\(Self.deviceFields)",
+            relativeTo: baseURL
+        )?.absoluteURL
+        while let url = next {
+            let (data, status) = try await send(url: url)
+            try throwIfError(status: status, data: data)
+            let page = try JSONDecoder().decode(DeviceResponse.self, from: data)
+            for item in page.data {
+                devices[item.attributes.serialNumber.uppercased()] = item.attributes
+            }
+            progress?(devices.count)
+            next = page.links?.next.flatMap { URL(string: $0) }
+        }
+
+        // Assignments come from the other direction: the device list carries
+        // only a link per device, but each management service can list its
+        // own devices, and there are few of those.
+        struct AssignmentResponse: Decodable {
+            let data: [Item]
+            let links: Links?
+            struct Item: Decodable { let id: String }
+            struct Links: Decodable { let next: String? }
+        }
+        var serverIDBySerial: [String: String] = [:]
+        for server in try await mdmServers() {
+            var page: URL? = URL(
+                string: "/v1/mdmServers/\(server.id)/relationships/devices?limit=1000",
+                relativeTo: baseURL
+            )?.absoluteURL
+            while let url = page {
+                let (data, status) = try await send(url: url)
+                // A service the account cannot read must not fail the snapshot.
+                guard (200...299).contains(status) else { break }
+                guard let decoded = try? JSONDecoder().decode(AssignmentResponse.self, from: data) else { break }
+                for item in decoded.data {
+                    serverIDBySerial[item.id.uppercased()] = server.id
+                }
+                page = decoded.links?.next.flatMap { URL(string: $0) }
+            }
+        }
+
+        return ABMSnapshot(devices: devices, serverIDBySerial: serverIDBySerial, capturedAt: Date())
+    }
+
     // MARK: Activities
 
     /// Submits an org device activity and returns its ID. ABM processes these
@@ -296,6 +402,44 @@ actor ABMClient {
         return try await send(url: url.absoluteURL, method: method, body: body)
     }
 
+    // Apple limits how many requests an organization may make in a short
+    // period. It does not answer with 429 and a Retry-After: past the limit it
+    // simply stops completing connections, so the failure arrives as a
+    // URLSession error. Measured against a live tenant, roughly twenty
+    // consecutive requests exhaust it and it recovers within a few seconds.
+    //
+    // Requests are therefore paced, and connection failures retried with a
+    // widening delay. Without this, a lookup of a few hundred devices fails
+    // partway through with every remaining device reported as an error.
+
+    /// Requests allowed in any rolling minute.
+    ///
+    /// Measured against a live organization: the twenty-first request in
+    /// quick succession fails, and slowing the pace does not help, so this is
+    /// a quota on count rather than a rate. Eighteen leaves a little room for
+    /// the token request and for whatever else the account is doing.
+    private static let windowLimit = 18
+    private static let window: TimeInterval = 60
+    private static let maximumAttempts = 4
+    /// When the recent requests were sent, oldest first.
+    private var recentRequests: [Date] = []
+
+    /// Waits until sending another request would stay inside the quota.
+    /// Small lookups never wait; large ones pace themselves.
+    private func reserveRequestSlot() async {
+        while true {
+            let now = Date()
+            recentRequests.removeAll { now.timeIntervalSince($0) >= Self.window }
+            if recentRequests.count < Self.windowLimit {
+                recentRequests.append(now)
+                return
+            }
+            guard let oldest = recentRequests.first else { return }
+            let wait = Self.window - now.timeIntervalSince(oldest) + 0.1
+            try? await Task.sleep(for: .seconds(max(wait, 0.1)))
+        }
+    }
+
     /// The single point every Apple Business request goes through, and so the
     /// single point the activity log is fed from. Request headers are
     /// deliberately never recorded, which keeps the bearer token out of the log
@@ -311,33 +455,51 @@ actor ABMClient {
         }
 
         let loggedPath = [url.path(), url.query()].compactMap { $0 }.joined(separator: "?")
-        let started = Date()
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            log?.recordRequest(
-                service: .appleBusiness,
-                connection: connectionName,
-                method: method,
-                path: loggedPath,
-                status: status,
-                duration: Date().timeIntervalSince(started),
-                requestBody: body,
-                responseBody: data,
-                withholdBodies: false
-            )
-            return (data, status)
-        } catch {
-            log?.recordFailure(
-                service: .appleBusiness,
-                connection: connectionName,
-                method: method,
-                path: loggedPath,
-                duration: Date().timeIntervalSince(started),
-                message: error.localizedDescription
-            )
-            throw error
+        var lastError: Error?
+        for attempt in 0..<Self.maximumAttempts {
+            await reserveRequestSlot()
+            let started = Date()
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                // 429 and 503 are retried on the same terms as a dropped
+                // connection, in case Apple starts answering properly.
+                if (status == 429 || status == 503), attempt < Self.maximumAttempts - 1 {
+                    log?.recordRequest(
+                        service: .appleBusiness, connection: connectionName, method: method,
+                        path: loggedPath, status: status, duration: Date().timeIntervalSince(started),
+                        requestBody: body, responseBody: data, withholdBodies: false
+                    )
+                    try? await Task.sleep(for: .seconds(Self.backoff(attempt)))
+                    continue
+                }
+                log?.recordRequest(
+                    service: .appleBusiness, connection: connectionName, method: method,
+                    path: loggedPath, status: status, duration: Date().timeIntervalSince(started),
+                    requestBody: body, responseBody: data, withholdBodies: false
+                )
+                return (data, status)
+            } catch {
+                lastError = error
+                let willRetry = attempt < Self.maximumAttempts - 1
+                log?.recordFailure(
+                    service: .appleBusiness, connection: connectionName, method: method,
+                    path: loggedPath, duration: Date().timeIntervalSince(started),
+                    message: willRetry
+                        ? "\(error.localizedDescription) Retrying."
+                        : error.localizedDescription
+                )
+                guard willRetry else { break }
+                try? await Task.sleep(for: .seconds(Self.backoff(attempt)))
+            }
         }
+        throw lastError ?? APIError(message: "Apple Business did not answer.")
+    }
+
+    /// 5s, 15s, 45s. Once the quota is spent Apple stays quiet for a while,
+    /// so a short retry only wastes another request.
+    private nonisolated static func backoff(_ attempt: Int) -> Double {
+        [5, 15, 45][min(attempt, 2)]
     }
 
     private func throwIfError(status: Int, data: Data) throws {

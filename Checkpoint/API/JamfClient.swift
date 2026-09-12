@@ -31,40 +31,74 @@ struct JamfComputerRecord: Sendable {
 
 /// A Mac's FileVault state, as reported by inventory.
 struct JamfDiskEncryption: Sendable {
+    /// Jamf Pro's `fileVault2Enabled` flag. Not trustworthy on its own: it
+    /// reports false for Macs encrypted by the user rather than through Jamf
+    /// Pro, even with the boot partition fully encrypted and a valid key
+    /// escrowed. Kept only as a fallback for when the partition state is
+    /// missing or unknown.
     let fileVaultEnabled: Bool?
     /// Boot partition state, e.g. ENCRYPTED, ENCRYPTING or RESTART_NEEDED.
+    /// This is the authoritative signal.
     let bootPartitionState: String?
     let bootPartitionPercent: Int?
     /// Jamf Pro's assessment of the escrowed personal key, e.g. VALID.
     let recoveryKeyValidity: String?
 
-    /// Whether the state is one that has settled, rather than one in progress
-    /// or needing attention.
-    var isSettled: Bool {
-        ["ENCRYPTED", "UNENCRYPTED", "DECRYPTED", "INELIGIBLE"].contains(bootPartitionState ?? "")
+    nonisolated enum Status: Sendable {
+        case enabled
+        case notEnabled
+        /// Encrypting, decrypting, or waiting for a restart.
+        case inProgress
+        case ineligible
+        case unknown
     }
 
-    /// Whether the partition state says anything the enabled flag does not.
-    /// Encrypted with FileVault on, or unencrypted with it off, is the same
-    /// fact twice; anything else is worth showing.
-    var stateAddsDetail: Bool {
-        guard let state = bootPartitionState, state != "UNKNOWN" else { return false }
-        switch state {
-        case "ENCRYPTED": return fileVaultEnabled != true
-        case "UNENCRYPTED": return fileVaultEnabled == true
-        default: return true
+    var status: Status {
+        switch bootPartitionState {
+        case "ENCRYPTED": .enabled
+        case "UNENCRYPTED", "DECRYPTED": .notEnabled
+        case "INELIGIBLE": .ineligible
+        case "ENCRYPTING", "DECRYPTING", "OPTIMIZING", "RESTART_NEEDED",
+             "ENCRYPTING_PAUSED", "DECRYPTING_PAUSED": .inProgress
+        default:
+            // UNKNOWN or absent: the flag is all there is.
+            switch fileVaultEnabled {
+            case true: .enabled
+            case false: .notEnabled
+            default: .unknown
+            }
         }
     }
 
-    /// The partition state as sentence case, e.g. RESTART_NEEDED -> Restart needed.
-    var displayState: String? {
-        bootPartitionState.map(JamfDisplay.sentenceCase)
+    /// Whether FileVault is on, so far as can be told. Nil while in progress
+    /// or unknown, which callers should treat as "do not disable anything".
+    var isEncrypted: Bool? {
+        switch status {
+        case .enabled: true
+        case .notEnabled, .ineligible: false
+        case .inProgress, .unknown: nil
+        }
     }
 
-    /// Key validity is only meaningful once FileVault is on: an unencrypted
-    /// Mac reports UNKNOWN, which would read as a problem.
+    var displaySummary: String {
+        switch status {
+        case .enabled: return "Enabled"
+        case .notEnabled: return "Not enabled"
+        case .ineligible: return "Ineligible"
+        case .unknown: return "—"
+        case .inProgress:
+            // The state is the whole story here, e.g. Encrypting 42%.
+            guard let state = bootPartitionState.map(JamfDisplay.sentenceCase) else { return "In progress" }
+            guard let percent = bootPartitionPercent,
+                  state.hasSuffix("ing") || state.hasSuffix("paused") else { return state }
+            return "\(state) \(percent)%"
+        }
+    }
+
+    /// Key validity only means something once the disk is encrypted: an
+    /// unencrypted Mac reports UNKNOWN, which would read as a problem.
     var keyValidityWarning: String? {
-        guard fileVaultEnabled == true,
+        guard status == .enabled,
               let validity = recoveryKeyValidity,
               !["VALID", "NOT_APPLICABLE"].contains(validity) else { return nil }
         return "Recovery key \(validity.lowercased())"

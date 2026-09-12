@@ -8,7 +8,7 @@
 
 Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table, and the tools to act on what you find.
 
-Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken from a Jamf Pro group, and Checkpoint reports, per device:
+Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken from a Jamf Pro group or an Apple Business order, and Checkpoint reports, per device:
 
 **From Apple Business**
 
@@ -39,11 +39,17 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 
 Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).
 
-### Looking up a group
+### Looking up a group or an order
 
-**Group…** lists every computer and mobile device group on the selected Jamf Pro server, smart and static alike, and loads the members of the one you pick. Large groups ask for confirmation first, since a group name does not reveal that it holds several hundred devices.
+**Group…** lists every computer and mobile device group on the selected Jamf Pro server, smart and static alike, and loads the members of the one you pick.
 
-Devices are looked up through a fixed window rather than all at once, because each one costs several requests across both APIs. A few hundred devices therefore takes a few minutes, with a running count shown while it works.
+**Order…** lists the Apple Business order numbers in your organization with the number of devices on each. Apple cannot search devices by order number, so Checkpoint reads the device list once and reuses it; the first use takes about a minute and later ones are immediate.
+
+Both fill the serial field, and both ask for confirmation above 25 devices, since neither a group name nor an order number reveals that it covers several hundred.
+
+Above 15 devices, Apple Business is read in bulk instead of one device at a time. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device does not scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs about twenty requests regardless of size, and a 389-device group completes in a little over a minute.
+
+The one thing not available in bulk is **AppleCare coverage**, which Apple serves only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device.
 
 ### MDM server migration
 

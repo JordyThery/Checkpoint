@@ -12,6 +12,8 @@ In Apple Business, go to **Settings → Integrations → API** and choose **Add 
 
 Each organization needs its own API account. You need the Client ID, the Key ID, and the downloaded `.pem` private key.
 
+Apple limits an organization to roughly **twenty requests a minute**, and does not signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, and reads the whole organization in bulk rather than per device once a lookup exceeds fifteen devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
+
 ## Jamf Pro
 
 Create an API client under **Settings → API Roles and Clients**, and grant its role the privileges for the features you want.

@@ -21,6 +21,9 @@ struct ABMInfo: Sendable {
     var mdmServerID: String?
     var mdmServerName: String?
     var coverage: [AppleCareCoverage]
+    /// False when the lookup came from an organization snapshot, which has no
+    /// bulk source for AppleCare. Coverage is then read on demand instead.
+    var coverageLoaded: Bool = true
 
     var isReleased: Bool { device.releasedFromOrgDateTime != nil }
 }
@@ -121,6 +124,14 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
         guard authMethod == .platformGateway, !worksOverGateway else { return nil }
         return "This command is currently unavailable over the Platform API and requires an API client connection."
+    }
+
+    /// Why this command would do nothing to this particular device, or nil.
+    /// Distinct from the connection check above: this one is about the state
+    /// of the device rather than what the connection can carry.
+    func inapplicabilityReason(for info: JamfInfo) -> String? {
+        guard self == .clearPasscode, info.security?.passcodePresent == false else { return nil }
+        return "This device has no passcode set."
     }
 
     /// Whether the Platform API gateway can carry this command.
@@ -278,6 +289,20 @@ final class LookupModel {
     private var jamfClients: [String: JamfClient] = [:]
     /// LAPS rotation time per server, cached because it is server-wide.
     private var rotationTimes: [UUID: TimeInterval] = [:]
+    /// The last organization snapshot, per Apple Business organization.
+    /// Discarded whenever Checkpoint changes anything in Apple Business.
+    private var abmSnapshots: [UUID: ABMSnapshot] = [:]
+
+    /// Above this many devices, Apple Business is read in bulk rather than
+    /// one device at a time. Apple allows roughly twenty requests a minute
+    /// per organization, and a per-device lookup costs three of them, so the
+    /// whole organization becomes cheaper than about seven devices.
+    static let snapshotThreshold = 15
+
+    /// Devices read so far while building an organization snapshot. Apple
+    /// returns a cursor but no total, so this can only ever count up.
+    private(set) var snapshotProgress = 0
+    private(set) var isBuildingSnapshot = false
 
     init(settings: AppSettings, log: ActivityLog? = nil) {
         self.settings = settings
@@ -380,7 +405,7 @@ final class LookupModel {
         totalLookups = serials.count
         defer { totalLookups = 0 }
 
-        let context = await makeContext()
+        let context = await makeContext(deviceCount: serials.count)
         await withTaskGroup(of: (String, FetchState<ABMInfo>, FetchState<JamfInfo>).self) { group in
             var pending = serials.makeIterator()
             func addNext() {
@@ -478,6 +503,7 @@ final class LookupModel {
             let activityID = try await abm.submitActivity(.release, serials: serials)
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
+        invalidateSnapshot()
         await refreshRows(serials)
     }
 
@@ -522,6 +548,7 @@ final class LookupModel {
             // below reads the new assignment instead of the old one.
             for id in activityIDs { await abm.waitForActivity(id: id) }
         }
+        invalidateSnapshot()
         await refreshRows(inOrg.map(\.serial))
     }
 
@@ -593,6 +620,7 @@ final class LookupModel {
             // Apple applies activities asynchronously, so wait before re-reading.
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
+        invalidateSnapshot()
         await refreshRows(serials)
     }
 
@@ -641,6 +669,59 @@ final class LookupModel {
         }
     }
 
+    // MARK: Organization snapshot
+
+    /// The organization snapshot for the selected Apple Business account,
+    /// reading it first if necessary. Nil when Apple Business is not
+    /// configured or the read fails, in which case callers fall back to
+    /// asking per device.
+    @discardableResult
+    func organizationSnapshot(forceRefresh: Bool = false) async -> ABMSnapshot? {
+        guard let org = selectedABMOrg, let abm = makeABMClient() else { return nil }
+        if !forceRefresh, let cached = abmSnapshots[org.id] { return cached }
+        isBuildingSnapshot = true
+        snapshotProgress = 0
+        defer { isBuildingSnapshot = false }
+        do {
+            let snapshot = try await abm.organizationSnapshot { count in
+                Task { @MainActor in self.snapshotProgress = count }
+            }
+            abmSnapshots[org.id] = snapshot
+            recordAction(
+                .appleBusiness,
+                "Read the organization: \(Self.deviceCount(snapshot.devices.count))",
+                serials: []
+            )
+            return snapshot
+        } catch {
+            recordAction(
+                .appleBusiness,
+                "Could not read the organization — \(error.localizedDescription)",
+                serials: [],
+                outcome: .failed
+            )
+            return nil
+        }
+    }
+
+    /// Order numbers in the organization, with how many devices each covers.
+    /// Reads the organization if it has not been read already.
+    func abmOrders() async -> [(number: String, count: Int)] {
+        await organizationSnapshot()?.orders ?? []
+    }
+
+    /// The serial numbers on an order.
+    func serials(inOrder order: String) async -> [String] {
+        await organizationSnapshot()?.serials(inOrder: order) ?? []
+    }
+
+    /// Discards the cached snapshot for the selected organization. Called
+    /// after anything that changes Apple Business, so the next bulk lookup
+    /// does not report the state from before the change.
+    private func invalidateSnapshot() {
+        if let id = selectedABMOrg?.id { abmSnapshots[id] = nil }
+    }
+
     // MARK: Groups
 
     /// Every computer and mobile device group on the selected server, both
@@ -672,12 +753,23 @@ final class LookupModel {
     // costs a request per device, and a lookup of several hundred serials
     // should not pay for detail that only the inspector shows.
 
-    /// Jamf Pro's managed software update state for a device, or nil when no
-    /// plan applies or the server will not serve it.
+    /// AppleCare coverage for one device. Apple has no bulk endpoint for it,
+    /// so a lookup that read the organization in bulk leaves it out and the
+    /// inspector fetches it for whichever device is selected.
+    func appleCareCoverage(for report: DeviceReport) async -> [AppleCareCoverage]? {
+        guard let info = report.abm.value, !info.coverageLoaded, !info.isReleased,
+              let abm = makeABMClient() else { return nil }
+        return try? await abm.appleCareCoverage(serial: report.serial)
+    }
+
+    /// Jamf Pro's managed software update state for a device.
+    ///
+    /// Returns a status even when no plan applies, so the row can say so.
+    /// Hiding it made the absence of a plan indistinguishable from the
+    /// feature not working. Nil only when the server will not answer.
     func softwareUpdateStatus(for report: DeviceReport) async -> JamfSoftwareUpdateStatus? {
         guard let info = report.jamf.value, let jamf = makeJamfClient() else { return nil }
-        let status = try? await jamf.softwareUpdateStatus(deviceID: info.computerID, kind: info.kind)
-        return (status?.isMeaningful ?? false) ? status : nil
+        return try? await jamf.softwareUpdateStatus(deviceID: info.computerID, kind: info.kind)
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list
@@ -1096,6 +1188,9 @@ final class LookupModel {
         var abm: ABMClient?
         var jamf: JamfClient?
         var jamfBaseURL: String?
+        /// When present, Apple Business answers come from here instead of one
+        /// request per device.
+        var abmSnapshot: ABMSnapshot?
         var mdmServerNames: [String: String] = [:]
         var computerPrestageBySerial: [String: String] = [:]
         var computerPrestageNames: [String: String] = [:]
@@ -1104,12 +1199,15 @@ final class LookupModel {
         var adeInstanceBySerial: [String: String] = [:]
     }
 
-    private func makeContext() async -> LookupContext {
+    private func makeContext(deviceCount: Int = 0) async -> LookupContext {
         var context = LookupContext(
             abm: makeABMClient(),
             jamf: makeJamfClient(),
             jamfBaseURL: selectedJamfServer?.normalizedBaseURL
         )
+        if deviceCount >= Self.snapshotThreshold {
+            context.abmSnapshot = await organizationSnapshot()
+        }
         if let abm = context.abm {
             if let servers = try? await abm.mdmServers() {
                 mdmServers = servers
@@ -1137,6 +1235,20 @@ final class LookupModel {
 
     private static func fetchABM(context: LookupContext, serial: String) async -> FetchState<ABMInfo> {
         guard let client = context.abm else { return .notConfigured }
+        // With a snapshot in hand there is nothing to ask Apple: everything
+        // except AppleCare coverage is already known, and that is read on
+        // demand from the inspector.
+        if let snapshot = context.abmSnapshot {
+            guard let device = snapshot.devices[serial.uppercased()] else { return .notFound }
+            let serverID = snapshot.serverIDBySerial[serial.uppercased()]
+            return .found(ABMInfo(
+                device: device,
+                mdmServerID: serverID,
+                mdmServerName: serverID.map { context.mdmServerNames[$0] ?? $0 },
+                coverage: [],
+                coverageLoaded: false
+            ))
+        }
         do {
             guard let device = try await client.device(serial: serial) else { return .notFound }
             let coverage = (try? await client.appleCareCoverage(serial: serial)) ?? []
