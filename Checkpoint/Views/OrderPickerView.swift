@@ -42,6 +42,15 @@ struct OrderPickerView: View {
                     Text("\(visible.count) order\(visible.count == 1 ? "" : "s")")
                         .font(.callout)
                         .foregroundStyle(.secondary)
+                    // The list is reused for the session, so it needs a way
+                    // to pick up devices added in Apple Business meanwhile.
+                    Button {
+                        Task { await load(refresh: true) }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Read the organization again")
                 }
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
@@ -59,18 +68,17 @@ struct OrderPickerView: View {
     @ViewBuilder
     private var content: some View {
         if isLoading {
-            VStack(spacing: 8) {
+            VStack(spacing: 10) {
                 ProgressView()
-                Text(model.snapshotProgress > 0
-                     ? "Reading the organization… \(model.snapshotProgress) devices"
-                     : "Reading the organization…")
+                Text(model.snapshotStatus ?? "Reading the organization…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Text("Apple cannot search by order number, so Checkpoint reads the device list once and reuses it.")
+                    .monospacedDigit()
+                Text("This takes a minute or two. Apple cannot search devices by order number and limits how often it can be asked, so Checkpoint reads the organization once and reuses it until you change something or quit.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
+                    .padding(.horizontal, 28)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if orders.isEmpty {
@@ -96,8 +104,12 @@ struct OrderPickerView: View {
         }
     }
 
-    private func load() async {
+    private func load(refresh: Bool = false) async {
         isLoading = true
+        if refresh {
+            selection = nil
+            await model.organizationSnapshot(forceRefresh: true)
+        }
         orders = await model.abmOrders()
         isLoading = false
     }

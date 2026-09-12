@@ -64,6 +64,23 @@ struct MDMServer: Sendable, Identifiable, Hashable {
     let name: String
 }
 
+nonisolated enum ABMSnapshotProgress: Sendable {
+    /// Devices read so far. Apple returns a cursor but never a total, so this
+    /// can only count up.
+    case devices(Int)
+    /// Management services whose device assignments have been read.
+    case assignments(done: Int, total: Int)
+
+    var description: String {
+        switch self {
+        case .devices(let count):
+            "Reading devices… \(count.formatted())"
+        case .assignments(let done, let total):
+            "Reading assignments… \(done) of \(total) services"
+        }
+    }
+}
+
 /// Everything Apple Business will report about an organization in bulk.
 ///
 /// Apple allows an organization only about twenty requests a minute and
@@ -263,9 +280,13 @@ actor ABMClient {
     ].joined(separator: ",")
 
     /// Reads the whole organization: every device, and which management
-    /// service each is assigned to. `progress` reports devices read so far,
-    /// since Apple returns a cursor but never a total.
-    func organizationSnapshot(progress: (@Sendable (Int) -> Void)? = nil) async throws -> ABMSnapshot {
+    /// service each is assigned to.
+    ///
+    /// Both phases report progress, because the second is the slow one. The
+    /// device list is a handful of large pages, while assignments are one
+    /// request per management service and so spend most of their time
+    /// waiting on the quota.
+    func organizationSnapshot(progress: (@Sendable (ABMSnapshotProgress) -> Void)? = nil) async throws -> ABMSnapshot {
         struct DeviceResponse: Decodable {
             let data: [Item]
             let links: Links?
@@ -284,7 +305,7 @@ actor ABMClient {
             for item in page.data {
                 devices[item.attributes.serialNumber.uppercased()] = item.attributes
             }
-            progress?(devices.count)
+            progress?(.devices(devices.count))
             next = page.links?.next.flatMap { URL(string: $0) }
         }
 
@@ -298,7 +319,9 @@ actor ABMClient {
             struct Links: Decodable { let next: String? }
         }
         var serverIDBySerial: [String: String] = [:]
-        for server in try await mdmServers() {
+        let servers = try await mdmServers()
+        for (index, server) in servers.enumerated() {
+            progress?(.assignments(done: index, total: servers.count))
             var page: URL? = URL(
                 string: "/v1/mdmServers/\(server.id)/relationships/devices?limit=1000",
                 relativeTo: baseURL

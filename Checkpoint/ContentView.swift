@@ -195,9 +195,7 @@ struct ContentView: View {
                     // takes long enough to be worth counting down. Reading
                     // the organization comes first and has no known total.
                     if model.isBuildingSnapshot {
-                        Text(model.snapshotProgress > 0
-                             ? "Reading Apple Business… \(model.snapshotProgress)"
-                             : "Reading Apple Business…")
+                        Text(model.snapshotStatus ?? "Reading Apple Business…")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()

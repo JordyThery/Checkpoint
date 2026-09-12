@@ -299,9 +299,8 @@ final class LookupModel {
     /// whole organization becomes cheaper than about seven devices.
     static let snapshotThreshold = 15
 
-    /// Devices read so far while building an organization snapshot. Apple
-    /// returns a cursor but no total, so this can only ever count up.
-    private(set) var snapshotProgress = 0
+    /// What the organization read is currently doing, for the progress text.
+    private(set) var snapshotStatus: String?
     private(set) var isBuildingSnapshot = false
 
     init(settings: AppSettings, log: ActivityLog? = nil) {
@@ -680,11 +679,11 @@ final class LookupModel {
         guard let org = selectedABMOrg, let abm = makeABMClient() else { return nil }
         if !forceRefresh, let cached = abmSnapshots[org.id] { return cached }
         isBuildingSnapshot = true
-        snapshotProgress = 0
-        defer { isBuildingSnapshot = false }
+        snapshotStatus = nil
+        defer { isBuildingSnapshot = false; snapshotStatus = nil }
         do {
-            let snapshot = try await abm.organizationSnapshot { count in
-                Task { @MainActor in self.snapshotProgress = count }
+            let snapshot = try await abm.organizationSnapshot { progress in
+                Task { @MainActor in self.snapshotStatus = progress.description }
             }
             abmSnapshots[org.id] = snapshot
             recordAction(
@@ -713,6 +712,12 @@ final class LookupModel {
     /// The serial numbers on an order.
     func serials(inOrder order: String) async -> [String] {
         await organizationSnapshot()?.serials(inOrder: order) ?? []
+    }
+
+    /// The snapshot already held for the selected organization, without
+    /// reading one.
+    private func cachedSnapshot() -> ABMSnapshot? {
+        selectedABMOrg.flatMap { abmSnapshots[$0.id] }
     }
 
     /// Discards the cached snapshot for the selected organization. Called
@@ -1205,7 +1210,13 @@ final class LookupModel {
             jamf: makeJamfClient(),
             jamfBaseURL: selectedJamfServer?.normalizedBaseURL
         )
-        if deviceCount >= Self.snapshotThreshold {
+        // A snapshot already in hand answers instantly and costs nothing, so
+        // it is used whatever the size of the lookup. Reading one is only
+        // worth it when asking per device would be slower, which is why the
+        // threshold applies to building rather than to using.
+        if let cached = cachedSnapshot() {
+            context.abmSnapshot = cached
+        } else if deviceCount >= Self.snapshotThreshold {
             context.abmSnapshot = await organizationSnapshot()
         }
         if let abm = context.abm {
