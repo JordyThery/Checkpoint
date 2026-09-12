@@ -20,7 +20,8 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 
 | Feature | Privilege |
 | --- | --- |
-| Device lookup, including FileVault state, passcode state and software update status | Read Computers, Read Mobile Devices |
+| Device lookup, including FileVault state and passcode state | Read Computers, Read Mobile Devices |
+| Managed software update plan | Read Managed Software Updates |
 | PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Looking up a group | Read Smart Computer Groups, Read Static Computer Groups, Read Smart Mobile Device Groups, Read Static Mobile Device Groups |
@@ -60,6 +61,8 @@ Looking up an Apple Business order needs no Jamf Pro privilege and no extra Appl
 ### Optional privileges
 
 Without **View Local Admin Password**, the Managed Local Administrator Accounts section is simply absent. Checkpoint reads the accounts during an ordinary lookup, so a missing privilege is treated as "no accounts" rather than an error.
+
+Without **Read Managed Software Updates**, the Software Update row reads as though the device has no plan. The plan is read from the managed software update plans, not from update statuses: a declaratively managed update is scheduled against a deadline, and statuses report per-product download and install progress that stays empty while a device is merely scheduled.
 
 FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.
 

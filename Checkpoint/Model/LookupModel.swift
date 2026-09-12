@@ -237,6 +237,25 @@ nonisolated enum DateFormatting {
         return formatter.date(from: string)
     }
 
+    /// Parses a timestamp with no time zone, as Jamf Pro's managed update
+    /// deadline is given: a wall-clock time on the device itself. Read in the
+    /// current zone, which is what that means to whoever is looking at it.
+    /// The zoned parser is tried first in case a release starts sending one.
+    static func parseDeviceLocal(_ string: String) -> Date? {
+        if let date = parseISO(string) { return date }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        formatter.timeZone = .current
+        return formatter.date(from: string)
+    }
+
+    static func shortDeviceLocal(_ string: String?) -> String {
+        guard let string, !string.isEmpty else { return "—" }
+        guard let date = parseDeviceLocal(string) else { return string }
+        return date.formatted(date: .abbreviated, time: .shortened)
+    }
+
     /// Jamf reports "never" as the Unix epoch, so treat anything before 1971 as no value.
     private static let earliestPlausibleDate = Date(timeIntervalSince1970: 365 * 24 * 3600)
 
@@ -779,14 +798,10 @@ final class LookupModel {
         return (try? await abm.appleCareCoverage(serial: report.serial)) ?? []
     }
 
-    /// Jamf Pro's managed software update state for a device.
-    ///
-    /// Returns a status even when no plan applies, so the row can say so.
-    /// Hiding it made the absence of a plan indistinguishable from the
-    /// feature not working. Nil only when the server will not answer.
-    func softwareUpdateStatus(for report: DeviceReport) async -> JamfSoftwareUpdateStatus? {
+    /// The device's managed software update plan, or nil when it has none.
+    func softwareUpdatePlan(for report: DeviceReport) async -> JamfSoftwareUpdatePlan? {
         guard let info = report.jamf.value, let jamf = makeJamfClient() else { return nil }
-        return try? await jamf.softwareUpdateStatus(deviceID: info.computerID, kind: info.kind)
+        return try? await jamf.softwareUpdatePlan(deviceID: info.computerID, kind: info.kind)
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list

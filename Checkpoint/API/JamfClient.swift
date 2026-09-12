@@ -155,25 +155,59 @@ struct JamfLocalAdminAccount: Sendable, Identifiable, Hashable {
     }
 }
 
-/// Jamf Pro's managed software update state for one device.
-struct JamfSoftwareUpdateStatus: Sendable {
-    let status: String
-    let downloaded: Bool?
-    let downloadPercentComplete: Double?
-    let deferralsRemaining: Int?
+/// A managed software update plan for one device.
+///
+/// Read from the plans endpoint rather than from update statuses. A
+/// declaratively managed update carries a deadline, not a deferral count:
+/// statuses report per-product download and install progress and stay empty
+/// until a device reports some, so they say nothing about a device that is
+/// merely scheduled.
+struct JamfSoftwareUpdatePlan: Sendable {
+    /// One of `PlanStatus.state`. Most values are transient internal steps.
+    let state: String
+    /// Local date and time on the device by which the update is forced.
+    let deadline: String?
+    /// DOWNLOAD_INSTALL_SCHEDULE, DOWNLOAD_INSTALL_ALLOW_DEFERRAL, and so on.
+    let updateAction: String?
+    let versionType: String?
+    let specificVersion: String?
+    /// Only meaningful for the action that allows deferral; a declarative
+    /// scheduled install reports zero.
     let maxDeferrals: Int?
-    let nextScheduledInstall: String?
+    let errorReasons: [String]
 
-    /// Whether Jamf Pro is reporting anything worth showing. A device with no
-    /// update plan answers with an UNKNOWN row and no other detail.
-    var isMeaningful: Bool {
-        status.uppercased() != "UNKNOWN"
-            || deferralsRemaining != nil
-            || nextScheduledInstall != nil
-            || downloaded == true
+    /// The internal state machine collapsed to something worth showing. Every
+    /// value not named here is one of the transient steps between accepting a
+    /// plan and scheduling it.
+    var displayState: String {
+        switch state {
+        case "PlanCompleted": "Installed"
+        case "PlanFailed", "PlanException", "RejectingPlan": "Failed"
+        case "PlanCanceled": "Cancelled"
+        case "DDMPlanScheduled", "MDMPlanScheduled", "WaitingToStartDDMUpdate": "Scheduled"
+        case "VerifyingInstallation", "ProcessingInstallationVerification": "Verifying"
+        case "Unknown": "Unknown"
+        default: "In progress"
+        }
     }
 
-    var displayStatus: String { JamfDisplay.sentenceCase(status) }
+    /// What the device is being moved to, when Jamf Pro says something
+    /// specific. Nil for the ordinary "latest" cases, which add nothing.
+    var targetVersion: String? {
+        if let specificVersion, !specificVersion.isEmpty { return specificVersion }
+        switch versionType {
+        case "LATEST_MAJOR": return "Latest major version"
+        case "CUSTOM_VERSION": return "Custom version"
+        default: return nil
+        }
+    }
+
+    /// Deferrals only apply to the action that permits them.
+    var deferralsAllowed: Int? {
+        guard updateAction == "DOWNLOAD_INSTALL_ALLOW_DEFERRAL",
+              let maxDeferrals, maxDeferrals > 0 else { return nil }
+        return maxDeferrals
+    }
 }
 
 nonisolated enum JamfDisplay {
@@ -1033,37 +1067,57 @@ actor JamfClient {
 
     // MARK: Managed software updates
 
-    /// Jamf Pro's declarative software update state for a device. Nil when no
-    /// plan applies, which the endpoint reports as an UNKNOWN row rather than
-    /// an empty result.
-    func softwareUpdateStatus(deviceID: String, kind: JamfDeviceKind) async throws -> JamfSoftwareUpdateStatus? {
+    /// The device's managed software update plan, or nil when it has none.
+    /// Requires "Read Managed Software Updates"; a connection without it gets
+    /// nil rather than an error, since the plan is supplementary detail.
+    ///
+    /// Filtered on the device ID alone and matched on object type afterwards:
+    /// computer and mobile device IDs are separate sequences, so the same
+    /// number can name one of each, and a tvOS device is APPLE_TV rather than
+    /// MOBILE_DEVICE.
+    func softwareUpdatePlan(deviceID: String, kind: JamfDeviceKind) async throws -> JamfSoftwareUpdatePlan? {
         struct Response: Decodable {
             let results: [Item]?
             struct Item: Decodable {
-                let status: String?
-                let downloaded: Bool?
-                let downloadPercentComplete: Double?
-                let deferralsRemaining: Int?
+                let device: Device?
+                let updateAction: String?
+                let versionType: String?
+                let specificVersion: String?
                 let maxDeferrals: Int?
-                let nextScheduledInstall: String?
+                let forceInstallLocalDateTime: String?
+                let status: Status?
+            }
+            struct Device: Decodable {
+                let deviceId: String?
+                let objectType: String?
+            }
+            struct Status: Decodable {
+                let state: String?
+                let errorReasons: [String]?
             }
         }
-        let segment = kind == .computer ? "computers" : "mobile-devices"
-        let (data, status) = try await send(path: "/api/v1/managed-software-updates/update-statuses/\(segment)/\(deviceID)")
+        let (data, status) = try await send(
+            path: "/api/v1/managed-software-updates/plans",
+            queryItems: [URLQueryItem(name: "filter", value: "device.deviceId==\"\(deviceID)\"")]
+        )
         if status == 403 || status == 404 { return nil }
         try throwIfError(status: status, data: data)
-        let results = (try JSONDecoder().decode(Response.self, from: data).results ?? []).map {
-            JamfSoftwareUpdateStatus(
-                status: $0.status ?? "UNKNOWN",
-                downloaded: $0.downloaded,
-                downloadPercentComplete: $0.downloadPercentComplete,
-                deferralsRemaining: $0.deferralsRemaining,
-                maxDeferrals: $0.maxDeferrals,
-                nextScheduledInstall: $0.nextScheduledInstall
-            )
-        }
-        // A device can carry a row per product; the informative one wins.
-        return results.first(where: \.isMeaningful) ?? results.first
+
+        let wanted: Set<String> = kind == .computer ? ["COMPUTER"] : ["MOBILE_DEVICE", "APPLE_TV"]
+        let plans = (try JSONDecoder().decode(Response.self, from: data).results ?? [])
+            .filter { wanted.contains($0.device?.objectType ?? "") }
+        // Newest first would be better, but the endpoint offers no plan date;
+        // a device has one active plan in practice.
+        guard let plan = plans.last else { return nil }
+        return JamfSoftwareUpdatePlan(
+            state: plan.status?.state ?? "Unknown",
+            deadline: plan.forceInstallLocalDateTime,
+            updateAction: plan.updateAction,
+            versionType: plan.versionType,
+            specificVersion: plan.specificVersion,
+            maxDeferrals: plan.maxDeferrals,
+            errorReasons: plan.status?.errorReasons ?? []
+        )
     }
 
     // MARK: Sites

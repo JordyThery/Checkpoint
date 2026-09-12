@@ -29,7 +29,7 @@ struct DeviceDetailView: View {
     @State private var pin = ""
     @State private var localAdmins: [JamfLocalAdminAccount] = []
     @State private var rotationTime: TimeInterval?
-    @State private var softwareUpdate: JamfSoftwareUpdateStatus?
+    @State private var softwareUpdate: JamfSoftwareUpdatePlan?
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
     @State private var loadedCoverage: [AppleCareCoverage]?
@@ -488,9 +488,10 @@ struct DeviceDetailView: View {
         if let security = info.security {
             passcodeRow(security)
         }
-        if let softwareUpdate {
-            softwareUpdateRow(softwareUpdate)
-        }
+        // Always shown for a device with a Jamf Pro record: "no update plan"
+        // is itself the answer, and leaving the row out looked like a feature
+        // that did not work.
+        softwareUpdateRow(softwareUpdate)
     }
 
     /// FileVault state from inventory. Shown for every Mac, unlike the
@@ -547,27 +548,37 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// The device's managed software update plan. A declaratively managed
+    /// update is scheduled against a deadline, so that is what is shown.
     @ViewBuilder
-    private func softwareUpdateRow(_ update: JamfSoftwareUpdateStatus) -> some View {
+    private func softwareUpdateRow(_ plan: JamfSoftwareUpdatePlan?) -> some View {
         LabeledContent("Software Update") {
-            VStack(alignment: .trailing, spacing: 2) {
-                // Jamf Pro answers for a device with no declarative plan by
-                // reporting UNKNOWN, which is worth saying plainly rather than
-                // leaving the row out and looking broken.
-                Text(update.isMeaningful ? update.displayStatus : "No update plan")
-                    .foregroundStyle(update.isMeaningful ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                if update.isMeaningful {
-                    if let remaining = update.deferralsRemaining, let maximum = update.maxDeferrals {
-                        Text("\(remaining) of \(maximum) deferrals left")
+            if let plan {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(plan.displayState)
+                        .foregroundStyle(plan.displayState == "Failed" ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                    if let deadline = plan.deadline {
+                        // The deadline carries no time zone, so it needs the
+                        // wall-clock parser rather than the ISO one.
+                        let overdue = DateFormatting.parseDeviceLocal(deadline).map { $0 < Date() } ?? false
+                        Text("\(overdue ? "Was due" : "Installs by") \(DateFormatting.shortDeviceLocal(deadline))")
                             .font(.caption)
-                            .foregroundStyle(remaining == 0 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                            .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                     }
-                    if let next = update.nextScheduledInstall {
-                        Text("Installs \(DateFormatting.short(next))")
+                    if let version = plan.targetVersion {
+                        Text(version).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let deferrals = plan.deferralsAllowed {
+                        Text("Up to \(deferrals) deferral\(deferrals == 1 ? "" : "s")")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    ForEach(plan.errorReasons.prefix(2), id: \.self) { reason in
+                        Text(reason).font(.caption).foregroundStyle(.red)
+                    }
                 }
+            } else {
+                Text("No update plan").foregroundStyle(.secondary)
             }
         }
     }
@@ -653,7 +664,7 @@ struct DeviceDetailView: View {
         loadedCoverage = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
         guard report.jamf.value != nil else { return }
-        softwareUpdate = await model.softwareUpdateStatus(for: report)
+        softwareUpdate = await model.softwareUpdatePlan(for: report)
         guard report.jamf.value?.kind == .computer else { return }
         localAdmins = await model.localAdminAccounts(for: report)
         if !localAdmins.isEmpty {
