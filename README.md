@@ -43,9 +43,9 @@ Checkpoint doesn't just surface discrepancies, it resolves them. Every action wo
 
 - **Apple Business / Apple School Manager**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization (Apple Business only — Apple School Manager provides no release activity)
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **Jamf School**: change the location, clear Activation Lock, move the record to the trash
+- **Jamf School**: change the location, move the record to the trash
 - **MDM commands** (Jamf Pro), computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
-- **MDM commands** (Jamf School): Update Inventory, Restart, Clear Activation Lock, Wipe, Remove MDM Profile — every command its API defines. Jamf School draws no distinction between computers and mobile devices, so all five reach Macs as well as iPads
+- **MDM commands** (Jamf School): Update Inventory, Restart, Wipe, Remove MDM Profile — the commands it shares with Jamf Pro. Jamf School draws no distinction between computers and mobile devices, so all four reach Macs as well as iPads
 - Every device links directly to its record in Jamf Pro
 
 Multiple organizations, of either Apple service, and multiple Jamf servers, of either product (e.g. production and testing), can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).

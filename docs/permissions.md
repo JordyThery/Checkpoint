@@ -35,7 +35,6 @@ Each key carries its own list of permitted methods, chosen when you create it. G
 | Restart Device | Restart device |
 | Wipe | Wipe device |
 | Remove MDM Profile | Unenroll device |
-| Clear Activation Lock | Clear activation lock |
 | Change location | Move devices |
 | Move to Trash | Delete device |
 

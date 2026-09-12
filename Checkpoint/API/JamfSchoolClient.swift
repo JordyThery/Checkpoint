@@ -134,9 +134,10 @@ private struct LenientID: Decodable, Sendable {
 ///
 /// Two things about this API drive the shape of everything below.
 ///
-/// First, **HTTP 200 does not mean the request succeeded**. Failures come back
-/// as `200 OK` carrying a different `code` in the body, so the body is the
-/// outcome and the status is not. `throwIfError` checks both.
+/// First, **HTTP 200 does not mean the request succeeded**, and neither does
+/// the `code` in the body, which is not always there: the documentation shows
+/// one on every response but `/locations` returns none. The `message` is the
+/// only signal always present, so `throwIfError` weighs all three.
 ///
 /// Second, the list and per-device endpoints disagree, on field names and on
 /// JSON types, for the same values: `depProfile` against `deviceDepProfile`,
@@ -341,9 +342,11 @@ actor JamfSchoolClient {
         try await command(udid: udid, action: "restart", parameters: [("clearPasscode", "false")])
     }
 
-    /// Erases the device. `clearActivationLock` is required by the endpoint.
-    /// It is left false so that a wipe never silently drops Activation Lock,
-    /// which is a separate action with its own confirmation.
+    /// Erases the device. `clearActivationLock` is required by the endpoint
+    /// and is always false: dropping Activation Lock is not something a wipe
+    /// should decide, and Checkpoint offers no way to clear it, because Jamf
+    /// Pro has no equivalent. A locked device therefore stays locked after a
+    /// wipe until someone clears it in the Jamf School or Apple console.
     func wipe(udid: String) async throws {
         try await command(udid: udid, action: "wipe", parameters: [("clearActivationLock", "false")])
     }
@@ -352,10 +355,6 @@ actor JamfSchoolClient {
     /// device. The record stays until it is trashed.
     func unenroll(udid: String) async throws {
         try await command(udid: udid, action: "unenroll")
-    }
-
-    func clearActivationLock(udid: String) async throws {
-        try await command(udid: udid, action: "activationlock/clear")
     }
 
     private func command(
@@ -496,11 +495,33 @@ actor JamfSchoolClient {
         }
     }
 
+    /// Messages that mean the request did not do what was asked.
+    ///
+    /// Matched as a known-bad list rather than checking against a list of
+    /// known-good ones, so a message this app has never seen still counts as
+    /// a success. The alternative turns every future addition to the API into
+    /// a spurious failure.
+    private static let failureMessages: Set<String> = [
+        "UnlockFailed", "DeviceNotFound", "LocationNotFound", "DeviceNotActive",
+        "DeviceNotMigratable", "MigrationFailed", "UDIDArrayEmpty", "TooManyDevices",
+        "MissingParameter", "LocationSame",
+    ]
+
     /// Fails on anything that is not a success, whichever way the API says so.
     ///
-    /// The HTTP status cannot be trusted on its own: Jamf School answers a
-    /// failed command with `200 OK` and a different `code` in the body, so a
-    /// wipe that never happened would otherwise be reported as sent.
+    /// Neither signal is sufficient alone.
+    ///
+    /// The HTTP status is not, because Jamf School answers a failed command
+    /// with `200 OK` and a different `code` in the body — a wipe that never
+    /// happened would be reported as sent.
+    ///
+    /// The body's `code` is not either, because it is not always there. The
+    /// documentation shows one on every response, including a success example
+    /// of `{"code": 200, "message": "Unlocked"}`, but `/locations` and the
+    /// activation-lock endpoint return no `code` at all. Since the docs are
+    /// wrong about the field on the success path they cannot be trusted about
+    /// it on the failure path, so a recognised failure `message` counts even
+    /// when no code accompanies it.
     private func throwIfError(status: Int, data: Data) throws {
         struct Envelope: Decodable {
             let code: LenientID?
@@ -509,39 +530,53 @@ actor JamfSchoolClient {
         }
         let envelope = try? JSONDecoder().decode(Envelope.self, from: data)
         let bodyCode = envelope?.code.flatMap { Int($0.value) }
+        let message = envelope?.message
         let httpOK = (200...299).contains(status)
-        let bodyOK = bodyCode.map { (200...299).contains($0) } ?? true
-        guard !(httpOK && bodyOK) else { return }
+        let codeOK = bodyCode.map { (200...299).contains($0) } ?? true
+        let messageOK = !(message.map(Self.failureMessages.contains) ?? false)
+        guard !(httpOK && codeOK && messageOK) else { return }
 
-        let detail = [envelope?.message, envelope?.reason]
+        let detail = [message, envelope?.reason]
             .compactMap { $0 }
             .filter { !$0.isEmpty }
             .joined(separator: " – ")
-        // The code that actually describes the failure, whichever carried it.
-        let reported = bodyOK ? status : (bodyCode ?? status)
-        throw APIError(message: "Jamf School: \(Self.explain(reported, message: envelope?.message))"
+        // The code that describes the failure, whichever carried it. A failure
+        // known only by its message has no code of its own to report.
+        let reported = codeOK ? status : (bodyCode ?? status)
+        throw APIError(message: "Jamf School: \(Self.explain(reported, message: message))"
             + (detail.isEmpty ? "" : " (\(detail))"))
     }
 
-    /// Turns the codes this API returns into something a user can act on.
-    /// An API key carries its own list of permitted methods, so a rejection
-    /// usually means the key was never granted the method, not that the
-    /// credentials are wrong.
+    /// Turns what this API returns into something a user can act on.
+    ///
+    /// Keyed on the message rather than the code, because the message is the
+    /// signal that is always present. Reporting "HTTP 200" for a failure the
+    /// body named would say nothing at all.
     private static func explain(_ code: Int, message: String?) -> String {
-        switch (code, message) {
-        case (401, _), (403, _):
-            return "HTTP \(code). Check that the API key is granted this method in Organization → Settings → API."
-        case (404, "DeviceNotFound"):
+        switch message {
+        case "DeviceNotFound":
             return "the device is not in this Jamf School instance."
-        case (404, "LocationNotFound"):
+        case "LocationNotFound":
             return "that location no longer exists."
-        case (400, "DeviceNotActive"):
+        case "DeviceNotActive":
             return "the device is trashed or inactive, so it cannot be sent commands."
-        case (400, "TooManyDevices"):
+        case "TooManyDevices":
             return "too many devices in one request."
-        case (400, "DeviceNotMigratable"):
+        case "DeviceNotMigratable", "MigrationFailed":
             return "the device cannot be moved, because its owner is not in the district and cross-location enrollment is off."
+        case "UnlockFailed":
+            return "Apple would not clear the lock. Its service may be unreachable, or no bypass code is escrowed for this device."
+        case "UDIDArrayEmpty":
+            return "the request carried no devices."
+        case "MissingParameter":
+            return "the request was missing a required value."
         default:
+            // An API key carries its own list of permitted methods, so a
+            // rejection usually means the key was never granted the method
+            // rather than that the credentials are wrong.
+            if code == 401 || code == 403 {
+                return "HTTP \(code). Check that the API key is granted this method in Organization → Settings → API."
+            }
             return "HTTP \(code)"
         }
     }

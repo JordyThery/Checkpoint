@@ -98,8 +98,6 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     case wipeMobile
     case unmanage
     case shutDownMobile
-    /// Jamf School only.
-    case clearActivationLock
 
     /// Commands offered for a device kind, in the order they are shown.
     ///
@@ -109,8 +107,9 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     ///
     /// Jamf School has no computer/mobile split at all: one device resource
     /// serves both, so restart and wipe reach a Mac through the same endpoint
-    /// as an iPad. Its list is short because those five are every command the
-    /// product's API defines.
+    /// as an iPad. Its list is the commands it shares with Jamf Pro; its API
+    /// also defines clearing Activation Lock, which is deliberately not
+    /// offered because Jamf Pro has no equivalent.
     ///
     /// Adding or removing a command means a row in the privileges table in
     /// `docs/permissions.md`, and one in `docs/platform-api.md` if the gateway
@@ -122,9 +121,9 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case (.pro, .mobileDevice):
             [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDownMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
         case (.school, .computer):
-            [.updateInventory, .restartMobile, .clearActivationLock, .wipeComputer, .unmanage]
+            [.updateInventory, .restartMobile, .wipeComputer, .unmanage]
         case (.school, .mobileDevice):
-            [.updateInventory, .restartMobile, .clearActivationLock, .wipeMobile, .unmanage]
+            [.updateInventory, .restartMobile, .wipeMobile, .unmanage]
         }
     }
 
@@ -132,7 +131,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     static let allInDisplayOrder: [MDMCommand] = [
         .updateInventory, .lockComputer, .lockMobile, .clearPasscode,
         .restartMobile, .shutDownMobile, .renewProfile, .redeployFramework, .blankPush,
-        .clearActivationLock, .unmanage, .wipeComputer, .wipeMobile,
+        .unmanage, .wipeComputer, .wipeMobile,
     ]
 
     func applies(to kind: JamfDeviceKind, flavor: JamfFlavor = .pro) -> Bool {
@@ -174,9 +173,6 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .lockComputer, .lockMobile, .clearPasscode, .renewProfile: false
         case .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
              .blankPush, .redeployFramework, .updateInventory: true
-        // Jamf School only, and Jamf School is never behind the gateway, so
-        // the question cannot arise for it.
-        case .clearActivationLock: true
         }
     }
 
@@ -196,8 +192,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .shutDownMobile:
             return ["commandType": "SHUT_DOWN_DEVICE"]
         case .wipeComputer, .wipeMobile, .unmanage, .clearPasscode,
-             .blankPush, .updateInventory, .renewProfile, .redeployFramework,
-             .clearActivationLock:
+             .blankPush, .updateInventory, .renewProfile, .redeployFramework:
             // Each of these has its own endpoint, or needs per-device data that
             // cannot share one batched body. sendCommand routes them.
             return nil
@@ -218,17 +213,12 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .restartMobile: "Restart Device"
         case .shutDownMobile: "Shut Down Device"
         case .wipeMobile: "Wipe Device"
-        case .clearActivationLock: "Clear Activation Lock"
         }
     }
 
     var isDestructive: Bool {
         switch self {
-        // Clearing Activation Lock cannot be undone and leaves the device
-        // able to be erased and set up by anyone, so it is treated as gravely
-        // as a wipe even though it destroys no data.
-        case .wipeComputer, .wipeMobile, .lockComputer, .lockMobile, .unmanage,
-             .clearActivationLock: true
+        case .wipeComputer, .wipeMobile, .lockComputer, .lockMobile, .unmanage: true
         default: false
         }
     }
@@ -260,7 +250,6 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .restartMobile: "The device will restart immediately."
         case .shutDownMobile: "The device will shut down immediately and stay off until someone powers it back on."
         case .wipeMobile: "All data on the device will be erased. This cannot be undone."
-        case .clearActivationLock: "Activation Lock is removed, so the device can be erased and set up by anyone. This cannot be undone from Checkpoint."
         }
     }
 }
@@ -1213,8 +1202,6 @@ final class LookupModel {
                     try await school.wipe(udid: udid)
                 case .unmanage:
                     try await school.unenroll(udid: udid)
-                case .clearActivationLock:
-                    try await school.clearActivationLock(udid: udid)
                 default:
                     // Not offered for Jamf School, so unreachable through the
                     // interface; refused here rather than silently skipped.

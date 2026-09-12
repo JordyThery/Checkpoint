@@ -25,7 +25,7 @@ nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendab
         switch self {
         case .pro: [.sites, .prestageScope, .enrollmentDates, .mdmProfileExpiry,
                     .fileVault, .softwareUpdate, .recoverySecrets, .deviceLink]
-        case .school: [.locations, .activationLock, .passcodeOnDemand]
+        case .school: [.locations, .passcodeOnDemand]
         }
     }
 
@@ -74,7 +74,6 @@ nonisolated struct JamfCapabilities: OptionSet, Sendable {
     static let fileVault = JamfCapabilities(rawValue: 1 << 5)
     static let softwareUpdate = JamfCapabilities(rawValue: 1 << 6)
     static let recoverySecrets = JamfCapabilities(rawValue: 1 << 7)
-    static let activationLock = JamfCapabilities(rawValue: 1 << 8)
     /// Passcode state is not in the bulk device list, only in the per-device
     /// record, so it is read when a device is selected.
     static let passcodeOnDemand = JamfCapabilities(rawValue: 1 << 9)
