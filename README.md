@@ -43,9 +43,8 @@ Apple School Manager with Jamf School. Columns and actions the connected product
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business or Apple School Manager API account per organization, with the **Device Enrollment Manager** role or higher
-- A Jamf Pro server, connected by API client, username and password, or the Platform API gateway
-- Or a Jamf School instance, connected by Network ID and API key. There is no role to choose: a key is granted individual methods instead
+- An Apple Business API account per organization, with the **Device Enrollment Manager** role or higher; Apple School Manager asks for no role
+- A Jamf Pro server, connected by API client, username and password, or the Platform API gateway; or a Jamf School instance, connected by Network ID and API key
 - Jamf Pro 11.30+ for the Last Contact attribute
 
 ## Security

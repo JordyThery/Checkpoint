@@ -10,7 +10,9 @@ For what each feature actually does, see [Features](features.md).
 
 ## Apple Business and Apple School Manager
 
-The two are the same API behind different hosts, so the setup is identical. In Apple Business or Apple School Manager, go to **Settings → Integrations → API** and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API.
+The two are the same API behind different hosts, so most of the setup is identical. In either service, select your name at the bottom of the sidebar, then **Preferences → API → Get Started**. Name the account, create it, and choose **Generate Private Key**: the `.pem` file downloads once and cannot be downloaded again.
+
+They differ in one respect. **Apple Business** asks for a role — set it to **Device Enrollment Manager** or higher, otherwise the account cannot manage device assignments. **Apple School Manager** asks for no role at all; creating the account is enough, and only an Administrator or Site Manager can create one.
 
 Choose the service when adding the organization in Checkpoint: it selects the host and the OAuth scope. Credentials for one will not work against the other — the token request is refused with `invalid_scope`.
 
@@ -26,7 +28,7 @@ A different product from Jamf Pro with a much smaller API, so Checkpoint shows l
 
 Create the key under **Organization → Settings → API → Add API Key**. Authentication is the **Network ID** as the user and the **API key** as the password; the Network ID is under **Devices → Enroll Device(s)**.
 
-**There is no role to choose.** Unlike an Apple API account, which takes a Role Access setting, a Jamf School key is granted individual methods when you create it. Grant only what you intend to use: a missing method refuses one feature rather than the connection, and Checkpoint reports it as a missing method rather than as bad credentials.
+Each key carries its own list of permitted methods, chosen when you create it. Grant only what you intend to use: a missing method refuses one feature rather than the connection, and Checkpoint reports it as a missing method rather than as bad credentials.
 
 | Feature | Methods the key needs |
 | --- | --- |
