@@ -23,23 +23,28 @@ Environment scope is required rather than tenant scope. The Jamf Pro passthrough
 
 Most Jamf Account instances already have an environment grouping their tenants, and you can create one if not.
 
-## Capabilities
+## Scopes
 
-Permissions are granted per capability on the integration, rather than per privilege as on a [Jamf Pro API role](permissions.md).
+Permissions are granted per capability on the integration, rather than per privilege as on a [Jamf Pro API role](permissions.md). The scope names below are the ones the API declares; the Jamf Account interface groups them under capability toggles, so a label there may read a little differently.
 
-| Feature | Capability |
+| Feature | Scope |
 | --- | --- |
-| Device lookup | Inventory: Read |
-| Delete device record | Inventory: Delete |
-| Site display and changes | Organizational context: Read, Inventory: Update |
-| PreStage display and changes, ADE instances | Enrollment: Read, Enrollment: Update |
-| MDM commands, except the two rows below | Device actions: Execute |
-| Wipe and Remove MDM Profile | Destructive device actions: Execute |
-| Restart and Shut Down | Device actions: Execute, plus Inventory: Read to resolve the device |
-| FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
-| Managed local administrator accounts and passwords | Device secrets: Read |
-| Looking up a group | Inventory: Read |
-| Software update state | Inventory: Read |
+| Device lookup, including FileVault state and passcode state | `devices:read` |
+| Software update state | `devices:read` |
+| Looking up a group | `device-groups:read` |
+| Sites | `sites:read` |
+| PreStage display and changes | `prestage-enrollments:read`, `prestage-enrollments:update` |
+| PreStage filtering per ADE token | `device-enrollment-program-instances:read` |
+| MDM commands, except the two rows below | `device-actions:execute` |
+| Wipe and Remove MDM Profile | `destructive-device-actions:execute` |
+| Redeploy Jamf Framework | `device-actions:execute`, `computer-check-in:read` |
+| Restart and Shut Down | `devices:read` to resolve the device, plus the device actions above |
+| FileVault recovery key | `disk-encryption-recovery-key:read` |
+| Recovery Lock password | `recovery-lock:read` |
+| Device lock PIN | `computer-device-lock-pin:read` |
+| Managed local administrator accounts and passwords | `local-admin-passwords:read` |
+
+The four secrets take four separate scopes, so granting one does not grant the others. Deleting a device record and changing a site declare no scope in the specification; the corresponding [Jamf Pro privileges](permissions.md) are the guide there.
 
 ## What the gateway cannot carry
 
