@@ -51,6 +51,14 @@ Above 15 devices, Apple Business is read in bulk instead of one device at a time
 
 The one thing not available in bulk is **AppleCare coverage**, which Apple serves only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device.
 
+### Filtering the results
+
+**Filter** narrows the list to devices matching every chosen criterion: Apple Business status, MDM server, PreStage, site, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
+
+Filtering only reads what the lookup already fetched, so it costs nothing. Warranty coverage and software update status are deliberately not filterable: neither is present for every row, so filtering on them would quietly exclude devices whose value had simply not been fetched.
+
+Hiding a device also deselects it, so an action can never reach a device you can no longer see.
+
 ### MDM server migration
 
 Assigning a device to a different MDM server normally takes effect on the next wipe or enrollment. Apple Business can instead schedule a *migration*: the device keeps running under its current service until it moves, nothing is erased, and Apple prompts the user and enforces the deadline on-device. Checkpoint shows the migration status and deadline for each device, and can schedule, reschedule or cancel one, individually or in bulk. Deadlines cannot be more than 90 days out, and shortening a deadline (or setting one in the past) applies immediately without giving the user a chance to delay.

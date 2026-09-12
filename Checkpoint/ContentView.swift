@@ -10,7 +10,7 @@ struct ContentView: View {
     @State private var selection = Set<DeviceReport.ID>()
     @State private var showingImporter = false
     @State private var importMessage: String?
-    @State private var deviceFilter: DeviceFilter = .all
+    @State private var filters = DeviceFilters()
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
     @State private var pendingGroup: PendingGroup?
@@ -28,21 +28,13 @@ struct ContentView: View {
     /// through: a confirmation nobody can answer usefully is just a delay.
     private static let confirmGroupLookupAbove = 25
 
-    private enum DeviceFilter: String, CaseIterable, Identifiable {
-        case all = "All"
-        case computers = "Computers"
-        case mobileDevices = "Mobile Devices"
-        var id: String { rawValue }
-    }
-
     private var visibleReports: [DeviceReport] {
-        switch deviceFilter {
-        case .all: model.reports
-        case .computers: model.reports.filter { $0.deviceKind == .computer }
-        case .mobileDevices: model.reports.filter { $0.deviceKind == .mobileDevice }
-        }
+        model.reports.filter(filters.matches)
     }
 
+    /// Intersected with what is on screen, so an action can never reach a
+    /// device the filter has hidden. The selection is pruned when the filter
+    /// changes as well; this is the guarantee, that is the housekeeping.
     private var selectedReports: [DeviceReport] {
         visibleReports.filter { selection.contains($0.id) }
     }
@@ -65,7 +57,18 @@ struct ContentView: View {
                     .frame(maxHeight: .infinity)
                 } else {
                     filterBar
-                    resultsTable
+                    if visibleReports.isEmpty {
+                        ContentUnavailableView {
+                            Label("No Matching Devices", systemImage: "line.3.horizontal.decrease.circle")
+                        } description: {
+                            Text("No device in this list matches every chosen filter.")
+                        } actions: {
+                            Button("Clear Filters") { filters = DeviceFilters() }
+                        }
+                        .frame(maxHeight: .infinity)
+                    } else {
+                        resultsTable
+                    }
                 }
             }
             .navigationTitle("Checkpoint")
@@ -110,8 +113,11 @@ struct ContentView: View {
                 }
             }
         }
+        // Driven by the visible selection rather than the raw one: a selection
+        // holding only filtered-out devices would otherwise open an inspector
+        // with nothing in it.
         .inspector(isPresented: Binding(
-            get: { !selection.isEmpty },
+            get: { !selectedReports.isEmpty },
             set: { if !$0 { selection.removeAll() } }
         )) {
             if selectedReports.count > 1 {
@@ -234,18 +240,15 @@ struct ContentView: View {
 
     private var filterBar: some View {
         HStack {
-            Picker("Show", selection: $deviceFilter) {
-                ForEach(DeviceFilter.allCases) { filter in
-                    Text(filter.rawValue).tag(filter)
+            Picker("Show", selection: $filters.kind) {
+                ForEach(DeviceFilters.Kind.allCases) { kind in
+                    Text(kind.rawValue).tag(kind)
                 }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(maxWidth: 360)
-            .onChange(of: deviceFilter) {
-                let visibleIDs = Set(visibleReports.map(\.id))
-                selection = selection.intersection(visibleIDs)
-            }
+            filterMenu
             Spacer()
             Text("\(visibleReports.count) of \(model.reports.count) device\(model.reports.count == 1 ? "" : "s")")
                 .font(.callout)
@@ -253,6 +256,70 @@ struct ContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        // One observer for every criterion: a device hidden by a filter must
+        // not stay selected, or a later action would count devices that are
+        // no longer on screen.
+        .onChange(of: filters) {
+            selection = selection.intersection(Set(visibleReports.map(\.id)))
+        }
+    }
+
+    private var filterMenu: some View {
+        Menu {
+            Picker("Apple Business", selection: $filters.appleBusiness) {
+                ForEach(DeviceFilters.ABMStatus.allCases) { status in
+                    Text(status.rawValue).tag(status)
+                }
+            }
+            assignmentPicker("MDM Server", selection: $filters.mdmServer,
+                             options: model.mdmServers.map { ($0.id, $0.name) })
+            assignmentPicker("PreStage", selection: $filters.prestage,
+                             options: (model.prestages + model.mobilePrestages).map { ($0.id, $0.displayName) })
+            if !model.sites.isEmpty {
+                assignmentPicker("Site", selection: $filters.site,
+                                 options: model.sites.map { ($0.id, $0.name) })
+            }
+            Divider()
+            Section("Only show devices with") {
+                ForEach(DeviceFilters.Issue.allCases) { issue in
+                    Toggle(issue.label, isOn: Binding(
+                        get: { filters.issues.contains(issue) },
+                        set: { on in
+                            if on { filters.issues.insert(issue) } else { filters.issues.remove(issue) }
+                        }
+                    ))
+                }
+            }
+            Divider()
+            Button("Clear Filters") { filters = DeviceFilters() }
+                .disabled(!filters.isActive)
+        } label: {
+            Label(
+                filters.activeCount > 0 ? "Filter (\(filters.activeCount))" : "Filter",
+                systemImage: filters.isActive
+                    ? "line.3.horizontal.decrease.circle.fill"
+                    : "line.3.horizontal.decrease.circle"
+            )
+        }
+        .menuStyle(.button)
+        .fixedSize()
+        .help("Narrow the list to devices matching every chosen criterion")
+    }
+
+    /// Any / None / a specific record. Options are the ones the current
+    /// results can actually match, so the menu never offers a dead end.
+    private func assignmentPicker(
+        _ title: String,
+        selection: Binding<DeviceFilters.Assignment>,
+        options: [(id: String, name: String)]
+    ) -> some View {
+        Picker(title, selection: selection) {
+            Text("Any").tag(DeviceFilters.Assignment.any)
+            Text("None").tag(DeviceFilters.Assignment.none)
+            ForEach(options, id: \.id) { option in
+                Text(option.name).tag(DeviceFilters.Assignment.id(option.id))
+            }
+        }
     }
 
     private var resultsTable: some View {
