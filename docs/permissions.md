@@ -4,6 +4,8 @@ What to grant Apple Business or Apple School Manager, and Jamf Pro or Jamf Schoo
 
 For a Platform API connection, permissions work differently — see [Platform API](platform-api.md) instead. The Platform API is Jamf Pro only.
 
+For what each feature actually does, see [Features](features.md).
+
 > This page describes the release it ships with. Opening it from a tag shows the permissions that version needs.
 
 ## Apple Business and Apple School Manager

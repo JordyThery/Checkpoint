@@ -1,6 +1,8 @@
 # Platform API
 
 > Jamf Pro only. Jamf School has no gateway, and Checkpoint never routes it through one.
+>
+> See [Permissions](permissions.md) for a direct connection, and [Features](features.md) for what each feature does.
 
 Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. This is optional: an API client connection is simpler and carries every command.
 
@@ -66,7 +68,7 @@ Group membership comes from the Classic endpoints, which the gateway serves unde
 
 ## Notes on gateway behaviour
 
-Two things worth knowing if you are debugging a connection with the [activity log](../README.md#activity-log) open:
+Two things worth knowing if you are debugging a connection with the [activity log](features.md#activity-log) open:
 
 - The gateway fronts the Jamf Pro API under `/pro` and the Classic API under `/proclassic`, replacing the product segment rather than prefixing it. Each platform API has its own prefix too: device inventory under `/devices`, device actions under `/device-actions`.
 - An unknown product prefix answers `404 page not found`, while an unknown route within a valid prefix answers `403 BAD_PERMISSIONS`. A 403 therefore does not necessarily mean your capabilities are wrong.
