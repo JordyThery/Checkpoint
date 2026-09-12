@@ -1,14 +1,18 @@
 # Permissions
 
-What to grant Apple Business and Jamf Pro so Checkpoint can do its work. Grant only what you intend to use: every feature degrades on its own, so a missing privilege disables one thing rather than breaking the app.
+What to grant Apple Business or Apple School Manager, and Jamf Pro, so Checkpoint can do its work. Grant only what you intend to use: every feature degrades on its own, so a missing privilege disables one thing rather than breaking the app.
 
 For a Platform API connection, permissions work differently — see [Platform API](platform-api.md) instead.
 
 > This page describes the release it ships with. Opening it from a tag shows the permissions that version needs.
 
-## Apple Business
+## Apple Business and Apple School Manager
 
-In Apple Business, go to **Settings → Integrations → API** and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API.
+The two are the same API behind different hosts, so the setup is identical. In Apple Business or Apple School Manager, go to **Settings → Integrations → API** and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API.
+
+Choose the service when adding the organization in Checkpoint: it selects the host and the OAuth scope. Credentials for one will not work against the other — the token request is refused with `invalid_scope`.
+
+**Apple School Manager cannot release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
 
 Each organization needs its own API account. You need the Client ID, the Key ID, and the downloaded `.pem` private key.
 
@@ -55,7 +59,7 @@ Shut Down is offered for mobile devices only, because Jamf Pro has no equivalent
 
 Jamf Pro has no single "Read Computer Groups" privilege: smart and static are separate. Checkpoint lists both kinds together, so granting only one half hides the other from the group picker.
 
-Looking up an Apple Business order needs no Jamf Pro privilege and no extra Apple Business role — the order numbers come from the device list Checkpoint already reads. Filtering the results needs nothing at all; it reads what the lookup returned.
+Looking up an order needs no Jamf Pro privilege and no extra Apple role — the order numbers come from the device list Checkpoint already reads. Filtering the results needs nothing at all; it reads what the lookup returned.
 
 ### Optional privileges
 

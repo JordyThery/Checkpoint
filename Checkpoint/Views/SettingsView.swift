@@ -7,7 +7,7 @@ struct SettingsView: View {
             GeneralSettingsTab()
                 .tabItem { Label("General", systemImage: "gearshape") }
             ABMSettingsTab()
-                .tabItem { Label("Apple Business", systemImage: "apple.logo") }
+                .tabItem { Label("Apple", systemImage: "apple.logo") }
             JamfSettingsTab()
                 .tabItem { Label("Jamf Pro", systemImage: "server.rack") }
         }
@@ -45,13 +45,21 @@ struct ABMSettingsTab: View {
             VStack(spacing: 0) {
                 List(selection: $selectedID) {
                     ForEach(settings.abmOrgs) { org in
-                        Text(org.displayName).tag(org.id)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(org.displayName)
+                            // Named here so two organizations of different
+                            // services are distinguishable at a glance.
+                            Text(org.kind.label)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(org.id)
                     }
                 }
                 Divider()
                 HStack(spacing: 10) {
                     Button { add() } label: { Image(systemName: "plus") }
-                        .help("Add an Apple Business organization")
+                        .help("Add an Apple Business or Apple School Manager organization")
                     Button { removeSelected() } label: { Image(systemName: "minus") }
                         .disabled(selectedID == nil)
                         .help("Remove the selected organization")
@@ -69,7 +77,7 @@ struct ABMSettingsTab: View {
                 ContentUnavailableView(
                     "No Organization Selected",
                     systemImage: "apple.logo",
-                    description: Text("Add an Apple Business organization with the + button. You can store several and switch between them in the toolbar.")
+                    description: Text("Add an Apple Business or Apple School Manager organization with the + button. You can store several and switch between them in the toolbar.")
                 )
                 .frame(maxWidth: .infinity)
             }
@@ -98,6 +106,7 @@ struct ABMOrgEditor: View {
     let config: ABMConfig
 
     @State private var name = ""
+    @State private var kind: AppleOrgKind = .business
     @State private var clientID = ""
     @State private var keyID = ""
     @State private var privateKeyPEM = ""
@@ -110,9 +119,20 @@ struct ABMOrgEditor: View {
         Form {
             Section("Organization") {
                 TextField("Name", text: $name, prompt: Text("Head Office"))
+                Picker("Service", selection: $kind) {
+                    ForEach(AppleOrgKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
+                    }
+                }
+                if !kind.supportsRelease {
+                    Text("\(kind.label) uses the same API as Apple Business, except that it provides no way to release devices from the organization. That action is dimmed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             Section("API Credentials") {
-                TextField("Client ID", text: $clientID, prompt: Text("BUSINESSAPI.xxxxxxxx-…"))
+                TextField("Client ID", text: $clientID,
+                          prompt: Text(kind == .business ? "BUSINESSAPI.xxxxxxxx-…" : "SCHOOLAPI.xxxxxxxx-…"))
                 TextField("Key ID", text: $keyID)
             }
             Section("Private Key") {
@@ -123,7 +143,7 @@ struct ABMOrgEditor: View {
                     .font(.caption.monospaced())
                     .frame(height: 90)
                 Button("Import .pem File…") { showingImporter = true }
-                Text("Paste the PEM private key downloaded when creating the API account in Apple Business (Settings → Integrations → API), or import the .pem file. The account needs the Device Enrollment Manager role or higher. The key is stored only in your keychain.")
+                Text("Paste the PEM private key downloaded when creating the API account in \(kind.label) (Settings → Integrations → API), or import the .pem file. The account needs the Device Enrollment Manager role or higher. The key is stored only in your keychain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -153,6 +173,7 @@ struct ABMOrgEditor: View {
         }
         .onAppear {
             name = config.name
+            kind = config.kind
             clientID = config.clientID
             keyID = config.keyID
             hasStoredKey = Keychain.get(config.privateKeyKeychainKey) != nil
@@ -162,6 +183,7 @@ struct ABMOrgEditor: View {
     private func save() {
         guard let index = settings.abmOrgs.firstIndex(where: { $0.id == config.id }) else { return }
         settings.abmOrgs[index].name = name
+        settings.abmOrgs[index].kind = kind
         settings.abmOrgs[index].clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         settings.abmOrgs[index].keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         let pem = privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -183,6 +205,7 @@ struct ABMOrgEditor: View {
             clientID: clientID,
             keyID: keyID,
             privateKeyPEM: pem,
+            kind: kind,
             connectionName: name.isEmpty ? config.displayName : name,
             log: log
         )

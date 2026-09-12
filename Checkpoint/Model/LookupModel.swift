@@ -353,7 +353,7 @@ final class LookupModel {
     ) {
         log.recordAction(
             service: service,
-            connection: service == .appleBusiness ? selectedABMOrg?.displayName : selectedJamfServer?.displayName,
+            connection: service.isAppleOrganization ? selectedABMOrg?.displayName : selectedJamfServer?.displayName,
             summary: summary,
             outcome: outcome,
             serials: serials
@@ -528,12 +528,23 @@ final class LookupModel {
         return "\(verb) \(total - failed) of \(total) \(noun)\(total == 1 ? "" : "s")\(suffix)"
     }
 
-    /// Permanently releases the devices from Apple Business.
+    /// Which Apple service the selected organization belongs to, for wording
+    /// and for the actions it supports.
+    var abmKind: AppleOrgKind { selectedABMOrg?.kind ?? .business }
+
+    /// Why devices cannot be released from the selected organization, or nil.
+    var releaseUnavailabilityReason: String? {
+        guard !abmKind.supportsRelease else { return nil }
+        return "\(abmKind.label) provides no way to release devices from the organization."
+    }
+
+    /// Permanently releases the devices from the organization.
     func releaseFromABM(reports: [DeviceReport]) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        if let reason = releaseUnavailabilityReason { throw ActionError(message: reason) }
+        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
-        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
-        try await recording(.appleBusiness, "Released \(Self.deviceCount(serials)) from Apple Business", serials: serials) {
+        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in \(abmKind.label).") }
+        try await recording(abmKind.activityService, "Released \(Self.deviceCount(serials)) from \(abmKind.label)", serials: serials) {
             let activityID = try await abm.submitActivity(.release, serials: serials)
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
@@ -543,9 +554,9 @@ final class LookupModel {
 
     /// Assigns the devices to an MDM server, or unassigns them when `serverID` is nil.
     func setMDMServer(reports: [DeviceReport], to serverID: String?) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
         let inOrg = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }
-        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
+        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in \(abmKind.label).") }
 
         // Unassigning requires naming the current server, so batch per server.
         // Devices with no current assignment have nothing to unassign, and if
@@ -565,7 +576,7 @@ final class LookupModel {
         let summary = serverName.map { "Assigned \(Self.deviceCount(serials)) to \($0)" }
             ?? "Unassigned \(Self.deviceCount(serials)) from device management"
 
-        try await recording(.appleBusiness, summary, serials: serials) {
+        try await recording(abmKind.activityService, summary, serials: serials) {
             var activityIDs: [String] = []
             if let serverID {
                 if let id = try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID) {
@@ -624,7 +635,7 @@ final class LookupModel {
         deadline: Date? = nil,
         emptyMessage: String
     ) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
         let serials = reports.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: emptyMessage) }
 
@@ -644,7 +655,7 @@ final class LookupModel {
             summary += ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
         }
 
-        try await recording(.appleBusiness, summary, serials: serials) {
+        try await recording(abmKind.activityService, summary, serials: serials) {
             let activityID = try await abm.submitActivity(
                 type,
                 serials: serials,
@@ -722,14 +733,14 @@ final class LookupModel {
             }
             abmSnapshots[org.id] = snapshot
             recordAction(
-                .appleBusiness,
+                abmKind.activityService,
                 "Read the organization: \(Self.deviceCount(snapshot.devices.count))",
                 serials: []
             )
             return snapshot
         } catch {
             recordAction(
-                .appleBusiness,
+                abmKind.activityService,
                 "Could not read the organization — \(error.localizedDescription)",
                 serials: [],
                 outcome: .failed
@@ -1214,6 +1225,7 @@ final class LookupModel {
             clientID: config.clientID,
             keyID: config.keyID,
             privateKeyPEM: pem,
+            kind: config.kind,
             connectionName: config.displayName,
             log: log
         )

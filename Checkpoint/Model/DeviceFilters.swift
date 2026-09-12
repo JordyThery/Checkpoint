@@ -119,8 +119,8 @@ nonisolated struct DeviceFilters: Equatable {
         var label: String {
             switch self {
             case .mdmProfileExpired: "MDM profile expired"
-            case .appleBusinessOnly: "In Apple Business, no Jamf Pro record"
-            case .jamfProOnly: "In Jamf Pro, not in Apple Business"
+            case .appleBusinessOnly: "No Jamf Pro record"
+            case .jamfProOnly: "Not in the Apple organization"
             case .migrationInProgress: "Migration in progress"
             case .fileVaultOff: "FileVault not enabled"
             case .noPasscode: "No passcode set"

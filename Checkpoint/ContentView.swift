@@ -58,7 +58,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No Devices",
                         systemImage: "laptopcomputer.and.iphone",
-                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in Apple Business and Jamf Pro.")
+                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.abmKind.label) and Jamf Pro.")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
@@ -85,7 +85,7 @@ struct ContentView: View {
                     ToolbarItem {
                         // Reads through selectedABMOrg so the popup shows the
                         // organization in use, including the implicit first one.
-                        Picker("Apple Business organization", selection: Binding(
+                        Picker("Apple organization", selection: Binding(
                             get: { model.selectedABMOrg?.id },
                             set: { model.selectedABMOrgID = $0 }
                         )) {
@@ -93,7 +93,7 @@ struct ContentView: View {
                                 Text(org.displayName).tag(Optional(org.id))
                             }
                         }
-                        .help("Apple Business organization used for lookups and actions")
+                        .help("\(model.abmKind.label) organization used for lookups and actions")
                     }
                 }
                 if !settings.jamfServers.isEmpty {
@@ -115,7 +115,7 @@ struct ContentView: View {
                     } label: {
                         Label("Settings", systemImage: "gearshape")
                     }
-                    .help("Configure Apple Business and Jamf Pro credentials")
+                    .help("Configure Apple and Jamf Pro credentials")
                 }
             }
         }
@@ -188,7 +188,7 @@ struct ContentView: View {
                 .help("Look up every device in a Jamf Pro group")
                 .disabled(model.isLoading || settings.jamfServers.isEmpty)
             Button("Order…") { showingOrderPicker = true }
-                .help("Look up every device on an Apple Business order")
+                .help("Look up every device on an \(model.abmKind.label) order")
                 .disabled(model.isLoading || !model.isABMConfigured)
             Button("Clear") { clear() }
                 .help("Remove every device from the list")
@@ -207,7 +207,7 @@ struct ContentView: View {
                     // takes long enough to be worth counting down. Reading
                     // the organization comes first and has no known total.
                     if model.isBuildingSnapshot {
-                        Text(model.snapshotStatus ?? "Reading Apple Business…")
+                        Text(model.snapshotStatus ?? "Reading \(model.abmKind.label)…")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -229,9 +229,9 @@ struct ContentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             if !model.isABMConfigured && settings.jamfServers.isEmpty {
-                Text("Apple Business and Jamf Pro are not configured yet.")
+                Text("\(model.abmKind.label) and Jamf Pro are not configured yet.")
             } else if !model.isABMConfigured {
-                Text("Apple Business is not configured, so its columns will be empty.")
+                Text("\(model.abmKind.label) is not configured, so its columns will be empty.")
             } else {
                 Text("No Jamf Pro server is configured, so its columns will be empty.")
             }
@@ -277,7 +277,7 @@ struct ContentView: View {
             // each render would cost a pass per device during a lookup.
             let options = filterOptions
             if options.showAppleBusiness {
-                Picker("Apple Business", selection: $filters.appleBusiness) {
+                Picker(model.abmKind.label, selection: $filters.appleBusiness) {
                     Text("Any").tag(DeviceFilters.ABMStatus.any)
                     ForEach(options.statuses, id: \.status) { entry in
                         Text("\(entry.status.rawValue) (\(entry.count))").tag(entry.status)
@@ -353,7 +353,7 @@ struct ContentView: View {
                 TableColumn("Serial Number") { (report: DeviceReport) in
                     Text(report.serial).monospaced()
                 }
-                TableColumn("Apple Business") { (report: DeviceReport) in
+                TableColumn(model.abmKind.label) { (report: DeviceReport) in
                     ABMStatusCell(state: report.abm)
                 }
                 TableColumn("MDM Server Assignment") { (report: DeviceReport) in
@@ -415,9 +415,9 @@ struct ContentView: View {
     private var pendingGroupMessage: String {
         guard let pending = pendingGroup else { return "" }
         if model.needsOrganizationRead(forDeviceCount: pending.serials.count) {
-            return "Apple Business is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against Jamf Pro."
+            return "\(model.abmKind.label) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against Jamf Pro."
         }
-        return "Each device is checked against both Apple Business and Jamf Pro, so a list this size takes a while."
+        return "Each device is checked against both \(model.abmKind.label) and Jamf Pro, so a list this size takes a while."
     }
 
     /// Puts a group's or order's serials in the field, then either looks them
@@ -531,7 +531,7 @@ struct MigrationCell: View {
                     .foregroundStyle(outcome == "Migrated" ? Color.green : Color.secondary)
                     .help(outcome == "Migrated"
                           ? "The device migrated to its assigned service."
-                          : "No migration is scheduled. Apple reports a cancelled migration and an unsuccessful one the same way, so this covers both. The Apple Business assignment is unaffected.")
+                          : "No migration is scheduled. Apple reports a cancelled migration and an unsuccessful one the same way, so this covers both. The organization assignment is unaffected.")
             } else {
                 Text("—").foregroundStyle(.tertiary)
             }

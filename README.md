@@ -6,7 +6,7 @@
 
 **One list of serial numbers. Both sides of the story.**
 
-Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table, and the tools to act on what you find.
+Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** or **Apple School Manager** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table, and the tools to act on what you find.
 
 Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken from a Jamf Pro group or an Apple Business order, and Checkpoint reports, per device:
 
@@ -32,12 +32,12 @@ Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken fro
 
 Checkpoint doesn't just surface discrepancies, it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
-- **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
+- **Apple Business / Apple School Manager**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization (Apple Business only — Apple School Manager provides no release activity)
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
 - **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
 - Every device links directly to its record in Jamf Pro
 
-Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).
+Multiple organizations, of either Apple service, and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).
 
 ### Looking up a group or an order
 
@@ -84,18 +84,18 @@ Copy and export each come in a masked form, replacing serial numbers, UDIDs and 
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business API account per organization, with the **Device Enrollment Manager** role or higher
+- An Apple Business or Apple School Manager API account per organization, with the **Device Enrollment Manager** role or higher
 - A Jamf Pro server, connected by **API client** (recommended), **username and password**, or the **Platform API** gateway
 - Jamf Pro 11.30+ for the Last Contact attribute (older versions simply show "—")
 
 ## Setting it up
 
-- **[Permissions](docs/permissions.md)** — the Apple Business role, and the Jamf Pro privileges each feature and command needs
+- **[Permissions](docs/permissions.md)** — the Apple role, and the Jamf Pro privileges each feature and command needs
 - **[Platform API](docs/platform-api.md)** — optional: connecting through Jamf's gateway, the capabilities it takes, and the three commands it cannot carry
 
 ## Security
 
-Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
+Credentials are stored only on your Mac: secrets (the Apple private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
 
 Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 

@@ -113,9 +113,50 @@ nonisolated enum AppAppearance: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Which of Apple's two sibling organization services an account belongs to.
+///
+/// The APIs are the same one with two front doors: identical paths, identical
+/// device attributes, and the same OAuth flow differing only in scope. Only
+/// the set of device activities differs, which `supportsRelease` covers.
+nonisolated enum AppleOrgKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case business
+    case school
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .business: "Apple Business"
+        case .school: "Apple School Manager"
+        }
+    }
+
+    var host: URL {
+        switch self {
+        case .business: URL(string: "https://api-business.apple.com")!
+        case .school: URL(string: "https://api-school.apple.com")!
+        }
+    }
+
+    /// OAuth scope. The token endpoint is shared; only this value differs.
+    var scope: String {
+        switch self {
+        case .business: "business.api"
+        case .school: "school.api"
+        }
+    }
+
+    /// Apple School Manager has no RELEASE_DEVICES activity, so devices
+    /// cannot be released from the organization there.
+    var supportsRelease: Bool { self == .business }
+}
+
 nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
     var id = UUID()
     var name = ""
+    /// Which service this account is for. Absent from configurations saved
+    /// before Apple School Manager was supported, which were all Business.
+    var kind: AppleOrgKind = .business
     var clientID = ""
     var keyID = ""
 
@@ -134,6 +175,22 @@ nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
     var isConfigured: Bool {
         !clientID.trimmingCharacters(in: .whitespaces).isEmpty
             && !keyID.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+// Declared in an extension so the memberwise initialiser is still synthesised.
+extension ABMConfig {
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        clientID = try container.decode(String.self, forKey: .clientID)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        // Added with Apple School Manager support, so absent from
+        // organizations saved by earlier versions. Those were all Apple
+        // Business; without a default the whole list fails to decode and
+        // every configured organization silently disappears.
+        kind = try container.decodeIfPresent(AppleOrgKind.self, forKey: .kind) ?? .business
     }
 }
 

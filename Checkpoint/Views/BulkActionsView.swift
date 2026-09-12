@@ -151,10 +151,10 @@ struct BulkActionsView: View {
                 LabeledContent("Selected Devices", value: "\(reports.count)")
                 LabeledContent("Computers", value: "\(computerCount)")
                 LabeledContent("Mobile Devices", value: "\(mobileCount)")
-                LabeledContent("In Apple Business", value: "\(abmCount)")
+                LabeledContent("In \(model.abmKind.label)", value: "\(abmCount)")
                 LabeledContent("With Jamf Pro Record", value: "\(jamfCount)")
             }
-            Section("Apple Business") {
+            Section(model.abmKind.label) {
                 bulkPicker("MDM Server", selection: $mdmSelection, currentState: currentMDMState, noneLabel: "Unassigned", options: model.mdmServers.map { ($0.id, $0.name) })
                 Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
                     .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
@@ -169,8 +169,10 @@ struct BulkActionsView: View {
                     Button("Update Deadline for \(count(migratingCount))") { pending = .updateDeadline }
                     Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { pending = .cancelMigration }
                 }
-                Button("Release \(count(abmCount)) from Apple Business", role: .destructive) { pending = .release }
-                    .disabled(abmCount == 0)
+                let releaseUnavailable = model.releaseUnavailabilityReason
+                Button("Release \(count(abmCount)) from \(model.abmKind.label)", role: .destructive) { pending = .release }
+                    .disabled(abmCount == 0 || releaseUnavailable != nil)
+                    .help(releaseUnavailable ?? "")
             }
             // One Jamf Pro group, mirroring the device inspector. Each device
             // kind keeps its own PreStage picker, distinguished by row label
@@ -320,7 +322,7 @@ struct BulkActionsView: View {
         case .unassignMDM:
             "Unassign \(count(assignedCount)) from their MDM server?"
         case .release:
-            "Release \(count(abmCount)) from Apple Business?"
+            "Release \(count(abmCount)) from \(model.abmKind.label)?"
         case .scheduleMigration:
             "Migrate \(count(migratableCount)) to “\(selectedServerName ?? "the selected server")”?"
         case .updateDeadline:
@@ -357,17 +359,17 @@ struct BulkActionsView: View {
     private var pendingMessage: String {
         switch pending {
         case .applyMDM:
-            "Devices that are released or not in Apple Business are skipped. Apple processes assignments asynchronously."
+            "Devices that are released or not in \(model.abmKind.label) are skipped. Apple processes assignments asynchronously."
         case .unassignMDM:
             "The devices stay in your organization but are no longer assigned to any MDM server, so they will not enrol automatically until assigned again. Devices with no assignment are skipped."
         case .release:
             "The devices will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .scheduleMigration:
-            "The Apple Business assignments change immediately. Nothing is erased: each device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened)). Devices Apple reports as not migration-capable are skipped."
+            "The \(model.abmKind.label) assignments change immediately. Nothing is erased: each device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened)). Devices Apple reports as not migration-capable are skipped."
         case .updateDeadline:
             "A deadline earlier than the current one, or in the past, is enforced immediately without giving users the option to delay. Devices with no migration in progress are skipped."
         case .cancelMigration:
-            "Only the scheduled migrations are cancelled. The devices stay assigned to their new server in Apple Business and keep running under their current service. To undo the assignments as well, assign them back to the previous server."
+            "Only the scheduled migrations are cancelled. The devices stay assigned to their new server in \(model.abmKind.label) and keep running under their current service. To undo the assignments as well, assign them back to the previous server."
         case .applyComputerPrestage, .applyMobilePrestage:
             "Devices are removed from their current PreStage scope and added to the selected one. Devices already in the selected PreStage, and devices of the other type, are skipped."
         case .applySite:

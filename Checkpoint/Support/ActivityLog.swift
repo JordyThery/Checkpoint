@@ -6,9 +6,24 @@ import Observation
 /// Which service an entry concerns.
 nonisolated enum ActivityService: String, Sendable, CaseIterable, Identifiable {
     case appleBusiness = "Apple Business"
+    case appleSchool = "Apple School Manager"
     case jamfPro = "Jamf Pro"
 
     var id: String { rawValue }
+
+    /// Both Apple services, as opposed to Jamf Pro.
+    var isAppleOrganization: Bool { self != .jamfPro }
+}
+
+extension AppleOrgKind {
+    /// How traffic to this service is labelled in the log. The two are
+    /// separate entries so a log cannot attribute a request to the wrong one.
+    var activityService: ActivityService {
+        switch self {
+        case .business: .appleBusiness
+        case .school: .appleSchool
+        }
+    }
 }
 
 nonisolated enum ActivityOutcome: String, Sendable {

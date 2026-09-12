@@ -72,7 +72,7 @@ struct DeviceDetailView: View {
             }
             // Read-only detail and the actions that act on it are kept in
             // separate sections, so the form reads as facts then choices.
-            Section("Apple Business") { abmContent }
+            Section(model.abmKind.label) { abmContent }
             if let info = report.abm.value, !info.isReleased {
                 Section { abmActions(info) }
             }
@@ -205,7 +205,7 @@ struct DeviceDetailView: View {
         case .unassignMDM:
             "Unassign \(report.serial) from “\(report.abm.value?.mdmServerName ?? "its MDM server")”?"
         case .release:
-            "Release \(report.serial) from Apple Business?"
+            "Release \(report.serial) from \(model.abmKind.label)?"
         case .scheduleMigration:
             "Migrate \(report.serial) to “\(selectedServerName ?? "the selected server")”?"
         case .updateDeadline:
@@ -240,11 +240,11 @@ struct DeviceDetailView: View {
         case .release:
             "The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
         case .scheduleMigration:
-            "The Apple Business assignment changes immediately. Nothing is erased: the device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened))."
+            "The \(model.abmKind.label) assignment changes immediately. Nothing is erased: the device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened))."
         case .updateDeadline:
             "A deadline earlier than the current one, or in the past, is enforced immediately without giving the user the option to delay."
         case .cancelMigration:
-            "Only the scheduled migration is cancelled. The device stays assigned to \(report.abm.value?.mdmServerName ?? "its assigned server") in Apple Business and keeps running under its current service. To undo the assignment as well, assign it back to the previous server."
+            "Only the scheduled migration is cancelled. The device stays assigned to \(report.abm.value?.mdmServerName ?? "its assigned server") in \(model.abmKind.label) and keeps running under its current service. To undo the assignment as well, assign it back to the previous server."
         case .applyPrestage:
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
         case .applySite:
@@ -331,7 +331,7 @@ struct DeviceDetailView: View {
         case .pending:
             ProgressView().controlSize(.small)
         case .notConfigured:
-            Text("Add your Apple Business API credentials in Settings to see device status, warranty, and MDM assignment.")
+            Text("Add your \(model.abmKind.label) API credentials in Settings to see device status, warranty, and MDM assignment.")
                 .foregroundStyle(.secondary)
         case .notFound:
             Text("This serial number is not part of your organization. It was never added, or it has been released.")
@@ -432,7 +432,10 @@ struct DeviceDetailView: View {
                 .disabled(mdmSelection == nil || mdmSelection == info.mdmServerID)
         }
 
-        Button("Release from Apple Business", role: .destructive) { pending = .release }
+        let releaseUnavailable = model.releaseUnavailabilityReason
+        Button("Release from \(model.abmKind.label)", role: .destructive) { pending = .release }
+            .disabled(releaseUnavailable != nil)
+            .help(releaseUnavailable ?? "")
     }
 
     /// Apple rejects anything beyond 90 days.
