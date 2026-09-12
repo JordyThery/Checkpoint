@@ -47,7 +47,7 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 | Restart Device | Send Mobile Device Restart Device Command |
 | Shut Down Device | Send Mobile Device Shut Down Command |
 | Update Inventory | Update Inventory for Mobile Devices |
-| Renew MDM Profile | Send MDM Check In Command |
+| Renew MDM Profile | Send Command to Renew MDM Profile |
 | Send Blank Push | Send Declarative Management Command |
 | Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
 
@@ -60,6 +60,8 @@ Looking up an Apple Business order needs no Jamf Pro privilege and no extra Appl
 ### Optional privileges
 
 Without **View Local Admin Password**, the Managed Local Administrator Accounts section is simply absent. Checkpoint reads the accounts during an ordinary lookup, so a missing privilege is treated as "no accounts" rather than an error.
+
+Reading the rotation interval, which the confirmation quotes before a password is shown, additionally needs **Read User-Initiated Enrollment** and **Update Local Admin Password Settings** — Jamf Pro guards that setting with an update privilege even for reading it. Without them the confirmation says only that a rotation follows, and the password is still shown.
 
 Software update state comes from the device's own declarative status report and so needs no privilege beyond **Read Computers** and **Read Mobile Devices**. Apple has moved software updates to declarative management, and Jamf Pro's managed software update plans and per-product statuses are both deprecated, so neither is used.
 
