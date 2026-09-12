@@ -21,6 +21,8 @@ struct DeviceDetailView: View {
     }
     @State private var prestageSelection: String?
     @State private var siteSelection = "-1"
+    /// Jamf School location, that product's equivalent of a site.
+    @State private var locationSelection: String?
     @State private var isWorking = false
     @State private var errorMessage: String?
     @State private var infoMessage: String?
@@ -33,6 +35,10 @@ struct DeviceDetailView: View {
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
     @State private var loadedCoverage: [AppleCareCoverage]?
+    /// Jamf School's per-device record, which carries the passcode state its
+    /// device list leaves out. Fetched on selection for the same reason
+    /// AppleCare coverage is.
+    @State private var schoolDetails: JamfSchoolDeviceDetails?
 
     private enum PendingAction {
         case applyMDM
@@ -43,6 +49,7 @@ struct DeviceDetailView: View {
         case cancelMigration
         case applyPrestage
         case applySite
+        case applyLocation
         case deleteJamf
         case command(MDMCommand)
         case viewLocalAdminPassword(JamfLocalAdminAccount)
@@ -67,7 +74,7 @@ struct DeviceDetailView: View {
                     Text(report.serial).monospaced().textSelection(.enabled)
                 }
                 if let url = report.jamf.value?.webURL {
-                    Link("Open in Jamf Pro", destination: url)
+                    Link("Open in \(model.jamfFlavor.label)", destination: url)
                 }
             }
             // Read-only detail and the actions that act on it are kept in
@@ -76,7 +83,7 @@ struct DeviceDetailView: View {
             if let info = report.abm.value, !info.isReleased {
                 Section { abmActions(info) }
             }
-            Section("Jamf Pro") { jamfContent }
+            Section(model.jamfFlavor.label) { jamfContent }
             if let info = report.jamf.value {
                 Section { jamfActions(info) }
                 if !localAdmins.isEmpty {
@@ -105,6 +112,7 @@ struct DeviceDetailView: View {
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
         .onChange(of: report.jamf.value?.siteID) { syncSelections() }
+        .onChange(of: report.jamf.value?.locationID) { syncSelections() }
         .sheet(item: $revealedSecret) { secret in
             VStack(alignment: .leading, spacing: 16) {
                 Text(secret.title).font(.headline)
@@ -157,7 +165,7 @@ struct DeviceDetailView: View {
                 if let command = pinCommand { executeWithPIN(command) }
             }
         } message: {
-            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message ?? "")")
+            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message(for: model.jamfFlavor) ?? "")")
         }
         .confirmationDialog(
             pendingTitle,
@@ -194,6 +202,12 @@ struct DeviceDetailView: View {
         model.sites.first { $0.id == siteSelection }?.name ?? "None"
     }
 
+    private var selectedLocationName: String {
+        locationSelection.map { id in
+            model.jamfLocations.first { $0.id == id }?.name ?? id
+        } ?? "None"
+    }
+
     private var pendingTitle: String {
         switch pending {
         case .applyMDM:
@@ -220,8 +234,12 @@ struct DeviceDetailView: View {
             }
         case .applySite:
             "Move \(report.serial) to site “\(selectedSiteName)”?"
+        case .applyLocation:
+            "Move \(report.serial) to location “\(selectedLocationName)”?"
         case .deleteJamf:
-            "Delete the Jamf Pro record for \(report.serial)?"
+            model.jamfFlavor == .school
+                ? "Move the Jamf School record for \(report.serial) to the trash?"
+                : "Delete the Jamf Pro record for \(report.serial)?"
         case .command(let command):
             "\(command.title) — \(report.serial)?"
         case .viewLocalAdminPassword:
@@ -249,10 +267,14 @@ struct DeviceDetailView: View {
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
         case .applySite:
             "Only the Jamf Pro record moves to the other site. The PreStages the device can join stay the same, because they follow the ADE token that synced it."
+        case .applyLocation:
+            "The device record moves to the other location. Its groups and the profiles scoped to it are re-evaluated for the new location."
         case .deleteJamf:
-            "The record will be deleted from the selected Jamf Pro server."
+            model.jamfFlavor == .school
+                ? "The record moves to the trash in Jamf School. It stops being managed, and can be restored there."
+                : "The record will be deleted from the selected Jamf Pro server."
         case .command(let command):
-            command.message
+            command.message(for: model.jamfFlavor)
         case .viewLocalAdminPassword(let account):
             "Viewing the password for \(account.username) will cause Jamf Pro to rotate it \(rotationDescription)."
         case nil:
@@ -303,8 +325,19 @@ struct DeviceDetailView: View {
                 let siteID = siteSelection
                 run { try await model.setSite(reports: [report], to: siteID) }
             }
+        case .applyLocation:
+            Button("Change Location") {
+                let locationID = locationSelection
+                run {
+                    guard let locationID else { return }
+                    try await model.setLocation(reports: [report], to: locationID)
+                }
+            }
         case .deleteJamf:
-            Button("Delete Record", role: .destructive) {
+            Button(
+                model.jamfFlavor == .school ? "Move to Trash" : "Delete Record",
+                role: .destructive
+            ) {
                 run { try await model.deleteFromJamf(reports: [report]) }
             }
         case .command(let command):
@@ -452,10 +485,14 @@ struct DeviceDetailView: View {
         case .pending:
             ProgressView().controlSize(.small)
         case .notConfigured:
-            Text("Add a Jamf Pro server in Settings to see enrollment details and PreStage scope.")
+            Text(model.jamfFlavor == .school
+                 ? "Add a Jamf School server in Settings to see enrollment details and locations."
+                 : "Add a Jamf Pro server in Settings to see enrollment details and PreStage scope.")
                 .foregroundStyle(.secondary)
         case .notFound:
-            Text("No computer or mobile device record was found on the selected Jamf Pro server.")
+            Text(model.jamfFlavor == .school
+                 ? "No device record was found on the selected Jamf School server."
+                 : "No computer or mobile device record was found on the selected Jamf Pro server.")
                 .foregroundStyle(.secondary)
         case .failed(let message):
             Text(message).foregroundStyle(.red)
@@ -464,26 +501,52 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// The Jamf side of the inspector.
+    ///
+    /// Rows are gated on what the connected product reports, and a product
+    /// that reports nothing for one gets no row at all rather than a row
+    /// reading "—". Jamf School has no source for FileVault, MDM profile
+    /// expiry, software update state or any enrollment date, so on a Jamf
+    /// School server those five rows do not exist.
     @ViewBuilder
     private func jamfDetails(_ info: JamfInfo) -> some View {
+        let capabilities = model.jamfCapabilities
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
-        if model.sites.isEmpty {
+        if capabilities.contains(.sites), model.sites.isEmpty {
             LabeledContent("Site", value: info.siteName ?? "None")
         }
-        LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
-        LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
-        if info.kind == .mobileDevice || info.lastContact != nil {
-            LabeledContent("Last Contact", value: DateFormatting.short(info.lastContact))
+        if capabilities.contains(.locations), model.jamfLocations.isEmpty {
+            LabeledContent("Location", value: info.locationName ?? "None")
         }
-        if info.kind == .computer {
+        if capabilities.contains(.enrollmentDates) {
+            LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
+            LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
+        }
+        if info.kind == .mobileDevice || info.lastContact != nil {
+            LabeledContent(model.jamfFlavor.lastContactLabel, value: DateFormatting.short(info.lastContact))
+        }
+        if capabilities.contains(.enrollmentDates), info.kind == .computer {
             LabeledContent("Last check-in", value: DateFormatting.short(info.lastContactTime))
         }
-        LabeledContent("MDM Profile Expiration") {
-            let expired = info.mdmProfileExpiration
-                .flatMap(DateFormatting.parseISO)
-                .map { $0 < Date() } ?? false
-            Text(DateFormatting.short(info.mdmProfileExpiration))
-                .foregroundStyle(expired ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+        if capabilities.contains(.mdmProfileExpiry) {
+            LabeledContent("MDM Profile Expiration") {
+                let expired = info.mdmProfileExpiration
+                    .flatMap(DateFormatting.parseISO)
+                    .map { $0 < Date() } ?? false
+                Text(DateFormatting.short(info.mdmProfileExpiration))
+                    .foregroundStyle(expired ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+            }
+        }
+        // Jamf School reports whether a device is still managed and
+        // supervised, which is the nearest it comes to an enrollment state.
+        if let managed = info.isManaged {
+            LabeledContent("Managed") {
+                Text(managed ? "Yes" : "No")
+                    .foregroundStyle(managed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+            }
+        }
+        if let supervised = info.isSupervised {
+            LabeledContent("Supervised", value: supervised ? "Yes" : "No")
         }
         if let encryption = info.encryption {
             fileVaultRow(encryption)
@@ -491,10 +554,41 @@ struct DeviceDetailView: View {
         if let security = info.security {
             passcodeRow(security)
         }
-        // Always shown for a device with a Jamf Pro record: "no update plan"
-        // is itself the answer, and leaving the row out looked like a feature
-        // that did not work.
-        softwareUpdateRow(softwareUpdate)
+        if capabilities.contains(.passcodeOnDemand), info.kind == .mobileDevice {
+            schoolPasscodeRow
+        }
+        if capabilities.contains(.softwareUpdate) {
+            // Always shown for a device with a Jamf Pro record: "no update
+            // plan" is itself the answer, and leaving the row out looked like
+            // a feature that did not work.
+            softwareUpdateRow(softwareUpdate)
+        }
+    }
+
+    /// Passcode state on Jamf School, which serves it only per device.
+    ///
+    /// The row shows that it is still loading rather than appearing late, so
+    /// an empty passcode state is never mistaken for "no passcode".
+    @ViewBuilder
+    private var schoolPasscodeRow: some View {
+        LabeledContent("Passcode") {
+            if let details = schoolDetails {
+                VStack(alignment: .trailing, spacing: 2) {
+                    switch details.hasPasscode {
+                    case true: Text("Set").foregroundStyle(.green)
+                    case false: Text("Not set").foregroundStyle(.orange)
+                    case nil: Text("—")
+                    }
+                    if details.passcodeCompliant == false {
+                        Text("Does not meet requirements")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
     }
 
     /// FileVault state from inventory. Shown for every Mac, unlike the
@@ -600,7 +694,8 @@ struct DeviceDetailView: View {
 
     @ViewBuilder
     private func jamfActions(_ info: JamfInfo) -> some View {
-        if !model.sites.isEmpty {
+        let capabilities = model.jamfCapabilities
+        if capabilities.contains(.sites), !model.sites.isEmpty {
             Picker("Site", selection: $siteSelection) {
                 Text("None").tag("-1")
                 ForEach(model.sites) { site in
@@ -610,17 +705,29 @@ struct DeviceDetailView: View {
             Button("Apply Site Change") { pending = .applySite }
                 .disabled(siteSelection == (info.siteID ?? "-1"))
         }
-        Picker("PreStage", selection: $prestageSelection) {
-            Text("None").tag(String?.none)
-            ForEach(prestageChoices) { prestage in
-                Text(prestage.displayName).tag(Optional(prestage.id))
+        if capabilities.contains(.locations), !model.jamfLocations.isEmpty {
+            Picker("Location", selection: $locationSelection) {
+                Text("None").tag(String?.none)
+                ForEach(model.jamfLocations) { location in
+                    Text(location.name).tag(Optional(location.id))
+                }
             }
+            Button("Apply Location Change") { pending = .applyLocation }
+                .disabled(locationSelection == nil || locationSelection == info.locationID)
         }
-        Button("Apply PreStage Change") { pending = .applyPrestage }
-            .disabled(prestageSelection == info.prestageID)
+        if capabilities.contains(.prestageScope) {
+            Picker("PreStage", selection: $prestageSelection) {
+                Text("None").tag(String?.none)
+                ForEach(prestageChoices) { prestage in
+                    Text(prestage.displayName).tag(Optional(prestage.id))
+                }
+            }
+            Button("Apply PreStage Change") { pending = .applyPrestage }
+                .disabled(prestageSelection == info.prestageID)
+        }
         // Recovery secrets are read on demand and never kept on the report, so
         // they are not fetched by a lookup and do not appear in the table.
-        if info.kind == .computer {
+        if capabilities.contains(.recoverySecrets), info.kind == .computer {
             // Dimmed only when the disk is known not to be encrypted. While
             // encrypting, or when the state cannot be read, the key may still
             // exist, so the button stays available.
@@ -645,7 +752,7 @@ struct DeviceDetailView: View {
             }
         }
         // Destructive action last, matching Release in the Apple Business block.
-        Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
+        Button(model.jamfFlavor.removeRecordLabel, role: .destructive) { pending = .deleteJamf }
     }
 
     /// One row per managed local administrator account Jamf Pro holds, in the
@@ -677,8 +784,16 @@ struct DeviceDetailView: View {
         rotationTime = nil
         softwareUpdate = nil
         loadedCoverage = nil
+        schoolDetails = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
         guard report.jamf.value != nil else { return }
+        // Only ask each product for what it actually serves: a Jamf School
+        // server has none of the endpoints below, and a Jamf Pro one carries
+        // passcode state in the lookup already.
+        if model.jamfCapabilities.contains(.passcodeOnDemand) {
+            schoolDetails = await model.jamfSchoolDetails(for: report)
+            return
+        }
         softwareUpdate = await model.softwareUpdateStatus(for: report)
         guard report.jamf.value?.kind == .computer else { return }
         localAdmins = await model.localAdminAccounts(for: report)
@@ -706,11 +821,12 @@ struct DeviceDetailView: View {
 
     @ViewBuilder
     private func commandButtons(_ info: JamfInfo) -> some View {
-        ForEach(MDMCommand.commands(for: info.kind), id: \.self) { command in
+        let flavor = model.jamfFlavor
+        ForEach(MDMCommand.commands(for: info.kind, flavor: flavor), id: \.self) { command in
             let unavailable = model.unavailabilityReason(for: command)
                 ?? command.inapplicabilityReason(for: info)
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
-                if command.needsPIN {
+                if command.needsPIN(flavor: flavor) {
                     pin = ""
                     pinCommand = command
                 } else {
@@ -718,9 +834,9 @@ struct DeviceDetailView: View {
                 }
             }
             .disabled(unavailable != nil)
-            .help(unavailable ?? command.message)
+            .help(unavailable ?? command.message(for: flavor))
         }
-        let blocked = MDMCommand.commands(for: info.kind)
+        let blocked = MDMCommand.commands(for: info.kind, flavor: flavor)
             .filter { model.unavailabilityReason(for: $0) != nil }
             .map(\.title)
         if !blocked.isEmpty {
@@ -740,7 +856,7 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued in Jamf Pro.") {
+        run(successMessage: "\(command.title) was queued in \(model.jamfFlavor.label).") {
             try await model.sendCommand(command, reports: [report], passcode: pin)
         }
     }
@@ -756,6 +872,7 @@ struct DeviceDetailView: View {
         mdmSelection = current.abm.value?.mdmServerID
         prestageSelection = current.jamf.value?.prestageID
         siteSelection = current.jamf.value?.siteID ?? "-1"
+        locationSelection = current.jamf.value?.locationID
     }
 
     private func run(successMessage: String? = nil, _ operation: @escaping () async throws -> Void) {

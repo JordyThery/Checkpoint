@@ -255,7 +255,20 @@ struct JamfGroup: Sendable, Identifiable, Hashable {
     let id: String
     let name: String
     let isSmart: Bool
-    let kind: JamfGroupKind
+    /// Nil for Jamf School, which keeps one list of device groups rather than
+    /// splitting them by device kind.
+    let kind: JamfGroupKind?
+    /// Member count, when the service reports one without being asked. Jamf
+    /// Pro does not; Jamf School does.
+    let memberCount: Int?
+
+    init(id: String, name: String, isSmart: Bool, kind: JamfGroupKind?, memberCount: Int? = nil) {
+        self.id = id
+        self.name = name
+        self.isSmart = isSmart
+        self.kind = kind
+        self.memberCount = memberCount
+    }
 
     var typeLabel: String { isSmart ? "Smart" : "Static" }
 }
@@ -1062,7 +1075,12 @@ actor JamfClient {
             }
             struct Member: Decodable { let serial_number: String? }
         }
-        let (data, status) = try await send(path: "/JSSResource/\(group.kind.groupResource)/id/\(group.id)")
+        // Every group this client produces carries a kind; only Jamf School's
+        // do not, and those never reach here.
+        guard let resource = group.kind?.groupResource else {
+            throw APIError(message: "\(group.name) is not a Jamf Pro group.")
+        }
+        let (data, status) = try await send(path: "/JSSResource/\(resource)/id/\(group.id)")
         try throwIfError(status: status, data: data)
         let decoded = try JSONDecoder().decode(Response.self, from: data)
         let container = decoded.computer_group ?? decoded.mobile_device_group

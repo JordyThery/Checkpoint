@@ -8,11 +8,31 @@ nonisolated enum ActivityService: String, Sendable, CaseIterable, Identifiable {
     case appleBusiness = "Apple Business"
     case appleSchool = "Apple School Manager"
     case jamfPro = "Jamf Pro"
+    case jamfSchool = "Jamf School"
 
     var id: String { rawValue }
 
-    /// Both Apple services, as opposed to Jamf Pro.
-    var isAppleOrganization: Bool { self != .jamfPro }
+    /// Both Apple services, as opposed to the two Jamf ones. Enumerated
+    /// rather than tested against one case, because it decides which
+    /// connection name an entry is attributed to: treating Jamf School as an
+    /// Apple service would label its requests with the Apple organization.
+    var isAppleOrganization: Bool {
+        switch self {
+        case .appleBusiness, .appleSchool: true
+        case .jamfPro, .jamfSchool: false
+        }
+    }
+}
+
+extension JamfFlavor {
+    /// How traffic to this product is labelled in the log. Separate entries
+    /// so a log cannot attribute a request to the wrong one.
+    var activityService: ActivityService {
+        switch self {
+        case .pro: .jamfPro
+        case .school: .jamfSchool
+        }
+    }
 }
 
 extension AppleOrgKind {
@@ -241,13 +261,27 @@ nonisolated enum ActivityRedaction {
         "pin", "unlockToken", "escrowToken",
     ]
 
+    /// Keys holding someone's personal details rather than a device's.
+    ///
+    /// Jamf School attaches an owner to every device record, carrying a name,
+    /// e-mail address and username, and in a school those are pupils. The log
+    /// is exportable and meant to be attachable to a bug report, so the whole
+    /// sub-object goes rather than its individual fields: one key covers every
+    /// name inside it, and it keeps covering them if Jamf adds another.
+    static let personalKeys: Set<String> = ["owner", "notes"]
+
     /// Keys holding a device identifier. Not secrets, but they name the
     /// devices a log covers, so a redacted export replaces them.
+    ///
+    /// Jamf School spells the hardware addresses `WiFiMAC` and `bluetoothMAC`
+    /// rather than Jamf Pro's `wifiMacAddress`. Matching is case-insensitive,
+    /// so one spelling of each is enough.
     static let identifierKeys: Set<String> = [
         "serialNumber", "serial_number", "serialnumber", "serials", "serialNumbers",
         "udid", "udids", "imei", "meid", "eid",
         "wifiMacAddress", "ethernetMacAddress", "bluetoothMacAddress",
         "macAddress", "mac_address",
+        "WiFiMAC", "bluetoothMAC",
     ]
 
     static let placeholder = "••••••"
@@ -299,7 +333,7 @@ nonisolated enum ActivityRedaction {
         if let dictionary = value as? [String: Any] {
             var result: [String: Any] = [:]
             for (key, inner) in dictionary {
-                if matches(key, secretKeys) {
+                if matches(key, secretKeys) || matches(key, personalKeys) {
                     result[key] = placeholder
                     continue
                 }

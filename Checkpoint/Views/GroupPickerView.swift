@@ -30,7 +30,7 @@ struct GroupPickerView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Look Up a Jamf Pro Group")
+                Text("Look Up a \(model.jamfFlavor.label) Group")
                     .font(.headline)
                 Spacer()
             }
@@ -76,24 +76,36 @@ struct GroupPickerView: View {
             ContentUnavailableView(
                 "No Groups",
                 systemImage: "rectangle.3.group",
-                description: Text("The selected Jamf Pro server has no computer or mobile device groups, or the connection cannot read them.")
+                description: Text(model.jamfFlavor == .school
+                                  ? "The selected Jamf School server has no device groups, or the API key cannot read them."
+                                  : "The selected Jamf Pro server has no computer or mobile device groups, or the connection cannot read them.")
             )
         } else {
             List(visible, selection: $selection) { group in
                 HStack(spacing: 8) {
-                    Image(systemName: group.kind == .computer ? "laptopcomputer" : "iphone")
+                    // Jamf School keeps one list of device groups rather than
+                    // splitting them by kind, so there is no kind to show.
+                    Image(systemName: groupIcon(group))
                         .foregroundStyle(.secondary)
                     Text(group.name)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
-                    Text(group.typeLabel)
+                    Text(group.memberCount.map { "\(group.typeLabel) · \(LookupModel.deviceCount($0))" } ?? group.typeLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 .tag(group.id)
             }
             .searchable(text: $searchText, placement: .toolbar, prompt: "Search groups")
+        }
+    }
+
+    private func groupIcon(_ group: JamfGroup) -> String {
+        switch group.kind {
+        case .computer: "laptopcomputer"
+        case .mobileDevice: "iphone"
+        case nil: "rectangle.3.group"
         }
     }
 
