@@ -24,7 +24,7 @@ Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken fro
 - Last enrollment date, last inventory update, Last Contact, and last check-in
 - MDM profile expiration
 - FileVault state (Macs) and passcode state (mobile devices)
-- Managed software update plan, with the deadline the update is forced by
+- Software update state, as the device itself reports it: the pending version, the deadline, and the last failure
 
 ![Checkpoint showing a Mac and an iPad with their Apple Business and Jamf Pro status side by side, with the bulk actions inspector open](docs/screenshot.png)
 

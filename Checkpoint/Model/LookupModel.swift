@@ -237,22 +237,35 @@ nonisolated enum DateFormatting {
         return formatter.date(from: string)
     }
 
-    /// Parses a timestamp with no time zone, as Jamf Pro's managed update
-    /// deadline is given: a wall-clock time on the device itself. Read in the
-    /// current zone, which is what that means to whoever is looking at it.
-    /// The zoned parser is tried first in case a release starts sending one.
+    /// Parses a timestamp with no time zone, as Jamf Pro gives the times on
+    /// declarative status items. Read in the current zone, which is what a
+    /// server-local wall-clock time means to whoever is looking at it. The
+    /// zoned parser is tried first, in case a release starts sending one.
     static func parseDeviceLocal(_ string: String) -> Date? {
         if let date = parseISO(string) { return date }
+        // Report times carry milliseconds; other values do not.
+        if let date = parse(string, format: "yyyy-MM-dd'T'HH:mm:ss.SSS", timeZone: .current) { return date }
+        return parse(string, format: "yyyy-MM-dd'T'HH:mm:ss", timeZone: .current)
+    }
+
+    /// Values inside declarative status items use a space instead of the T and
+    /// carry an offset, e.g. `2026-08-31 22:01:00 +0000`.
+    static func parseStatusItemDate(_ string: String) -> Date? {
+        if let date = parseISO(string) { return date }
+        if let date = parse(string, format: "yyyy-MM-dd HH:mm:ss Z", timeZone: nil) { return date }
+        return parseDeviceLocal(string)
+    }
+
+    private static func parse(_ string: String, format: String, timeZone: TimeZone?) -> Date? {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
-        formatter.timeZone = .current
+        formatter.dateFormat = format
+        if let timeZone { formatter.timeZone = timeZone }
         return formatter.date(from: string)
     }
 
-    static func shortDeviceLocal(_ string: String?) -> String {
-        guard let string, !string.isEmpty else { return "—" }
-        guard let date = parseDeviceLocal(string) else { return string }
+    static func short(_ date: Date?) -> String {
+        guard let date else { return "—" }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 
@@ -798,10 +811,12 @@ final class LookupModel {
         return (try? await abm.appleCareCoverage(serial: report.serial)) ?? []
     }
 
-    /// The device's managed software update plan, or nil when it has none.
-    func softwareUpdatePlan(for report: DeviceReport) async -> JamfSoftwareUpdatePlan? {
-        guard let info = report.jamf.value, let jamf = makeJamfClient() else { return nil }
-        return try? await jamf.softwareUpdatePlan(deviceID: info.computerID, kind: info.kind)
+    /// The device's software update state, as it last reported it through
+    /// declarative device management. Nil when it has reported nothing.
+    func softwareUpdateStatus(for report: DeviceReport) async -> JamfSoftwareUpdateStatus? {
+        guard let info = report.jamf.value, let jamf = makeJamfClient(),
+              let managementID = info.managementID, !managementID.isEmpty else { return nil }
+        return try? await jamf.softwareUpdateStatus(managementID: managementID)
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list

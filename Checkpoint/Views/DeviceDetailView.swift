@@ -29,7 +29,7 @@ struct DeviceDetailView: View {
     @State private var pin = ""
     @State private var localAdmins: [JamfLocalAdminAccount] = []
     @State private var rotationTime: TimeInterval?
-    @State private var softwareUpdate: JamfSoftwareUpdatePlan?
+    @State private var softwareUpdate: JamfSoftwareUpdateStatus?
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
     @State private var loadedCoverage: [AppleCareCoverage]?
@@ -548,37 +548,49 @@ struct DeviceDetailView: View {
         }
     }
 
-    /// The device's managed software update plan. A declaratively managed
-    /// update is scheduled against a deadline, so that is what is shown.
+    /// What the device last reported about software updates through
+    /// declarative management. Reported times are shown alongside the values,
+    /// because the report keeps a pending version and its deadline after they
+    /// have lapsed.
     @ViewBuilder
-    private func softwareUpdateRow(_ plan: JamfSoftwareUpdatePlan?) -> some View {
+    private func softwareUpdateRow(_ update: JamfSoftwareUpdateStatus?) -> some View {
         LabeledContent("Software Update") {
-            if let plan {
+            if let update {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(plan.displayState)
-                        .foregroundStyle(plan.displayState == "Failed" ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                    if let deadline = plan.deadline {
-                        // The deadline carries no time zone, so it needs the
-                        // wall-clock parser rather than the ISO one.
-                        let overdue = DateFormatting.parseDeviceLocal(deadline).map { $0 < Date() } ?? false
-                        Text("\(overdue ? "Was due" : "Installs by") \(DateFormatting.shortDeviceLocal(deadline))")
+                    Text(update.displayState)
+                        .foregroundStyle(update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    if let version = update.pendingVersion {
+                        Text(version).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let deadline = update.deadline {
+                        let overdue = deadline < Date()
+                        Text("\(overdue ? "Was due" : "Due") \(DateFormatting.short(deadline))")
                             .font(.caption)
                             .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                     }
-                    if let version = plan.targetVersion {
-                        Text(version).font(.caption).foregroundStyle(.secondary)
-                    }
-                    if let deferrals = plan.deferralsAllowed {
-                        Text("Up to \(deferrals) deferral\(deferrals == 1 ? "" : "s")")
+                    if update.hasPendingUpdate, let reported = update.pendingReportedAt {
+                        Text("Reported \(DateFormatting.short(reported))")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.tertiary)
                     }
-                    ForEach(plan.errorReasons.prefix(2), id: \.self) { reason in
-                        Text(reason).font(.caption).foregroundStyle(.red)
+                    if update.hasFailure {
+                        Text(update.failureReason ?? "Software update failed.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                        if let at = update.failureAt {
+                            Text("Failed \(DateFormatting.short(at))")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    if let beta = update.betaEnrollment {
+                        Text(beta).font(.caption).foregroundStyle(.secondary)
                     }
                 }
             } else {
-                Text("No update plan").foregroundStyle(.secondary)
+                Text("Not reported")
+                    .foregroundStyle(.secondary)
+                    .help("The device has not sent a declarative status report, so it is not managed declaratively or has not reported yet.")
             }
         }
     }
@@ -664,7 +676,7 @@ struct DeviceDetailView: View {
         loadedCoverage = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
         guard report.jamf.value != nil else { return }
-        softwareUpdate = await model.softwareUpdatePlan(for: report)
+        softwareUpdate = await model.softwareUpdateStatus(for: report)
         guard report.jamf.value?.kind == .computer else { return }
         localAdmins = await model.localAdminAccounts(for: report)
         if !localAdmins.isEmpty {

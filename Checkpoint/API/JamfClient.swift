@@ -155,58 +155,66 @@ struct JamfLocalAdminAccount: Sendable, Identifiable, Hashable {
     }
 }
 
-/// A managed software update plan for one device.
+/// A device's software update state, as the device itself last reported it
+/// through declarative device management.
 ///
-/// Read from the plans endpoint rather than from update statuses. A
-/// declaratively managed update carries a deadline, not a deferral count:
-/// statuses report per-product download and install progress and stay empty
-/// until a device reports some, so they say nothing about a device that is
-/// merely scheduled.
-struct JamfSoftwareUpdatePlan: Sendable {
-    /// One of `PlanStatus.state`. Most values are transient internal steps.
-    let state: String
-    /// Local date and time on the device by which the update is forced.
-    let deadline: String?
-    /// DOWNLOAD_INSTALL_SCHEDULE, DOWNLOAD_INSTALL_ALLOW_DEFERRAL, and so on.
-    let updateAction: String?
-    let versionType: String?
-    let specificVersion: String?
-    /// Only meaningful for the action that allows deferral; a declarative
-    /// scheduled install reports zero.
-    let maxDeferrals: Int?
-    let errorReasons: [String]
+/// Read from the device's declarative status report rather than from Jamf
+/// Pro's managed software update plans or statuses. Software updates are
+/// declarative now; the plan is Jamf Pro's orchestration record, while this
+/// is what the device says about itself.
+///
+/// The report keeps sub-keys after the value above them clears, so a Mac can
+/// still carry a pending version and deadline from months ago. Each value
+/// therefore travels with the time the device reported it, and the failure
+/// block is gated on the current failure count rather than on the presence of
+/// a reason.
+struct JamfSoftwareUpdateStatus: Sendable {
+    /// `softwareupdate.install-state`, e.g. none, downloading, installing.
+    let installState: String?
+    let pendingOSVersion: String?
+    let pendingBuildVersion: String?
+    let deadline: Date?
+    /// When the device last reported the pending version, so a stale value is
+    /// visible as stale rather than presented as current.
+    let pendingReportedAt: Date?
+    let failureCount: Int?
+    let failureReason: String?
+    let failureAt: Date?
+    /// Non-empty when the Mac is enrolled in a beta programme.
+    let betaEnrollment: String?
 
-    /// The internal state machine collapsed to something worth showing. Every
-    /// value not named here is one of the transient steps between accepting a
-    /// plan and scheduling it.
+    /// Whether the device is doing something about an update right now.
+    var isInstalling: Bool {
+        guard let state = installState?.lowercased() else { return false }
+        return !state.isEmpty && state != "none"
+    }
+
+    var hasPendingUpdate: Bool {
+        !(pendingOSVersion ?? "").isEmpty
+    }
+
+    /// A current failure, as opposed to a reason left behind by an old one.
+    var hasFailure: Bool {
+        (failureCount ?? 0) > 0
+    }
+
+    /// Nothing was reported at all: the device is not managed declaratively,
+    /// or has not yet sent a status report.
+    var isReported: Bool {
+        installState != nil || hasPendingUpdate || hasFailure || betaEnrollment != nil
+    }
+
     var displayState: String {
-        switch state {
-        case "PlanCompleted": "Installed"
-        case "PlanFailed", "PlanException", "RejectingPlan": "Failed"
-        case "PlanCanceled": "Cancelled"
-        case "DDMPlanScheduled", "MDMPlanScheduled", "WaitingToStartDDMUpdate": "Scheduled"
-        case "VerifyingInstallation", "ProcessingInstallationVerification": "Verifying"
-        case "Unknown": "Unknown"
-        default: "In progress"
-        }
+        if isInstalling { return JamfDisplay.sentenceCase(installState ?? "") }
+        if hasPendingUpdate { return "Update pending" }
+        return "No pending update"
     }
 
-    /// What the device is being moved to, when Jamf Pro says something
-    /// specific. Nil for the ordinary "latest" cases, which add nothing.
-    var targetVersion: String? {
-        if let specificVersion, !specificVersion.isEmpty { return specificVersion }
-        switch versionType {
-        case "LATEST_MAJOR": return "Latest major version"
-        case "CUSTOM_VERSION": return "Custom version"
-        default: return nil
-        }
-    }
-
-    /// Deferrals only apply to the action that permits them.
-    var deferralsAllowed: Int? {
-        guard updateAction == "DOWNLOAD_INSTALL_ALLOW_DEFERRAL",
-              let maxDeferrals, maxDeferrals > 0 else { return nil }
-        return maxDeferrals
+    /// Target version with its build, when the device reported one.
+    var pendingVersion: String? {
+        guard hasPendingUpdate, let version = pendingOSVersion else { return nil }
+        guard let build = pendingBuildVersion, !build.isEmpty else { return version }
+        return "\(version) (\(build))"
     }
 }
 
@@ -1065,59 +1073,58 @@ actor JamfClient {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    // MARK: Managed software updates
+    // MARK: Software updates
 
-    /// The device's managed software update plan, or nil when it has none.
-    /// Requires "Read Managed Software Updates"; a connection without it gets
-    /// nil rather than an error, since the plan is supplementary detail.
+    /// The device's software update state from its declarative status report.
     ///
-    /// Filtered on the device ID alone and matched on object type afterwards:
-    /// computer and mobile device IDs are separate sequences, so the same
-    /// number can name one of each, and a tvOS device is APPLE_TV rather than
-    /// MOBILE_DEVICE.
-    func softwareUpdatePlan(deviceID: String, kind: JamfDeviceKind) async throws -> JamfSoftwareUpdatePlan? {
+    /// This is the only supported source: Apple has moved software updates to
+    /// declarative management, and Jamf Pro's managed software update plans
+    /// and per-product statuses are both deprecated. Needs nothing beyond the
+    /// read privileges a lookup already uses.
+    ///
+    /// Nil when the device has sent no report, which is the answer for a
+    /// device that is not declaratively managed.
+    func softwareUpdateStatus(managementID: String) async throws -> JamfSoftwareUpdateStatus? {
         struct Response: Decodable {
-            let results: [Item]?
+            let statusItems: [Item]?
             struct Item: Decodable {
-                let device: Device?
-                let updateAction: String?
-                let versionType: String?
-                let specificVersion: String?
-                let maxDeferrals: Int?
-                let forceInstallLocalDateTime: String?
-                let status: Status?
-            }
-            struct Device: Decodable {
-                let deviceId: String?
-                let objectType: String?
-            }
-            struct Status: Decodable {
-                let state: String?
-                let errorReasons: [String]?
+                let key: String?
+                let value: String?
+                let lastUpdateTime: String?
             }
         }
-        let (data, status) = try await send(
-            path: "/api/v1/managed-software-updates/plans",
-            queryItems: [URLQueryItem(name: "filter", value: "device.deviceId==\"\(deviceID)\"")]
-        )
+        let (data, status) = try await send(path: "/api/v1/ddm/\(managementID)/status-items")
         if status == 403 || status == 404 { return nil }
         try throwIfError(status: status, data: data)
+        let items = try JSONDecoder().decode(Response.self, from: data).statusItems ?? []
 
-        let wanted: Set<String> = kind == .computer ? ["COMPUTER"] : ["MOBILE_DEVICE", "APPLE_TV"]
-        let plans = (try JSONDecoder().decode(Response.self, from: data).results ?? [])
-            .filter { wanted.contains($0.device?.objectType ?? "") }
-        // Newest first would be better, but the endpoint offers no plan date;
-        // a device has one active plan in practice.
-        guard let plan = plans.last else { return nil }
-        return JamfSoftwareUpdatePlan(
-            state: plan.status?.state ?? "Unknown",
-            deadline: plan.forceInstallLocalDateTime,
-            updateAction: plan.updateAction,
-            versionType: plan.versionType,
-            specificVersion: plan.specificVersion,
-            maxDeferrals: plan.maxDeferrals,
-            errorReasons: plan.status?.errorReasons ?? []
+        // Exact keys only. The report can also carry malformed leftovers such
+        // as softwareupdate.pending-version.softwareupdate.target-local-date-time,
+        // which must not be mistaken for the real value.
+        var values: [String: (value: String?, reportedAt: Date?)] = [:]
+        for item in items {
+            guard let key = item.key else { continue }
+            values[key] = (item.value, item.lastUpdateTime.flatMap(DateFormatting.parseDeviceLocal))
+        }
+        func text(_ key: String) -> String? {
+            guard let value = values[key]?.value, !value.isEmpty else { return nil }
+            return value
+        }
+
+        let result = JamfSoftwareUpdateStatus(
+            installState: text("softwareupdate.install-state"),
+            pendingOSVersion: text("softwareupdate.pending-version.os-version"),
+            pendingBuildVersion: text("softwareupdate.pending-version.build-version"),
+            deadline: text("softwareupdate.pending-version.target-local-date-time")
+                .flatMap(DateFormatting.parseStatusItemDate),
+            pendingReportedAt: values["softwareupdate.pending-version.os-version"]?.reportedAt,
+            failureCount: text("softwareupdate.failure-reason.count").flatMap(Int.init),
+            failureReason: text("softwareupdate.failure-reason.reason"),
+            failureAt: text("softwareupdate.failure-reason.timestamp")
+                .flatMap(DateFormatting.parseStatusItemDate),
+            betaEnrollment: text("softwareupdate.beta-enrollment")
         )
+        return result.isReported ? result : nil
     }
 
     // MARK: Sites
