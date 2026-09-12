@@ -39,6 +39,11 @@ struct JamfInfo: Sendable {
     var adeInstanceID: String?
     /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
     var unlockToken: String?
+    /// FileVault state (computers), from the inventory record rather than the
+    /// recovery-key endpoint, so an ordinary lookup can show it.
+    var encryption: JamfDiskEncryption?
+    /// Passcode and encryption state (mobile devices).
+    var security: JamfMobileSecurity?
     var lastEnrolledDate: String?
     var reportDate: String?
     /// Last check-in (Jamf binary; computers only).
@@ -267,6 +272,8 @@ final class LookupModel {
     // must not cost a re-authentication.
     private var abmClients: [String: ABMClient] = [:]
     private var jamfClients: [String: JamfClient] = [:]
+    /// LAPS rotation time per server, cached because it is server-wide.
+    private var rotationTimes: [UUID: TimeInterval] = [:]
 
     init(settings: AppSettings, log: ActivityLog? = nil) {
         self.settings = settings
@@ -611,6 +618,69 @@ final class LookupModel {
                 throw ActionError(message: "Jamf Pro holds no device lock PIN for \(report.serial). One exists only after the Mac has been locked through Jamf Pro.")
             }
             return pin
+        }
+    }
+
+    // MARK: Per-device detail
+
+    // Fetched when a device is selected rather than during a lookup: each
+    // costs a request per device, and a lookup of several hundred serials
+    // should not pay for detail that only the inspector shows.
+
+    /// Jamf Pro's managed software update state for a device, or nil when no
+    /// plan applies or the server will not serve it.
+    func softwareUpdateStatus(for report: DeviceReport) async -> JamfSoftwareUpdateStatus? {
+        guard let info = report.jamf.value, let jamf = makeJamfClient() else { return nil }
+        let status = try? await jamf.softwareUpdateStatus(deviceID: info.computerID, kind: info.kind)
+        return (status?.isMeaningful ?? false) ? status : nil
+    }
+
+    /// The managed local administrator accounts for a Mac, or an empty list
+    /// when there are none, the device is not a Mac, or the connection lacks
+    /// the privilege. Called during ordinary browsing, so it never throws.
+    func localAdminAccounts(for report: DeviceReport) async -> [JamfLocalAdminAccount] {
+        guard let info = report.jamf.value, info.kind == .computer,
+              let managementID = info.managementID, !managementID.isEmpty,
+              let jamf = makeJamfClient() else { return [] }
+        return (try? await jamf.localAdminAccounts(managementID: managementID)) ?? []
+    }
+
+    /// How long after being viewed Jamf Pro rotates a local administrator
+    /// password. Nil when the setting cannot be read.
+    ///
+    /// This is a server-wide setting, so it is read once per server rather
+    /// than each time a device is selected.
+    func localAdminRotationTime() async -> TimeInterval? {
+        guard let serverID = selectedJamfServer?.id else { return nil }
+        if let cached = rotationTimes[serverID] { return cached }
+        guard let jamf = makeJamfClient(),
+              let seconds = try? await jamf.localAdminRotationTime(), seconds > 0 else { return nil }
+        let interval = TimeInterval(seconds)
+        rotationTimes[serverID] = interval
+        return interval
+    }
+
+    /// Reads a managed local administrator password. Recorded as a change
+    /// rather than a read, because viewing queues a rotation.
+    func localAdminPassword(for report: DeviceReport, account: JamfLocalAdminAccount) async throws -> String {
+        guard let info = report.jamf.value else {
+            throw ActionError(message: "\(report.serial) has no Jamf Pro record.")
+        }
+        guard info.kind == .computer else {
+            throw ActionError(message: "Local administrator passwords apply to Macs only.")
+        }
+        guard let managementID = info.managementID, !managementID.isEmpty else {
+            throw ActionError(message: "\(report.serial) has no management ID. Run a fresh lookup first.")
+        }
+        guard let jamf = makeJamfClient() else {
+            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+        }
+        let summary = "Read the local administrator password for \(account.username) on \(report.serial), queuing a rotation"
+        return try await recording(.jamfPro, summary, serials: [report.serial]) {
+            guard let password = try await jamf.localAdminPassword(managementID: managementID, account: account) else {
+                throw ActionError(message: "Jamf Pro holds no password for \(account.username) on \(report.serial).")
+            }
+            return password
         }
     }
 
@@ -1052,6 +1122,7 @@ final class LookupModel {
                     siteID: record.siteID,
                     siteName: record.siteName,
                     adeInstanceID: context.adeInstanceBySerial[serial],
+                    encryption: record.encryption,
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.reportDate,
                     lastContactTime: record.lastContactTime,
@@ -1075,6 +1146,7 @@ final class LookupModel {
                     siteName: record.siteName,
                     adeInstanceID: context.adeInstanceBySerial[serial],
                     unlockToken: record.unlockToken,
+                    security: record.security,
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.lastInventoryDate,
                     lastContactTime: nil,
@@ -1090,4 +1162,5 @@ final class LookupModel {
             return .failed(error.localizedDescription)
         }
     }
+
 }

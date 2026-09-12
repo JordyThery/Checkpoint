@@ -23,6 +23,8 @@ Enter serial numbers, typed, pasted, or imported from a text/CSV file, and Check
 - PreStage enrollment scope and site
 - Last enrollment date, last inventory update, Last Contact, and last check-in
 - MDM profile expiration
+- FileVault state (Macs) and passcode state (mobile devices)
+- Managed software update status, with deferrals remaining
 
 ![Checkpoint showing a Mac and an iPad with their Apple Business and Jamf Pro status side by side, with the bulk actions inspector open](docs/screenshot.png)
 
@@ -45,7 +47,9 @@ Migration requires an Apple Business tenant on a release that supports it. Devic
 
 ### Recovery secrets
 
-For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, and the **device lock PIN** from Jamf Pro. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
+For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, the **device lock PIN**, and the password for each **managed local administrator account**. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
+
+Managed local administrator accounts are listed as Jamf Pro lists them, one row per account with its source, so a Mac carrying both a PreStage account and one created by the Jamf binary shows both under their own usernames. Viewing a password causes Jamf Pro to rotate it after the instance's rotation time, so Checkpoint asks for confirmation first and records the view as a change.
 
 ### Activity log
 

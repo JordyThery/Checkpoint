@@ -23,6 +23,62 @@ struct JamfComputerRecord: Sendable {
     let mdmProfileExpiration: String?
     let siteID: String?
     let siteName: String?
+    /// FileVault state from the inventory record. This is the DISK_ENCRYPTION
+    /// section, which reports encryption without carrying the recovery key,
+    /// so it needs no privilege beyond Read Computers.
+    let encryption: JamfDiskEncryption?
+}
+
+/// A Mac's FileVault state, as reported by inventory.
+struct JamfDiskEncryption: Sendable {
+    let fileVaultEnabled: Bool?
+    /// Boot partition state, e.g. ENCRYPTED, ENCRYPTING or RESTART_NEEDED.
+    let bootPartitionState: String?
+    let bootPartitionPercent: Int?
+    /// Jamf Pro's assessment of the escrowed personal key, e.g. VALID.
+    let recoveryKeyValidity: String?
+
+    /// Whether the state is one that has settled, rather than one in progress
+    /// or needing attention.
+    var isSettled: Bool {
+        ["ENCRYPTED", "UNENCRYPTED", "DECRYPTED", "INELIGIBLE"].contains(bootPartitionState ?? "")
+    }
+
+    /// Whether the partition state says anything the enabled flag does not.
+    /// Encrypted with FileVault on, or unencrypted with it off, is the same
+    /// fact twice; anything else is worth showing.
+    var stateAddsDetail: Bool {
+        guard let state = bootPartitionState, state != "UNKNOWN" else { return false }
+        switch state {
+        case "ENCRYPTED": return fileVaultEnabled != true
+        case "UNENCRYPTED": return fileVaultEnabled == true
+        default: return true
+        }
+    }
+
+    /// The partition state as sentence case, e.g. RESTART_NEEDED -> Restart needed.
+    var displayState: String? {
+        bootPartitionState.map(JamfDisplay.sentenceCase)
+    }
+
+    /// Key validity is only meaningful once FileVault is on: an unencrypted
+    /// Mac reports UNKNOWN, which would read as a problem.
+    var keyValidityWarning: String? {
+        guard fileVaultEnabled == true,
+              let validity = recoveryKeyValidity,
+              !["VALID", "NOT_APPLICABLE"].contains(validity) else { return nil }
+        return "Recovery key \(validity.lowercased())"
+    }
+}
+
+/// A mobile device's passcode and encryption state.
+struct JamfMobileSecurity: Sendable {
+    let passcodePresent: Bool?
+    /// Compliant with Jamf Pro's own requirements.
+    let passcodeCompliant: Bool?
+    /// Compliant with the passcode profile scoped to the device.
+    let passcodeCompliantWithProfile: Bool?
+    let hardwareEncryption: Int?
 }
 
 struct JamfMobileDeviceRecord: Sendable {
@@ -40,6 +96,59 @@ struct JamfMobileDeviceRecord: Sendable {
     let siteName: String?
     /// Escrowed unlock token, required by the ClearPasscode MDM command.
     let unlockToken: String?
+    let security: JamfMobileSecurity?
+}
+
+/// A managed local administrator account that Jamf Pro holds a password for.
+/// Jamf Pro calls these Managed Local Administrator Accounts; the API calls
+/// the feature LAPS.
+struct JamfLocalAdminAccount: Sendable, Identifiable, Hashable {
+    let username: String
+    let guid: String
+    /// MDM for the account created by a PreStage, JMF for one created by the
+    /// Jamf binary. A device may have either, both, or neither.
+    let source: String
+
+    var id: String { guid.isEmpty ? username : guid }
+
+    /// Matches the wording in the Jamf Pro interface.
+    var sourceLabel: String {
+        switch source.uppercased() {
+        case "JMF": "jamf binary"
+        case "MDM": "MDM"
+        default: source
+        }
+    }
+}
+
+/// Jamf Pro's managed software update state for one device.
+struct JamfSoftwareUpdateStatus: Sendable {
+    let status: String
+    let downloaded: Bool?
+    let downloadPercentComplete: Double?
+    let deferralsRemaining: Int?
+    let maxDeferrals: Int?
+    let nextScheduledInstall: String?
+
+    /// Whether Jamf Pro is reporting anything worth showing. A device with no
+    /// update plan answers with an UNKNOWN row and no other detail.
+    var isMeaningful: Bool {
+        status.uppercased() != "UNKNOWN"
+            || deferralsRemaining != nil
+            || nextScheduledInstall != nil
+            || downloaded == true
+    }
+
+    var displayStatus: String { JamfDisplay.sentenceCase(status) }
+}
+
+nonisolated enum JamfDisplay {
+    /// Jamf Pro reports states as UPPER_SNAKE_CASE. Shown as sentence case so
+    /// they read as prose: RESTART_NEEDED becomes Restart needed.
+    static func sentenceCase(_ value: String) -> String {
+        let words = value.replacingOccurrences(of: "_", with: " ").lowercased()
+        return words.prefix(1).uppercased() + words.dropFirst()
+    }
 }
 
 struct JamfSite: Sendable, Identifiable, Hashable {
@@ -149,6 +258,16 @@ actor JamfClient {
                 let id: String
                 let udid: String?
                 let general: General?
+                let diskEncryption: DiskEncryption?
+            }
+            struct DiskEncryption: Decodable {
+                let fileVault2Enabled: Bool?
+                let individualRecoveryKeyValidityStatus: String?
+                let bootPartitionEncryptionDetails: Partition?
+            }
+            struct Partition: Decodable {
+                let partitionFileVault2State: String?
+                let partitionFileVault2Percent: Int?
             }
             struct General: Decodable {
                 let name: String?
@@ -171,10 +290,14 @@ actor JamfClient {
                 let name: String?
             }
         }
+        // DISK_ENCRYPTION reports FileVault state and costs about 500 bytes.
+        // It deliberately carries no recovery key, so the lookup stays within
+        // Read Computers and the response is safe to record in the log.
         let (data, status) = try await send(
             path: "/api/\(apiVersion)/computers-inventory",
             queryItems: [
                 URLQueryItem(name: "section", value: "GENERAL"),
+                URLQueryItem(name: "section", value: "DISK_ENCRYPTION"),
                 URLQueryItem(name: "page-size", value: "10"),
                 URLQueryItem(name: "filter", value: "hardware.serialNumber==\"\(serial)\""),
             ]
@@ -205,7 +328,15 @@ actor JamfClient {
             reportDate: item.general?.reportDate,
             mdmProfileExpiration: item.general?.mdmProfileExpiration ?? item.general?.mdmCertificateExpiration,
             siteID: item.general?.site?.id,
-            siteName: item.general?.site?.name
+            siteName: item.general?.site?.name,
+            encryption: item.diskEncryption.map {
+                JamfDiskEncryption(
+                    fileVaultEnabled: $0.fileVault2Enabled,
+                    bootPartitionState: $0.bootPartitionEncryptionDetails?.partitionFileVault2State,
+                    bootPartitionPercent: $0.bootPartitionEncryptionDetails?.partitionFileVault2Percent,
+                    recoveryKeyValidity: $0.individualRecoveryKeyValidityStatus
+                )
+            }
         )
     }
 
@@ -249,9 +380,20 @@ actor JamfClient {
             }
             struct OSDetails: Decodable {
                 let unlockToken: String?
+                let security: Security?
+            }
+            struct Security: Decodable {
+                let passcodePresent: Bool?
+                let passcodeCompliant: Bool?
+                let passcodeCompliantWithProfile: Bool?
+                let hardwareEncryption: Int?
             }
             var unlockToken: String? {
                 [ios, tvos, watchos, visionos].compactMap { $0?.unlockToken }.first { !$0.isEmpty }
+            }
+            /// The security block lives under whichever per-OS object applies.
+            var security: Security? {
+                [ios, tvos, watchos, visionos].compactMap { $0?.security }.first
             }
         }
         // Withheld from the activity log because the response carries the
@@ -278,7 +420,15 @@ actor JamfClient {
             mdmProfileExpiration: detail?.mdmProfileExpirationTimestamp,
             siteID: detail?.site?.id,
             siteName: detail?.site?.name,
-            unlockToken: detail?.unlockToken
+            unlockToken: detail?.unlockToken,
+            security: detail?.security.map {
+                JamfMobileSecurity(
+                    passcodePresent: $0.passcodePresent,
+                    passcodeCompliant: $0.passcodeCompliant,
+                    passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
+                    hardwareEncryption: $0.hardwareEncryption
+                )
+            }
         )
     }
 
@@ -677,6 +827,116 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
         let password = try JSONDecoder().decode(Response.self, from: data).recoveryLockPassword
         return (password?.isEmpty ?? true) ? nil : password
+    }
+
+    // MARK: Managed local administrator accounts
+
+    // Jamf Pro's LAPS endpoints. A device can carry an account created by its
+    // PreStage (source MDM), one created by the Jamf binary (source JMF),
+    // both, or neither, and their usernames need not match, so the accounts
+    // are always enumerated rather than assumed.
+
+    /// The managed local administrator accounts Jamf Pro knows for a device.
+    /// Requires the "View Local Admin Password" privilege; an empty list is
+    /// returned when the privilege is missing, since the accounts are shown
+    /// as part of an ordinary lookup and their absence is not an error.
+    func localAdminAccounts(managementID: String) async throws -> [JamfLocalAdminAccount] {
+        struct Response: Decodable {
+            let results: [Item]?
+            struct Item: Decodable {
+                let username: String?
+                let guid: String?
+                let userSource: String?
+            }
+        }
+        let (data, status) = try await send(path: "/api/v2/local-admin-password/\(managementID)/accounts")
+        if status == 403 || status == 404 { return [] }
+        try throwIfError(status: status, data: data)
+        return (try JSONDecoder().decode(Response.self, from: data).results ?? []).compactMap {
+            guard let username = $0.username, !username.isEmpty else { return nil }
+            return JamfLocalAdminAccount(
+                username: username,
+                guid: $0.guid ?? "",
+                source: $0.userSource ?? ""
+            )
+        }
+    }
+
+    /// The current password for a managed local administrator account.
+    ///
+    /// Viewing queues a rotation: the value stays valid for the instance's
+    /// rotation time and is then replaced. The account GUID is used rather
+    /// than the username alone, because Jamf Pro resolves a bare username to
+    /// the MDM source when two accounts share one.
+    ///
+    /// Nil when Jamf Pro holds no password for the account. That case answers
+    /// HTTP 400 with code NOT_FOUND rather than a 404.
+    func localAdminPassword(managementID: String, account: JamfLocalAdminAccount) async throws -> String? {
+        struct Response: Decodable { let password: String? }
+        let path = account.guid.isEmpty
+            ? "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/password"
+            : "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/\(account.guid)/password"
+        let (data, status) = try await send(path: path, withholdBodies: true)
+        if status == 404 || (status == 400 && Self.isNotFound(data)) { return nil }
+        try throwIfError(status: status, data: data)
+        let password = try JSONDecoder().decode(Response.self, from: data).password
+        return (password?.isEmpty ?? true) ? nil : password
+    }
+
+    /// How long after being viewed a password is rotated, in seconds. Nil when
+    /// the setting cannot be read, in which case the caller says only that a
+    /// rotation follows.
+    func localAdminRotationTime() async throws -> Int? {
+        struct Response: Decodable { let passwordRotationTime: Int? }
+        let (data, status) = try await send(path: "/api/v2/local-admin-password/settings")
+        guard (200...299).contains(status) else { return nil }
+        return try? JSONDecoder().decode(Response.self, from: data).passwordRotationTime
+    }
+
+    /// Whether an error body carries the NOT_FOUND code Jamf Pro returns, with
+    /// HTTP 400, for an account it holds no password for.
+    private nonisolated static func isNotFound(_ data: Data) -> Bool {
+        struct ErrorResponse: Decodable {
+            let errors: [Item]?
+            struct Item: Decodable { let code: String? }
+        }
+        let parsed = try? JSONDecoder().decode(ErrorResponse.self, from: data)
+        return parsed?.errors?.contains { $0.code == "NOT_FOUND" } ?? false
+    }
+
+    // MARK: Managed software updates
+
+    /// Jamf Pro's declarative software update state for a device. Nil when no
+    /// plan applies, which the endpoint reports as an UNKNOWN row rather than
+    /// an empty result.
+    func softwareUpdateStatus(deviceID: String, kind: JamfDeviceKind) async throws -> JamfSoftwareUpdateStatus? {
+        struct Response: Decodable {
+            let results: [Item]?
+            struct Item: Decodable {
+                let status: String?
+                let downloaded: Bool?
+                let downloadPercentComplete: Double?
+                let deferralsRemaining: Int?
+                let maxDeferrals: Int?
+                let nextScheduledInstall: String?
+            }
+        }
+        let segment = kind == .computer ? "computers" : "mobile-devices"
+        let (data, status) = try await send(path: "/api/v1/managed-software-updates/update-statuses/\(segment)/\(deviceID)")
+        if status == 403 || status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        let results = (try JSONDecoder().decode(Response.self, from: data).results ?? []).map {
+            JamfSoftwareUpdateStatus(
+                status: $0.status ?? "UNKNOWN",
+                downloaded: $0.downloaded,
+                downloadPercentComplete: $0.downloadPercentComplete,
+                deferralsRemaining: $0.deferralsRemaining,
+                maxDeferrals: $0.maxDeferrals,
+                nextScheduledInstall: $0.nextScheduledInstall
+            )
+        }
+        // A device can carry a row per product; the informative one wins.
+        return results.first(where: \.isMeaningful) ?? results.first
     }
 
     // MARK: Sites

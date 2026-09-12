@@ -37,6 +37,7 @@ Permissions are granted per capability on the integration, rather than per privi
 | Wipe and Remove MDM Profile | Destructive device actions: Execute |
 | Restart and Shut Down | Device actions: Execute, plus Inventory: Read to resolve the device |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
+| Managed local administrator accounts and passwords | Device secrets: Read |
 
 ## What the gateway cannot carry
 
@@ -49,6 +50,8 @@ Permissions are granted per capability on the integration, rather than per privi
 | Renew MDM Profile | Accepted by the gateway, but renews nothing: every device comes back under `udidsNotProcessed`, for computers and mobile devices alike, on an instance that renews them fine over a direct connection |
 
 Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need one of the three above.
+
+FileVault state, mobile passcode state, software update status and managed local administrator accounts were each checked over both connections and returned identical results, so there is no difference in what Checkpoint can show.
 
 ## Notes on gateway behaviour
 

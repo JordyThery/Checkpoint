@@ -18,7 +18,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 
 | Feature | Privilege |
 | --- | --- |
-| Device lookup | Read Computers, Read Mobile Devices |
+| Device lookup, including FileVault state, passcode state and software update status | Read Computers, Read Mobile Devices |
 | PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
@@ -26,6 +26,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | FileVault recovery key | View Disk Encryption Recovery Key |
 | Recovery Lock password | View Recovery Lock |
 | Device lock PIN | View Computer Device Lock Pin |
+| Managed local administrator accounts and passwords | View Local Admin Password |
 
 ### MDM commands
 
@@ -48,6 +49,12 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 | Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
 
 Shut Down is offered for mobile devices only, because Jamf Pro has no equivalent computer privilege.
+
+### Optional privileges
+
+Without **View Local Admin Password**, the Managed Local Administrator Accounts section is simply absent. Checkpoint reads the accounts during an ordinary lookup, so a missing privilege is treated as "no accounts" rather than an error.
+
+FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.
 
 ## Username and password
 

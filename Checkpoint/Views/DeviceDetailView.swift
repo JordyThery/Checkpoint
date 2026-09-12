@@ -27,6 +27,9 @@ struct DeviceDetailView: View {
     @State private var pending: PendingAction?
     @State private var pinCommand: MDMCommand?
     @State private var pin = ""
+    @State private var localAdmins: [JamfLocalAdminAccount] = []
+    @State private var rotationTime: TimeInterval?
+    @State private var softwareUpdate: JamfSoftwareUpdateStatus?
 
     private enum PendingAction {
         case applyMDM
@@ -39,6 +42,19 @@ struct DeviceDetailView: View {
         case applySite
         case deleteJamf
         case command(MDMCommand)
+        case viewLocalAdminPassword(JamfLocalAdminAccount)
+    }
+
+    /// How long a viewed local administrator password stays valid, worded the
+    /// way Jamf Pro words it. The interval is an instance setting, so it is
+    /// read from the server rather than assumed.
+    private var rotationDescription: String {
+        guard let rotationTime else { return "shortly afterwards" }
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute]
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 2
+        return formatter.string(from: rotationTime).map { "in \($0)" } ?? "shortly afterwards"
     }
 
     var body: some View {
@@ -57,6 +73,9 @@ struct DeviceDetailView: View {
             Section("Jamf Pro") { jamfContent }
             if let info = report.jamf.value {
                 Section { jamfActions(info) }
+                if !localAdmins.isEmpty {
+                    Section("Managed Local Administrator Accounts") { localAdminRows }
+                }
                 Section("MDM Commands") { commandButtons(info) }
             }
         }
@@ -70,6 +89,7 @@ struct DeviceDetailView: View {
             }
         }
         .onAppear(perform: syncSelections)
+        .task(id: report.jamf.value?.computerID) { await loadDeviceDetail() }
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
@@ -193,6 +213,8 @@ struct DeviceDetailView: View {
             "Delete the Jamf Pro record for \(report.serial)?"
         case .command(let command):
             "\(command.title) — \(report.serial)?"
+        case .viewLocalAdminPassword:
+            "Rotation after viewing"
         case nil:
             ""
         }
@@ -220,6 +242,8 @@ struct DeviceDetailView: View {
             "The record will be deleted from the selected Jamf Pro server."
         case .command(let command):
             command.message
+        case .viewLocalAdminPassword(let account):
+            "Viewing the password for \(account.username) will cause Jamf Pro to rotate it \(rotationDescription)."
         case nil:
             ""
         }
@@ -275,6 +299,13 @@ struct DeviceDetailView: View {
         case .command(let command):
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
                 execute(command, pin: nil)
+            }
+        case .viewLocalAdminPassword(let account):
+            Button("Continue") {
+                reveal(title: "Password for \(account.username)") {
+                    let password = try await model.localAdminPassword(for: report, account: account)
+                    return (password, "Jamf Pro will rotate this password \(rotationDescription).")
+                }
             }
         case nil:
             EmptyView()
@@ -435,6 +466,94 @@ struct DeviceDetailView: View {
             Text(DateFormatting.short(info.mdmProfileExpiration))
                 .foregroundStyle(expired ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
         }
+        if let encryption = info.encryption {
+            fileVaultRow(encryption)
+        }
+        if let security = info.security {
+            passcodeRow(security)
+        }
+        if let softwareUpdate {
+            softwareUpdateRow(softwareUpdate)
+        }
+    }
+
+    /// FileVault state from inventory. Shown for every Mac, unlike the
+    /// recovery key, which is fetched only on request.
+    @ViewBuilder
+    private func fileVaultRow(_ encryption: JamfDiskEncryption) -> some View {
+        LabeledContent("FileVault") {
+            VStack(alignment: .trailing, spacing: 2) {
+                if encryption.fileVaultEnabled == true {
+                    Text("Enabled").foregroundStyle(.green)
+                } else if encryption.fileVaultEnabled == false {
+                    Text("Not enabled").foregroundStyle(.orange)
+                } else {
+                    Text("—")
+                }
+                if encryption.stateAddsDetail, let state = encryption.displayState {
+                    // A percentage only means something mid-flight; a settled
+                    // partition always reads 0 or 100.
+                    let percent = encryption.bootPartitionPercent
+                    let suffix = (!encryption.isSettled && percent != nil) ? " \(percent!)%" : ""
+                    Text(state + suffix)
+                        .font(.caption)
+                        .foregroundStyle(encryption.isSettled ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                }
+                if let warning = encryption.keyValidityWarning {
+                    Text(warning)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+        }
+    }
+
+    /// Passcode state for a mobile device. Presence and compliance are shown
+    /// together: a device with no passcode can still be compliant when no
+    /// profile requires one, so either alone would mislead.
+    @ViewBuilder
+    private func passcodeRow(_ security: JamfMobileSecurity) -> some View {
+        if security.passcodePresent != nil || security.passcodeCompliant != nil {
+            LabeledContent("Passcode") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    if security.passcodePresent == true {
+                        Text("Set").foregroundStyle(.green)
+                    } else if security.passcodePresent == false {
+                        Text("Not set").foregroundStyle(.orange)
+                    } else {
+                        Text("—")
+                    }
+                    if security.passcodeCompliantWithProfile == false {
+                        Text("Does not meet the scoped profile")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    } else if security.passcodeCompliant == false {
+                        Text("Does not meet requirements")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func softwareUpdateRow(_ update: JamfSoftwareUpdateStatus) -> some View {
+        LabeledContent("Software Update") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(update.displayStatus)
+                if let remaining = update.deferralsRemaining, let maximum = update.maxDeferrals {
+                    Text("\(remaining) of \(maximum) deferrals left")
+                        .font(.caption)
+                        .foregroundStyle(remaining == 0 ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                }
+                if let next = update.nextScheduledInstall {
+                    Text("Installs \(DateFormatting.short(next))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -482,6 +601,43 @@ struct DeviceDetailView: View {
         }
         // Destructive action last, matching Release in the Apple Business block.
         Button("Remove from Jamf Pro", role: .destructive) { pending = .deleteJamf }
+    }
+
+    /// One row per managed local administrator account Jamf Pro holds, in the
+    /// shape the Jamf Pro interface uses. Accounts are enumerated rather than
+    /// assumed: a Mac may carry the PreStage account, the one the Jamf binary
+    /// created, both, or neither, under any username.
+    @ViewBuilder
+    private var localAdminRows: some View {
+        ForEach(localAdmins) { account in
+            LabeledContent(account.username) {
+                HStack(spacing: 12) {
+                    Text(account.sourceLabel)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("View") { pending = .viewLocalAdminPassword(account) }
+                }
+            }
+        }
+        Text("Viewing a password causes Jamf Pro to rotate it \(rotationDescription).")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    /// Loads the detail that is fetched per device rather than per lookup.
+    /// Failures are silent: both are supplementary, the LAPS privilege is
+    /// optional, and this runs every time a device is selected.
+    private func loadDeviceDetail() async {
+        localAdmins = []
+        rotationTime = nil
+        softwareUpdate = nil
+        guard report.jamf.value != nil else { return }
+        softwareUpdate = await model.softwareUpdateStatus(for: report)
+        guard report.jamf.value?.kind == .computer else { return }
+        localAdmins = await model.localAdminAccounts(for: report)
+        if !localAdmins.isEmpty {
+            rotationTime = await model.localAdminRotationTime()
+        }
     }
 
     /// Fetches a secret and shows it in a sheet. Nothing is retained after the
