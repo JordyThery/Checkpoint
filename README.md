@@ -47,7 +47,7 @@ Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. produc
 
 Both fill the serial field, and both ask for confirmation above 25 devices, since neither a group name nor an order number reveals that it covers several hundred.
 
-Above 15 devices, Apple Business is read in bulk instead of one device at a time. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device does not scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs about twenty requests regardless of size, and a 389-device group completes in a little over a minute.
+Above 15 devices, Apple Business is read in bulk instead of one device at a time. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device does not scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
 
 The one thing not available in bulk is **AppleCare coverage**, which Apple serves only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device.
 
@@ -87,7 +87,7 @@ Copy and export each come in a masked form, replacing serial numbers, UDIDs and 
 
 Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
 
-Recovery keys, Recovery Lock passwords and device lock PINs are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
+Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 
 The activity log is kept in memory only, never written to disk, and never records a secret. See [Activity log](#activity-log) for what it holds and what it withholds.
 

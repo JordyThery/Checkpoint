@@ -95,7 +95,12 @@ struct DeviceDetailView: View {
             }
         }
         .onAppear(perform: syncSelections)
-        .task(id: report.serial) { await loadDeviceDetail() }
+        // Keyed on resolution as well as the serial: a row selected while its
+        // lookup is still running resolves without changing serial, and the
+        // fetch must re-run once there is a record to fetch detail for.
+        .task(id: "\(report.serial)|\(report.abm.value != nil)|\(report.jamf.value?.computerID ?? "")") {
+            await loadDeviceDetail()
+        }
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }

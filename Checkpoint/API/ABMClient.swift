@@ -112,9 +112,10 @@ nonisolated struct ABMSnapshot: Sendable {
             .sorted { ($0.count, $1.number) > ($1.count, $0.number) }
     }
 
+    /// Trimmed comparison, matching how `orders` counts them.
     func serials(inOrder order: String) -> [String] {
         devices.values
-            .filter { $0.orderNumber == order }
+            .filter { $0.orderNumber?.trimmingCharacters(in: .whitespaces) == order }
             .map(\.serialNumber)
             .sorted()
     }
@@ -425,15 +426,15 @@ actor ABMClient {
         return try await send(url: url.absoluteURL, method: method, body: body)
     }
 
-    // Apple limits how many requests an organization may make in a short
-    // period. It does not answer with 429 and a Retry-After: past the limit it
-    // simply stops completing connections, so the failure arrives as a
-    // URLSession error. Measured against a live tenant, roughly twenty
-    // consecutive requests exhaust it and it recovers within a few seconds.
+    // Apple limits how many requests an organization may make per minute. It
+    // does not answer with 429 and a Retry-After: past the limit it simply
+    // stops completing connections, so the failure arrives as a URLSession
+    // error, and it stays that way until the window has passed. Measured
+    // against a live tenant: about twenty requests, at any pacing.
     //
-    // Requests are therefore paced, and connection failures retried with a
-    // widening delay. Without this, a lookup of a few hundred devices fails
-    // partway through with every remaining device reported as an error.
+    // Requests are therefore held inside the window below, and reads that
+    // fail anyway are retried with a widening delay. Without this, a lookup
+    // of a few hundred devices fails partway through.
 
     /// Requests allowed in any rolling minute.
     ///
@@ -504,7 +505,12 @@ actor ABMClient {
                 return (data, status)
             } catch {
                 lastError = error
-                let willRetry = attempt < Self.maximumAttempts - 1
+                // A lost connection is ambiguous: Apple may have processed the
+                // request before dropping it. Reads are safe to repeat; a
+                // repeated activity submission would apply twice, so writes
+                // surface the error instead. (429 and 503 above are different:
+                // they mean the request was not processed.)
+                let willRetry = method == "GET" && attempt < Self.maximumAttempts - 1
                 log?.recordFailure(
                     service: .appleBusiness, connection: connectionName, method: method,
                     path: loggedPath, duration: Date().timeIntervalSince(started),

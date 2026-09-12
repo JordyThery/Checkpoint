@@ -427,8 +427,11 @@ final class LookupModel {
         }
     }
 
+    /// Passes the row count so a refresh after a bulk change rebuilds the
+    /// organization snapshot instead of asking Apple per device, which the
+    /// request quota would stretch to hours.
     func refreshRows(_ serials: [String]) async {
-        let context = await makeContext()
+        let context = await makeContext(deviceCount: serials.count)
         for serial in serials {
             guard let index = reports.firstIndex(where: { $0.serial == serial }) else { continue }
             reports[index].abm = await Self.fetchABM(context: context, serial: serial)
@@ -764,7 +767,9 @@ final class LookupModel {
     func appleCareCoverage(for report: DeviceReport) async -> [AppleCareCoverage]? {
         guard let info = report.abm.value, !info.coverageLoaded, !info.isReleased,
               let abm = makeABMClient() else { return nil }
-        return try? await abm.appleCareCoverage(serial: report.serial)
+        // Empty rather than nil on failure: nil keeps the inspector's
+        // progress indicator up, and it would never resolve.
+        return (try? await abm.appleCareCoverage(serial: report.serial)) ?? []
     }
 
     /// Jamf Pro's managed software update state for a device.
