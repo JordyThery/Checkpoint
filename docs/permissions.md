@@ -1,18 +1,50 @@
 # Permissions
 
-What to grant Apple Business and Jamf Pro so Checkpoint can do its work. Grant only what you intend to use: every feature degrades on its own, so a missing privilege disables one thing rather than breaking the app.
+What to grant Apple Business or Apple School Manager, and Jamf Pro or Jamf School, so Checkpoint can do its work. Grant only what you intend to use: every feature degrades on its own, so a missing privilege disables one thing rather than breaking the app.
 
-For a Platform API connection, permissions work differently — see [Platform API](platform-api.md) instead.
+For a Platform API connection, permissions work differently — see [Platform API](platform-api.md) instead. The Platform API is Jamf Pro only.
 
 > This page describes the release it ships with. Opening it from a tag shows the permissions that version needs.
 
-## Apple Business
+## Apple Business and Apple School Manager
 
-In Apple Business, go to **Settings → Integrations → API** and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API.
+The two are the same API behind different hosts, so the setup is identical. In Apple Business or Apple School Manager, go to **Settings → Integrations → API** and choose **Add API Account**. Set its **Role Access** to **Device Enrollment Manager** or higher, otherwise it cannot manage device assignments through the API.
+
+Choose the service when adding the organization in Checkpoint: it selects the host and the OAuth scope. Credentials for one will not work against the other — the token request is refused with `invalid_scope`.
+
+**Apple School Manager cannot release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
 
 Each organization needs its own API account. You need the Client ID, the Key ID, and the downloaded `.pem` private key.
 
 Apple limits an organization to roughly **twenty requests a minute**, and does not signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, and reads the whole organization in bulk rather than per device once a lookup exceeds fifteen devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
+
+## Jamf School
+
+A different product from Jamf Pro with a much smaller API, so Checkpoint shows less for it. Choose **Jamf School** as the product when adding the server; what it has no source for is hidden rather than shown empty.
+
+Create the key under **Organization → Settings → API → Add API Key**. Authentication is the **Network ID** as the user and the **API key** as the password; the Network ID is under **Devices → Enroll Device(s)**.
+
+Each key carries its own list of permitted methods, chosen when you create it. Grant only what you intend to use: a missing method refuses one feature rather than the connection, and Checkpoint reports it as a missing method rather than as bad credentials.
+
+| Feature | Methods the key needs |
+| --- | --- |
+| Device lookup, location display, ADE profile, last check-in | Get devices, Get locations |
+| Looking up a group | Get device groups, Get devices |
+| Passcode state | Get device details |
+| Update Inventory | Refresh device inventory |
+| Restart Device | Restart device |
+| Wipe | Wipe device |
+| Remove MDM Profile | Unenroll device |
+| Change location | Move devices |
+| Move to Trash | Delete device |
+
+**What Jamf School cannot report**, and therefore what Checkpoint leaves out entirely for it: FileVault state, MDM profile expiration, software update state, last enrollment date, last inventory update, sites, PreStage scope, and all four recovery secrets. `hardwareEncryptionEnabled` is not FileVault and is not used.
+
+Three differences worth knowing. There is no computer/mobile split: one device resource serves both, so Wipe and Remove MDM Profile reach a Mac through the same call as an iPad, and Restart is offered for Macs too. **Move to Trash is not Jamf Pro's delete**: the record is recoverable in Jamf School, and the device stops being managed. And **a device with an assigned owner cannot change location** unless the owner is in the district or Cross Location Enrollment is enabled — Jamf School refuses the move, and Checkpoint names the devices it would not move rather than reporting a success.
+
+Location changes are sent twenty devices at a time, which is the API's own limit, so a larger selection is split across several requests.
+
+Timestamps come back in the instance's own time zone with no offset attached. Checkpoint reads the zone from the device record and converts, so a check-in reads correctly wherever you are.
 
 ## Jamf Pro
 
@@ -55,7 +87,7 @@ Shut Down is offered for mobile devices only, because Jamf Pro has no equivalent
 
 Jamf Pro has no single "Read Computer Groups" privilege: smart and static are separate. Checkpoint lists both kinds together, so granting only one half hides the other from the group picker.
 
-Looking up an Apple Business order needs no Jamf Pro privilege and no extra Apple Business role — the order numbers come from the device list Checkpoint already reads. Filtering the results needs nothing at all; it reads what the lookup returned.
+Looking up an order needs no Jamf Pro privilege and no extra Apple role — the order numbers come from the device list Checkpoint already reads. Filtering the results needs nothing at all; it reads what the lookup returned.
 
 ### Optional privileges
 

@@ -6,7 +6,7 @@
 
 **One list of serial numbers. Both sides of the story.**
 
-Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** and **Jamf Pro**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table, and the tools to act on what you find.
+Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** or **Apple School Manager** and **Jamf Pro** or **Jamf School**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in a single table, and the tools to act on what you find.
 
 Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken from a Jamf Pro group or an Apple Business order, and Checkpoint reports, per device:
 
@@ -26,22 +26,33 @@ Enter serial numbers, typed, pasted, imported from a text/CSV file, or taken fro
 - FileVault state (Macs) and passcode state (mobile devices)
 - Software update state, as the device itself reports it: the pending version, the deadline, and the last failure
 
+**From Jamf School**
+
+- Whether a device record exists, and its name
+- Location, and the Apple ADE profile assigned to the device
+- Last check-in, and whether the device is still managed and supervised
+- Passcode state, read when a device is selected
+
+Jamf School's API is much smaller than Jamf Pro's. It has no source for FileVault, MDM profile expiration, software update state, the enrollment dates, PreStage scope or the recovery secrets, so on a Jamf School server those columns, rows and actions are **not shown at all** rather than shown empty. See [Permissions](docs/permissions.md#jamf-school) for the full comparison.
+
 ![Checkpoint showing a Mac and an iPad with their Apple Business and Jamf Pro status side by side, with the bulk actions inspector open](docs/screenshot.png)
 
 ## Beyond reporting
 
 Checkpoint doesn't just surface discrepancies, it resolves them. Every action works on a single device or in bulk across a multi-selection, and always asks for confirmation first:
 
-- **Apple Business**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization
+- **Apple Business / Apple School Manager**: assign or unassign the MDM server, schedule a migration to another MDM server with a deadline (then update or cancel it), release a device from the organization (Apple Business only — Apple School Manager provides no release activity)
 - **Jamf Pro**: change PreStage scope (computers and mobile devices), change the site, delete the device record
-- **MDM commands**, computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
+- **Jamf School**: change the location, move the record to the trash
+- **MDM commands** (Jamf Pro), computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile; mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile
+- **MDM commands** (Jamf School): Update Inventory, Restart, Wipe, Remove MDM Profile — the commands it shares with Jamf Pro. Jamf School draws no distinction between computers and mobile devices, so all four reach Macs as well as iPads
 - Every device links directly to its record in Jamf Pro
 
-Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. production and testing) can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).
+Multiple organizations, of either Apple service, and multiple Jamf servers, of either product (e.g. production and testing), can be configured and switched from the toolbar. Everything Checkpoint sends is recorded in an [activity log](#activity-log).
 
 ### Looking up a group or an order
 
-**Group…** lists every computer and mobile device group on the selected Jamf Pro server, smart and static alike, and loads the members of the one you pick.
+**Group…** lists every computer and mobile device group on the selected Jamf Pro server, smart and static alike, and loads the members of the one you pick. On Jamf School, which keeps one list rather than splitting by device kind, it lists every device group with its size.
 
 **Order…** lists the Apple Business order numbers in your organization with the number of devices on each. Apple cannot search devices by order number, so Checkpoint reads the device list once and reuses it; the first use takes about a minute and later ones are immediate.
 
@@ -84,22 +95,23 @@ Copy and export each come in a masked form, replacing serial numbers, UDIDs and 
 ## Requirements
 
 - macOS 15 or later
-- An Apple Business API account per organization, with the **Device Enrollment Manager** role or higher
+- An Apple Business or Apple School Manager API account per organization, with the **Device Enrollment Manager** role or higher
 - A Jamf Pro server, connected by **API client** (recommended), **username and password**, or the **Platform API** gateway
+- Or a Jamf School instance, connected by **Network ID and API key**
 - Jamf Pro 11.30+ for the Last Contact attribute (older versions simply show "—")
 
 ## Setting it up
 
-- **[Permissions](docs/permissions.md)** — the Apple Business role, and the Jamf Pro privileges each feature and command needs
+- **[Permissions](docs/permissions.md)** — the Apple role, the Jamf Pro privileges and the Jamf School API-key methods each feature and command needs
 - **[Platform API](docs/platform-api.md)** — optional: connecting through Jamf's gateway, the capabilities it takes, and the three commands it cannot carry
 
 ## Security
 
-Credentials are stored only on your Mac: secrets (Apple Business private key, Jamf client secrets/passwords) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf Pro servers and Apple's API endpoints.
+Credentials are stored only on your Mac: secrets (the Apple private key, Jamf client secrets, passwords and API keys) in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container and are not readable by other apps, and it talks exclusively to your configured Jamf servers and Apple's API endpoints.
 
 Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested from Jamf Pro one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 
-The activity log is kept in memory only, never written to disk, and never records a secret. See [Activity log](#activity-log) for what it holds and what it withholds.
+The activity log is kept in memory only, never written to disk, and never records a secret. Jamf School attaches an owner to every device record, so the owner block and any notes are withheld from the log as well: in a school those are pupils, and the log is meant to be safe to attach to a bug report. See [Activity log](#activity-log) for what it holds and what it withholds.
 
 ## Building
 

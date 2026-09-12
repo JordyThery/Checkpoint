@@ -25,7 +25,7 @@ struct OrderPickerView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Look Up an Apple Business Order")
+                Text("Look Up an \(model.abmKind.label) Order")
                     .font(.headline)
                 Spacer()
             }
@@ -85,7 +85,7 @@ struct OrderPickerView: View {
             ContentUnavailableView(
                 "No Orders",
                 systemImage: "shippingbox",
-                description: Text("No device in this Apple Business organization has an order number, or the organization could not be read.")
+                description: Text("No device in this \(model.abmKind.label) organization has an order number, or the organization could not be read.")
             )
         } else {
             List(visible, id: \.number, selection: $selection) { order in

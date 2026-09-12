@@ -81,7 +81,7 @@ nonisolated enum ABMSnapshotProgress: Sendable {
     }
 }
 
-/// Everything Apple Business will report about an organization in bulk.
+/// Everything Apple reports about an organization in bulk.
 ///
 /// Apple allows an organization only about twenty requests a minute and
 /// offers no way to filter the device list, so asking per device does not
@@ -123,7 +123,8 @@ nonisolated struct ABMSnapshot: Sendable {
 
 // MARK: - Client
 
-/// Client for the Apple Business API (`api-business.apple.com`).
+/// Client for the Apple Business and Apple School Manager APIs, which are
+/// the same API behind `api-business.apple.com` and `api-school.apple.com`.
 /// Authenticates with the OAuth 2 client-credentials grant using an
 /// ES256-signed JWT client assertion.
 actor ABMClient {
@@ -135,6 +136,7 @@ actor ABMClient {
     enum ActivityType: String, Sendable {
         case assign = "ASSIGN_DEVICES"
         case unassign = "UNASSIGN_DEVICES"
+        /// Apple Business only: Apple School Manager defines no such activity.
         case release = "RELEASE_DEVICES"
         /// Assigns to a device management service and schedules a migration by
         /// a deadline. The device stays enrolled in its current service until
@@ -170,7 +172,11 @@ actor ABMClient {
     private let clientID: String
     private let keyID: String
     private let privateKeyPEM: String
-    private let baseURL = URL(string: "https://api-business.apple.com")!
+    /// Apple Business and Apple School Manager are the same API behind two
+    /// hosts: same paths, same device attributes, same OAuth flow. Only the
+    /// host, the scope, and the availability of Release differ.
+    private let kind: AppleOrgKind
+    private let baseURL: URL
     private let tokenURL = URL(string: "https://account.apple.com/auth/oauth2/v2/token")!
     private var cachedToken: (value: String, expiry: Date)?
     private let log: ActivityLog?
@@ -178,10 +184,19 @@ actor ABMClient {
     /// organizations says which one it went to.
     private let connectionName: String
 
-    init(clientID: String, keyID: String, privateKeyPEM: String, connectionName: String = "", log: ActivityLog? = nil) {
+    init(
+        clientID: String,
+        keyID: String,
+        privateKeyPEM: String,
+        kind: AppleOrgKind = .business,
+        connectionName: String = "",
+        log: ActivityLog? = nil
+    ) {
         self.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPEM = privateKeyPEM
+        self.kind = kind
+        self.baseURL = kind.host
         self.connectionName = connectionName
         self.log = log
     }
@@ -359,13 +374,16 @@ actor ABMClient {
         if let mdmServerID {
             relationships["mdmServer"] = ["data": ["type": "mdmServers", "id": mdmServerID]]
         }
+        guard type != .release || kind.supportsRelease else {
+            throw APIError(message: "\(kind.label) cannot release devices from the organization.")
+        }
         var attributes: [String: Any] = ["activityType": type.rawValue]
         if type.needsDeadline {
             guard let migrationDeadline else {
                 throw APIError(message: "\(type.rawValue) requires a migration deadline.")
             }
             guard migrationDeadline.timeIntervalSinceNow <= Self.maximumMigrationDeadline else {
-                throw APIError(message: "Apple Business will not accept a migration deadline more than 90 days from now.")
+                throw APIError(message: "\(kind.label) will not accept a migration deadline more than 90 days from now.")
             }
             attributes["activityTypeMetadata"] = [
                 "mdmMigrationDeadlineDateTime": Self.deadlineFormatter.string(from: migrationDeadline)
@@ -490,7 +508,7 @@ actor ABMClient {
                 // connection, in case Apple starts answering properly.
                 if (status == 429 || status == 503), attempt < Self.maximumAttempts - 1 {
                     log?.recordRequest(
-                        service: .appleBusiness, connection: connectionName, method: method,
+                        service: kind.activityService, connection: connectionName, method: method,
                         path: loggedPath, status: status, duration: Date().timeIntervalSince(started),
                         requestBody: body, responseBody: data, withholdBodies: false
                     )
@@ -498,7 +516,7 @@ actor ABMClient {
                     continue
                 }
                 log?.recordRequest(
-                    service: .appleBusiness, connection: connectionName, method: method,
+                    service: kind.activityService, connection: connectionName, method: method,
                     path: loggedPath, status: status, duration: Date().timeIntervalSince(started),
                     requestBody: body, responseBody: data, withholdBodies: false
                 )
@@ -512,7 +530,7 @@ actor ABMClient {
                 // they mean the request was not processed.)
                 let willRetry = method == "GET" && attempt < Self.maximumAttempts - 1
                 log?.recordFailure(
-                    service: .appleBusiness, connection: connectionName, method: method,
+                    service: kind.activityService, connection: connectionName, method: method,
                     path: loggedPath, duration: Date().timeIntervalSince(started),
                     message: willRetry
                         ? "\(error.localizedDescription) Retrying."
@@ -522,7 +540,7 @@ actor ABMClient {
                 try? await Task.sleep(for: .seconds(Self.backoff(attempt)))
             }
         }
-        throw lastError ?? APIError(message: "Apple Business did not answer.")
+        throw lastError ?? APIError(message: "\(kind.label) did not answer.")
     }
 
     /// 5s, 15s, 45s. Once the quota is spent Apple stays quiet for a while,
@@ -545,7 +563,7 @@ actor ABMClient {
            let first = parsed.errors?.first {
             detail = first.detail ?? first.title ?? ""
         }
-        throw APIError(message: "Apple Business: HTTP \(status)\(detail.isEmpty ? "" : " – \(detail)")")
+        throw APIError(message: "\(kind.label): HTTP \(status)\(detail.isEmpty ? "" : " – \(detail)")")
     }
 
     // MARK: OAuth
@@ -558,15 +576,15 @@ actor ABMClient {
         do {
             let token = try await fetchToken()
             log?.recordSignIn(
-                service: .appleBusiness,
+                service: kind.activityService,
                 connection: connectionName,
-                summary: "Signed in to Apple Business",
+                summary: "Signed in to \(kind.label)",
                 outcome: .succeeded
             )
             return token
         } catch {
             log?.recordSignIn(
-                service: .appleBusiness,
+                service: kind.activityService,
                 connection: connectionName,
                 summary: "Sign-in failed: \(error.localizedDescription)",
                 outcome: .failed
@@ -582,7 +600,7 @@ actor ABMClient {
             ("client_id", clientID),
             ("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
             ("client_assertion", assertion),
-            ("scope", "business.api"),
+            ("scope", kind.scope),
         ]
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
@@ -592,7 +610,7 @@ actor ABMClient {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw APIError(message: "Apple Business sign-in failed: \(body.prefix(300))")
+            throw APIError(message: "\(kind.label) sign-in failed: \(body.prefix(300))")
         }
         struct TokenResponse: Decodable {
             let access_token: String
@@ -604,12 +622,37 @@ actor ABMClient {
         return token.access_token
     }
 
+    /// Reads the downloaded private key.
+    ///
+    /// Apple School Manager hands out a key whose armour says
+    /// `EC PRIVATE KEY`, the SEC1 label, wrapped around a PKCS#8 body. CryptoKit
+    /// believes the label, parses it as SEC1 and fails; OpenSSL accepts the
+    /// same file because it inspects the contents instead. The armour is
+    /// therefore swapped and retried, which costs nothing when the label was
+    /// right to begin with and still rejects a key that is genuinely wrong.
+    private nonisolated static func readPrivateKey(_ pem: String) throws -> P256.Signing.PrivateKey {
+        let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = try? P256.Signing.PrivateKey(pemRepresentation: trimmed) { return key }
+
+        let swapped: String
+        if trimmed.contains("BEGIN EC PRIVATE KEY") {
+            swapped = trimmed
+                .replacingOccurrences(of: "BEGIN EC PRIVATE KEY", with: "BEGIN PRIVATE KEY")
+                .replacingOccurrences(of: "END EC PRIVATE KEY", with: "END PRIVATE KEY")
+        } else {
+            swapped = trimmed
+                .replacingOccurrences(of: "BEGIN PRIVATE KEY", with: "BEGIN EC PRIVATE KEY")
+                .replacingOccurrences(of: "END PRIVATE KEY", with: "END EC PRIVATE KEY")
+        }
+        return try P256.Signing.PrivateKey(pemRepresentation: swapped)
+    }
+
     private func makeClientAssertion() throws -> String {
         let key: P256.Signing.PrivateKey
         do {
-            key = try P256.Signing.PrivateKey(pemRepresentation: privateKeyPEM)
+            key = try Self.readPrivateKey(privateKeyPEM)
         } catch {
-            throw APIError(message: "Could not read the Apple Business private key (expected a PEM-encoded EC P-256 key): \(error.localizedDescription)")
+            throw APIError(message: "Could not read the \(kind.label) private key. Expected the PEM-encoded EC P-256 key downloaded when the API account was created.")
         }
         let now = Int(Date().timeIntervalSince1970)
         let header: [String: Any] = ["alg": "ES256", "kid": keyID, "typ": "JWT"]

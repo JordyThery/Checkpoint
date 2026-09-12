@@ -1,5 +1,7 @@
 # Platform API
 
+> Jamf Pro only. Jamf School has no gateway, and Checkpoint never routes it through one.
+
 Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. This is optional: an API client connection is simpler and carries every command.
 
 > This page describes the release it ships with. What the gateway can and cannot carry changes as Jamf extends it, so opening this page from a tag shows what was true for that version.

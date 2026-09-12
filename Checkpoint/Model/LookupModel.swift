@@ -57,6 +57,13 @@ struct JamfInfo: Sendable {
     var prestageID: String?
     var prestageName: String?
     var webURL: URL?
+    /// Jamf School only: the location the record belongs to, which is that
+    /// product's equivalent of a site.
+    var locationID: String?
+    var locationName: String?
+    /// Jamf School only: whether the device is still managed and supervised.
+    var isManaged: Bool?
+    var isSupervised: Bool?
 }
 
 struct DeviceReport: Identifiable, Sendable {
@@ -98,24 +105,37 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// for it. Remove MDM Profile is kept clear of Renew MDM Profile, whose
     /// name reads alike though only one of them is destructive.
     ///
+    /// Jamf School has no computer/mobile split at all: one device resource
+    /// serves both, so restart and wipe reach a Mac through the same endpoint
+    /// as an iPad. Its list is the commands it shares with Jamf Pro; its API
+    /// also defines clearing Activation Lock, which is deliberately not
+    /// offered because Jamf Pro has no equivalent.
+    ///
     /// Adding or removing a command means a row in the privileges table in
     /// `docs/permissions.md`, and one in `docs/platform-api.md` if the gateway
     /// cannot carry it.
-    static func commands(for kind: JamfDeviceKind) -> [MDMCommand] {
-        switch kind {
-        case .computer: [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
-        case .mobileDevice: [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDownMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
+    static func commands(for kind: JamfDeviceKind, flavor: JamfFlavor = .pro) -> [MDMCommand] {
+        switch (flavor, kind) {
+        case (.pro, .computer):
+            [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
+        case (.pro, .mobileDevice):
+            [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDownMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
+        case (.school, .computer):
+            [.updateInventory, .restartMobile, .wipeComputer, .unmanage]
+        case (.school, .mobileDevice):
+            [.updateInventory, .restartMobile, .wipeMobile, .unmanage]
         }
     }
 
     /// Display order when a mixed selection is shown.
     static let allInDisplayOrder: [MDMCommand] = [
         .updateInventory, .lockComputer, .lockMobile, .clearPasscode,
-        .restartMobile, .shutDownMobile, .renewProfile, .redeployFramework, .blankPush, .unmanage, .wipeComputer, .wipeMobile,
+        .restartMobile, .shutDownMobile, .renewProfile, .redeployFramework, .blankPush,
+        .unmanage, .wipeComputer, .wipeMobile,
     ]
 
-    func applies(to kind: JamfDeviceKind) -> Bool {
-        Self.commands(for: kind).contains(self)
+    func applies(to kind: JamfDeviceKind, flavor: JamfFlavor = .pro) -> Bool {
+        Self.commands(for: kind, flavor: flavor).contains(self)
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
@@ -204,11 +224,15 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     }
 
     /// Computer lock and wipe require a 6-digit PIN.
-    var needsPIN: Bool {
-        self == .lockComputer || self == .wipeComputer
+    ///
+    /// Jamf Pro only. Jamf School's wipe endpoint takes no PIN, so asking for
+    /// one there would collect a code that went nowhere.
+    func needsPIN(flavor: JamfFlavor = .pro) -> Bool {
+        guard flavor == .pro else { return false }
+        return self == .lockComputer || self == .wipeComputer
     }
 
-    var message: String {
+    func message(for flavor: JamfFlavor = .pro) -> String {
         switch self {
         case .lockComputer: "The Mac will lock immediately and require the PIN to be used again."
         case .wipeComputer: "All data on the Mac will be erased. This cannot be undone."
@@ -217,7 +241,11 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .redeployFramework: "Reinstalls the Jamf management framework (jamf binary) on the Mac through MDM. Use when a Mac has stopped checking in but still responds to MDM."
         case .updateInventory: "The device will be asked to submit a fresh inventory report."
         case .lockMobile: "The device will lock immediately; the owner's passcode unlocks it."
-        case .unmanage: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
+        case .unmanage:
+            switch flavor {
+            case .pro: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
+            case .school: "The MDM profile is removed, so Jamf School can no longer manage the device. Its record stays until you move it to the trash."
+            }
         case .clearPasscode: "The device passcode will be removed."
         case .restartMobile: "The device will restart immediately."
         case .shutDownMobile: "The device will shut down immediately and stay off until someone powers it back on."
@@ -254,6 +282,21 @@ nonisolated enum DateFormatting {
         if let date = parseISO(string) { return date }
         if let date = parse(string, format: "yyyy-MM-dd HH:mm:ss Z", timeZone: nil) { return date }
         return parseDeviceLocal(string)
+    }
+
+    /// Converts a Jamf School timestamp into an ISO one.
+    ///
+    /// Jamf School stamps `2026-09-12 17:42:00` with no offset, in the
+    /// instance's own zone rather than UTC. The zone is not on that response;
+    /// it appears only on the per-device record, and is passed in here. With
+    /// it, a check-in reads correctly wherever the person looking is; without
+    /// it, the time is read as local and is wrong by the offset between them.
+    static func isoFromInstanceLocal(_ string: String?, timeZone: TimeZone?) -> String? {
+        guard let string, !string.isEmpty else { return nil }
+        let zone = timeZone ?? .current
+        guard let date = parse(string, format: "yyyy-MM-dd HH:mm:ss", timeZone: zone)
+            ?? parse(string, format: "yyyy-MM-dd'T'HH:mm:ss", timeZone: zone) else { return nil }
+        return ISO8601DateFormatter().string(from: date)
     }
 
     private static func parse(_ string: String, format: String, timeZone: TimeZone?) -> Date? {
@@ -312,6 +355,8 @@ final class LookupModel {
     var prestages: [JamfPrestage] = []
     var mobilePrestages: [JamfPrestage] = []
     var sites: [JamfSite] = []
+    /// Jamf School locations, that product's equivalent of sites.
+    var jamfLocations: [JamfSchoolLocation] = []
 
     // One client per configuration, reused across lookups and actions. Each new
     // ABMClient requests a fresh OAuth token and Apple rate-limits that endpoint
@@ -319,8 +364,13 @@ final class LookupModel {
     // must not cost a re-authentication.
     private var abmClients: [String: ABMClient] = [:]
     private var jamfClients: [String: JamfClient] = [:]
+    private var jamfSchoolClients: [String: JamfSchoolClient] = [:]
     /// LAPS rotation time per server, cached because it is server-wide.
     private var rotationTimes: [UUID: TimeInterval] = [:]
+    /// The time zone a Jamf School instance reports its timestamps in, per
+    /// server. Instance-wide, and only the per-device endpoint names it, so it
+    /// is read once and kept.
+    private var jamfSchoolTimeZones: [UUID: TimeZone] = [:]
     /// The last organization snapshot, per Apple Business organization.
     /// Discarded whenever Checkpoint changes anything in Apple Business.
     private var abmSnapshots: [UUID: ABMSnapshot] = [:]
@@ -353,7 +403,7 @@ final class LookupModel {
     ) {
         log.recordAction(
             service: service,
-            connection: service == .appleBusiness ? selectedABMOrg?.displayName : selectedJamfServer?.displayName,
+            connection: service.isAppleOrganization ? selectedABMOrg?.displayName : selectedJamfServer?.displayName,
             summary: summary,
             outcome: outcome,
             serials: serials
@@ -400,12 +450,26 @@ final class LookupModel {
     /// True when the selected Jamf Pro server talks to the Platform API
     /// gateway, which exposes a narrower set of MDM commands.
     var isUsingPlatformAPI: Bool {
-        selectedJamfServer?.authMethod == .platformGateway
+        selectedJamfServer?.isUsingPlatformGateway ?? false
+    }
+
+    /// Which Jamf product the selected server is. Jamf Pro when nothing is
+    /// selected, so a missing server never changes what the interface offers.
+    var jamfFlavor: JamfFlavor {
+        selectedJamfServer?.flavor ?? .pro
+    }
+
+    /// What the selected server can report and do. Drives which columns, rows
+    /// and actions exist at all: what a product cannot do is left out rather
+    /// than shown disabled.
+    var jamfCapabilities: JamfCapabilities {
+        selectedJamfServer?.capabilities ?? JamfFlavor.pro.capabilities
     }
 
     /// Why the given command cannot be sent to the selected server, or nil.
     func unavailabilityReason(for command: MDMCommand) -> String? {
-        command.unavailabilityReason(via: selectedJamfServer?.authMethod ?? .apiClient)
+        guard jamfFlavor == .pro else { return nil }
+        return command.unavailabilityReason(via: selectedJamfServer?.authMethod ?? .apiClient)
     }
 
     // MARK: Lookup
@@ -528,12 +592,23 @@ final class LookupModel {
         return "\(verb) \(total - failed) of \(total) \(noun)\(total == 1 ? "" : "s")\(suffix)"
     }
 
-    /// Permanently releases the devices from Apple Business.
+    /// Which Apple service the selected organization belongs to, for wording
+    /// and for the actions it supports.
+    var abmKind: AppleOrgKind { selectedABMOrg?.kind ?? .business }
+
+    /// Why devices cannot be released from the selected organization, or nil.
+    var releaseUnavailabilityReason: String? {
+        guard !abmKind.supportsRelease else { return nil }
+        return "\(abmKind.label) provides no way to release devices from the organization."
+    }
+
+    /// Permanently releases the devices from the organization.
     func releaseFromABM(reports: [DeviceReport]) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        if let reason = releaseUnavailabilityReason { throw ActionError(message: reason) }
+        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
-        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
-        try await recording(.appleBusiness, "Released \(Self.deviceCount(serials)) from Apple Business", serials: serials) {
+        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in \(abmKind.label).") }
+        try await recording(abmKind.activityService, "Released \(Self.deviceCount(serials)) from \(abmKind.label)", serials: serials) {
             let activityID = try await abm.submitActivity(.release, serials: serials)
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
@@ -543,9 +618,9 @@ final class LookupModel {
 
     /// Assigns the devices to an MDM server, or unassigns them when `serverID` is nil.
     func setMDMServer(reports: [DeviceReport], to serverID: String?) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
         let inOrg = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }
-        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in Apple Business.") }
+        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in \(abmKind.label).") }
 
         // Unassigning requires naming the current server, so batch per server.
         // Devices with no current assignment have nothing to unassign, and if
@@ -565,7 +640,7 @@ final class LookupModel {
         let summary = serverName.map { "Assigned \(Self.deviceCount(serials)) to \($0)" }
             ?? "Unassigned \(Self.deviceCount(serials)) from device management"
 
-        try await recording(.appleBusiness, summary, serials: serials) {
+        try await recording(abmKind.activityService, summary, serials: serials) {
             var activityIDs: [String] = []
             if let serverID {
                 if let id = try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID) {
@@ -624,7 +699,7 @@ final class LookupModel {
         deadline: Date? = nil,
         emptyMessage: String
     ) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "Apple Business is not configured.") }
+        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
         let serials = reports.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: emptyMessage) }
 
@@ -644,7 +719,7 @@ final class LookupModel {
             summary += ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
         }
 
-        try await recording(.appleBusiness, summary, serials: serials) {
+        try await recording(abmKind.activityService, summary, serials: serials) {
             let activityID = try await abm.submitActivity(
                 type,
                 serials: serials,
@@ -722,14 +797,14 @@ final class LookupModel {
             }
             abmSnapshots[org.id] = snapshot
             recordAction(
-                .appleBusiness,
+                abmKind.activityService,
                 "Read the organization: \(Self.deviceCount(snapshot.devices.count))",
                 serials: []
             )
             return snapshot
         } catch {
             recordAction(
-                .appleBusiness,
+                abmKind.activityService,
                 "Could not read the organization — \(error.localizedDescription)",
                 serials: [],
                 outcome: .failed
@@ -773,9 +848,16 @@ final class LookupModel {
 
     /// Every computer and mobile device group on the selected server, both
     /// smart and static, sorted for display.
+    /// Jamf School keeps one list of device groups rather than splitting them
+    /// by device kind, so its groups come back in a single request.
     func jamfGroups() async throws -> [JamfGroup] {
+        if let school = makeJamfSchoolClient() {
+            return try await school.groups().sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
+        }
         guard let jamf = makeJamfClient() else {
-            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+            throw ActionError(message: "No \(jamfFlavor.label) server is selected or configured.")
         }
         var all: [JamfGroup] = []
         for kind in JamfGroupKind.allCases {
@@ -788,8 +870,14 @@ final class LookupModel {
 
     /// The serial numbers in a group.
     func serials(in group: JamfGroup) async throws -> [String] {
+        if let school = makeJamfSchoolClient() {
+            var seen = Set<String>()
+            return try await school.devices(inGroup: group.id)
+                .map { $0.serialNumber.trimmingCharacters(in: .whitespaces).uppercased() }
+                .filter { !$0.isEmpty && seen.insert($0).inserted }
+        }
         guard let jamf = makeJamfClient() else {
-            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+            throw ActionError(message: "No \(jamfFlavor.label) server is selected or configured.")
         }
         return try await jamf.groupSerials(group)
     }
@@ -809,6 +897,18 @@ final class LookupModel {
         // Empty rather than nil on failure: nil keeps the inspector's
         // progress indicator up, and it would never resolve.
         return (try? await abm.appleCareCoverage(serial: report.serial)) ?? []
+    }
+
+    /// Passcode state for one device on Jamf School.
+    ///
+    /// Its list endpoint omits `hasPasscode` entirely; only the per-device
+    /// record carries it. So this is read for whichever device is selected,
+    /// rather than making every lookup pay a request per device for a value
+    /// the table does not show.
+    func jamfSchoolDetails(for report: DeviceReport) async -> JamfSchoolDeviceDetails? {
+        guard let info = report.jamf.value, let school = makeJamfSchoolClient(),
+              let udid = info.udid, !udid.isEmpty else { return nil }
+        return try? await school.deviceDetails(udid: udid)
     }
 
     /// The device's software update state, as it last reported it through
@@ -878,33 +978,90 @@ final class LookupModel {
         return info.computerID
     }
 
+    /// Removes the devices' records. Jamf Pro deletes them; Jamf School moves
+    /// them to its trash, from where they can be restored.
     func deleteFromJamf(reports: [DeviceReport]) async throws {
-        guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        let flavor = jamfFlavor
+        let school = makeJamfSchoolClient()
+        let jamf = school == nil ? makeJamfClient() : nil
+        guard school != nil || jamf != nil else {
+            throw ActionError(message: "No \(flavor.label) server is selected or configured.")
+        }
         let withRecords = reports.compactMap { report in
             report.jamf.value.map { (serial: report.serial, info: $0) }
         }
-        guard !withRecords.isEmpty else { throw ActionError(message: "None of the selected devices have a Jamf Pro record.") }
+        guard !withRecords.isEmpty else {
+            throw ActionError(message: "None of the selected devices have a \(flavor.label) record.")
+        }
         var failures: [String] = []
         for entry in withRecords {
             do {
-                switch entry.info.kind {
-                case .computer:
-                    try await jamf.deleteComputer(id: entry.info.computerID)
-                case .mobileDevice:
-                    try await jamf.deleteMobileDevice(id: entry.info.computerID)
+                if let school {
+                    try await school.trash(udid: entry.info.computerID)
+                } else if let jamf {
+                    switch entry.info.kind {
+                    case .computer:
+                        try await jamf.deleteComputer(id: entry.info.computerID)
+                    case .mobileDevice:
+                        try await jamf.deleteMobileDevice(id: entry.info.computerID)
+                    }
                 }
             } catch {
                 failures.append("\(entry.serial): \(error.localizedDescription)")
             }
         }
         recordAction(
-            .jamfPro,
-            Self.partialSummary("Deleted", noun: "record", of: withRecords.count, failed: failures.count, from: "Jamf Pro"),
+            flavor.activityService,
+            Self.partialSummary(
+                flavor == .school ? "Trashed" : "Deleted",
+                noun: "record",
+                of: withRecords.count,
+                failed: failures.count,
+                from: flavor.label
+            ),
             serials: withRecords.map(\.serial),
             outcome: failures.isEmpty ? .succeeded : .failed
         )
         await refreshRows(withRecords.map(\.serial))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+    }
+
+    /// Moves the devices to another Jamf School location, that product's
+    /// equivalent of a site.
+    ///
+    /// Sent through the bulk endpoint in chunks, which is also what makes a
+    /// single-device move safe: the per-device path takes an identifier that
+    /// is documented nowhere, while the bulk one takes UDIDs explicitly.
+    func setLocation(reports: [DeviceReport], to locationID: String) async throws {
+        guard let school = makeJamfSchoolClient() else {
+            throw ActionError(message: "No Jamf School server is selected or configured.")
+        }
+        let moving = reports.compactMap { report in
+            report.jamf.value.map { (serial: report.serial, info: $0) }
+        }.filter { $0.info.locationID != locationID }
+        guard !moving.isEmpty else { return }
+        let name = jamfLocations.first { $0.id == locationID }?.name ?? locationID
+        let summary = "Moved \(Self.deviceCount(moving.map(\.serial))) to \(name)"
+        try await recording(.jamfSchool, summary, serials: moving.map(\.serial)) {
+            let outcome = try await school.move(udids: moving.map(\.info.computerID), toLocation: locationID)
+            // The endpoint reports per device inside a success, so a device
+            // that never moved has to be named here or the action would claim
+            // to have moved it.
+            guard outcome.unmoved.isEmpty else {
+                let unmoved = Set(outcome.unmoved)
+                let serials = moving
+                    .filter { unmoved.contains($0.info.computerID) }
+                    .map(\.serial)
+                let named = serials.isEmpty ? outcome.unmoved : serials
+                // Nearly always the owner: Jamf School refuses to move a
+                // device away from the location its assigned user is in.
+                throw ActionError(message: """
+                    Jamf School did not move: \(named.joined(separator: ", ")).
+                    A device with an assigned owner can only change location if the owner is in the district, or if Cross Location Enrollment is enabled.
+                    """)
+            }
+        }
+        await refreshRows(moving.map(\.serial))
     }
 
     /// Moves the devices of the given kind between PreStage scopes. Pass nil
@@ -978,7 +1135,12 @@ final class LookupModel {
     /// routed per record kind. Returns the number of devices it was sent to.
     @discardableResult
     func sendCommand(_ command: MDMCommand, reports: [DeviceReport], passcode: String? = nil) async throws -> Int {
-        guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        let flavor = jamfFlavor
+        let school = makeJamfSchoolClient()
+        let jamf = school == nil ? makeJamfClient() : nil
+        guard school != nil || jamf != nil else {
+            throw ActionError(message: "No \(flavor.label) server is selected or configured.")
+        }
         // Fail before doing any work, so a command the connection cannot carry
         // never gets as far as a confirmation prompt.
         if let reason = unavailabilityReason(for: command) {
@@ -986,25 +1148,72 @@ final class LookupModel {
         }
         let targets = reports.compactMap { report in
             report.jamf.value.map { (serial: report.serial, info: $0) }
-        }.filter { command.applies(to: $0.info.kind) }
+        }.filter { command.applies(to: $0.info.kind, flavor: flavor) }
         guard !targets.isEmpty else {
             throw ActionError(message: "\(command.title) doesn't apply to any of the selected devices.")
         }
 
         let serials = targets.map(\.serial)
         do {
-            let sent = try await route(command, jamf: jamf, targets: targets, passcode: passcode)
-            recordAction(.jamfPro, "Sent \(command.title) to \(Self.deviceCount(sent))", serials: serials)
+            let sent: Int
+            if let school {
+                sent = try await routeSchool(command, school: school, targets: targets)
+            } else if let jamf {
+                sent = try await route(command, jamf: jamf, targets: targets, passcode: passcode)
+            } else {
+                sent = 0
+            }
+            recordAction(flavor.activityService, "Sent \(command.title) to \(Self.deviceCount(sent))", serials: serials)
             return sent
         } catch {
             recordAction(
-                .jamfPro,
+                flavor.activityService,
                 "\(command.title) failed — \(error.localizedDescription)",
                 serials: serials,
                 outcome: .failed
             )
             throw error
         }
+    }
+
+    /// Routes a command to its Jamf School endpoint.
+    ///
+    /// Straightforward compared with the Jamf Pro side: every command is one
+    /// request per device against a single device resource, and there is no
+    /// computer/mobile split to route around, so a Mac and an iPad take the
+    /// same path. Failures are collected per device rather than abandoning the
+    /// rest of the selection.
+    private func routeSchool(
+        _ command: MDMCommand,
+        school: JamfSchoolClient,
+        targets: [(serial: String, info: JamfInfo)]
+    ) async throws -> Int {
+        var failures: [String] = []
+        var sent = 0
+        for target in targets {
+            let udid = target.info.computerID
+            do {
+                switch command {
+                case .updateInventory:
+                    try await school.refreshInventory(udid: udid)
+                case .restartMobile:
+                    try await school.restart(udid: udid)
+                case .wipeComputer, .wipeMobile:
+                    try await school.wipe(udid: udid)
+                case .unmanage:
+                    try await school.unenroll(udid: udid)
+                default:
+                    // Not offered for Jamf School, so unreachable through the
+                    // interface; refused here rather than silently skipped.
+                    throw ActionError(message: "\(command.title) is not available in Jamf School.")
+                }
+                sent += 1
+            } catch {
+                failures.append("\(target.serial): \(error.localizedDescription)")
+            }
+        }
+        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+        return sent
     }
 
     /// Routes a command to whichever endpoint carries it for these targets.
@@ -1172,7 +1381,7 @@ final class LookupModel {
         // Modern /v2/mdm/commands endpoint, batched per device kind (the
         // payload differs between computers and mobile devices).
         for kind in [JamfDeviceKind.computer, .mobileDevice] {
-            guard let commandData = command.modernCommandData(for: kind, passcode: command.needsPIN ? passcode : nil) else { continue }
+            guard let commandData = command.modernCommandData(for: kind, passcode: command.needsPIN() ? passcode : nil) else { continue }
             let kindTargets = targets.filter { $0.info.kind == kind }
             guard !kindTargets.isEmpty else { continue }
             for target in kindTargets where target.info.managementID == nil {
@@ -1214,6 +1423,7 @@ final class LookupModel {
             clientID: config.clientID,
             keyID: config.keyID,
             privateKeyPEM: pem,
+            kind: config.kind,
             connectionName: config.displayName,
             log: log
         )
@@ -1221,8 +1431,12 @@ final class LookupModel {
         return client
     }
 
+    /// The Jamf Pro client, or nil when the selected server is not a Jamf Pro
+    /// one. The flavour guard matters: without it a Jamf Pro request would be
+    /// sent to a Jamf School host, which answers something unrecognisable
+    /// rather than refusing.
     private func makeJamfClient() -> JamfClient? {
-        guard let config = selectedJamfServer,
+        guard let config = selectedJamfServer, config.flavor == .pro,
               let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
         if let cached = jamfClients[key] { return cached }
@@ -1231,10 +1445,31 @@ final class LookupModel {
         return client
     }
 
+    private func makeJamfSchoolClient() -> JamfSchoolClient? {
+        guard let config = selectedJamfServer, config.flavor == .school,
+              let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
+        let key = [config.id.uuidString, config.normalizedBaseURL, config.account, secret].joined(separator: "|")
+        if let cached = jamfSchoolClients[key] { return cached }
+        guard let client = JamfSchoolClient(config: config, secret: secret, log: log) else { return nil }
+        jamfSchoolClients[key] = client
+        return client
+    }
+
     private struct LookupContext: Sendable {
         var abm: ABMClient?
         var jamf: JamfClient?
+        var school: JamfSchoolClient?
         var jamfBaseURL: String?
+        /// Every device in the Jamf School instance, keyed by serial. Read in
+        /// one request whatever the size of the lookup, because Jamf School
+        /// serves the whole fleet at once and per-device lookups would only
+        /// be slower.
+        var schoolFleet: [String: JamfSchoolDevice] = [:]
+        var schoolLocationNames: [String: String] = [:]
+        /// The zone the instance reports its timestamps in. Its check-in times
+        /// carry no offset, so without this they would be read in whatever
+        /// zone the Mac happens to be in.
+        var schoolTimeZone: TimeZone?
         /// When present, Apple Business answers come from here instead of one
         /// request per device.
         var abmSnapshot: ABMSnapshot?
@@ -1250,6 +1485,7 @@ final class LookupModel {
         var context = LookupContext(
             abm: makeABMClient(),
             jamf: makeJamfClient(),
+            school: makeJamfSchoolClient(),
             jamfBaseURL: selectedJamfServer?.normalizedBaseURL
         )
         // A snapshot already in hand answers instantly and costs nothing, so
@@ -1283,7 +1519,38 @@ final class LookupModel {
             context.mobilePrestageBySerial = (try? await jamf.prestageAssignments(family: .mobileDevice)) ?? [:]
             context.adeInstanceBySerial = (try? await jamf.adeInstanceBySerial()) ?? [:]
         }
+        if let school = context.school {
+            // The whole fleet in one request. Jamf School offers no
+            // pagination and no per-device serial route worth using, and has
+            // no request quota, so this is both simpler and cheaper than
+            // asking device by device.
+            context.schoolFleet = (try? await school.fleet()) ?? [:]
+            if let list = try? await school.locations() {
+                jamfLocations = list
+            }
+            context.schoolLocationNames = Dictionary(jamfLocations.map { ($0.id, $0.name) }) { first, _ in first }
+            context.schoolTimeZone = await jamfSchoolTimeZone(school: school, fleet: context.schoolFleet)
+        }
         return context
+    }
+
+    /// The zone a Jamf School instance stamps its times in.
+    ///
+    /// Only the per-device endpoint names it, and it is the same for the whole
+    /// instance, so it is read from one arbitrary device and then kept for the
+    /// session. Nil leaves times to be read as local, which is right often
+    /// enough and wrong only by an offset.
+    private func jamfSchoolTimeZone(
+        school: JamfSchoolClient,
+        fleet: [String: JamfSchoolDevice]
+    ) async -> TimeZone? {
+        guard let serverID = selectedJamfServer?.id else { return nil }
+        if let cached = jamfSchoolTimeZones[serverID] { return cached }
+        guard let udid = fleet.values.first?.udid,
+              let details = try? await school.deviceDetails(udid: udid),
+              let zone = details.timeZone else { return nil }
+        jamfSchoolTimeZones[serverID] = zone
+        return zone
     }
 
     private static func fetchABM(context: LookupContext, serial: String) async -> FetchState<ABMInfo> {
@@ -1317,7 +1584,41 @@ final class LookupModel {
         }
     }
 
+    /// Builds the Jamf side of a report from the Jamf School fleet already in
+    /// hand. Nothing is requested here: the whole instance was read once when
+    /// the context was made.
+    ///
+    /// Passcode state is absent, because it is not on the list endpoint. It is
+    /// read per device when one is selected, the same way AppleCare coverage
+    /// is on the Apple side.
+    private static func fetchJamfSchool(context: LookupContext, serial: String) -> FetchState<JamfInfo> {
+        guard let device = context.schoolFleet[serial.uppercased()] else { return .notFound }
+        return .found(JamfInfo(
+            computerID: device.udid,
+            kind: device.kind,
+            udid: device.udid,
+            name: device.name,
+            lastContact: DateFormatting.isoFromInstanceLocal(
+                device.lastCheckin,
+                timeZone: context.schoolTimeZone
+            ),
+            // Jamf School reports the Apple ADE profile rather than a Jamf
+            // PreStage. It fills the same column, under its own name. The
+            // profile has no identifier, so its name serves as one; that is
+            // only used to group the filter menu, never sent anywhere.
+            prestageID: device.depProfile?.isEmpty == false ? device.depProfile : nil,
+            prestageName: device.depProfile?.isEmpty == false ? device.depProfile : nil,
+            locationID: device.locationID,
+            locationName: device.locationID.map { context.schoolLocationNames[$0] ?? "Location \($0)" },
+            isManaged: device.isManaged,
+            isSupervised: device.isSupervised
+        ))
+    }
+
     private static func fetchJamf(context: LookupContext, serial: String) async -> FetchState<JamfInfo> {
+        if context.school != nil {
+            return fetchJamfSchool(context: context, serial: serial)
+        }
         guard let client = context.jamf else { return .notConfigured }
         do {
             if let record = try await client.computer(serial: serial) {

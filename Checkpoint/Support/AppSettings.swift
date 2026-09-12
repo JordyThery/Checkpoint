@@ -1,6 +1,87 @@
 import Foundation
 import Observation
 
+/// Which Jamf product a server is.
+///
+/// Jamf School is a different product with a much smaller API, not a variant
+/// of Jamf Pro: no computer/mobile split, locations instead of sites, and no
+/// source at all for FileVault, MDM profile expiry, software update state or
+/// the recovery secrets. What it cannot report is hidden rather than shown
+/// empty, which is what `capabilities` drives.
+nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendable {
+    case pro
+    case school
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .pro: "Jamf Pro"
+        case .school: "Jamf School"
+        }
+    }
+
+    var capabilities: JamfCapabilities {
+        switch self {
+        case .pro: [.sites, .prestageScope, .enrollmentDates, .mdmProfileExpiry,
+                    .fileVault, .softwareUpdate, .recoverySecrets, .deviceLink]
+        case .school: [.locations, .passcodeOnDemand]
+        }
+    }
+
+    /// Header for the column carrying the enrollment profile. Jamf School
+    /// reports the Apple ADE profile rather than a Jamf PreStage, so the two
+    /// are named for what they actually are.
+    var enrollmentProfileLabel: String {
+        switch self {
+        case .pro: "PreStage"
+        case .school: "ADE Profile"
+        }
+    }
+
+    /// Jamf Pro's Last Contact is a dedicated inventory attribute; Jamf
+    /// School reports only when the device last checked in. Naming them apart
+    /// keeps the column from implying the two are the same measurement.
+    var lastContactLabel: String {
+        switch self {
+        case .pro: "Last Contact"
+        case .school: "Last Check-in"
+        }
+    }
+
+    /// Jamf School trashes a device rather than deleting it, and a trashed
+    /// device can be restored, so the wording differs from Jamf Pro's delete.
+    var removeRecordLabel: String {
+        switch self {
+        case .pro: "Remove from Jamf Pro"
+        case .school: "Move to Trash in Jamf School"
+        }
+    }
+}
+
+/// What a Jamf connection can report and do. Every capability is a gate on a
+/// column, a row or an action, so a flavour that lacks one shows nothing in
+/// its place rather than an empty value.
+nonisolated struct JamfCapabilities: OptionSet, Sendable {
+    let rawValue: Int
+
+    static let sites = JamfCapabilities(rawValue: 1 << 0)
+    static let locations = JamfCapabilities(rawValue: 1 << 1)
+    static let prestageScope = JamfCapabilities(rawValue: 1 << 2)
+    /// Last enrollment date, last inventory update and Last Contact.
+    static let enrollmentDates = JamfCapabilities(rawValue: 1 << 3)
+    static let mdmProfileExpiry = JamfCapabilities(rawValue: 1 << 4)
+    static let fileVault = JamfCapabilities(rawValue: 1 << 5)
+    static let softwareUpdate = JamfCapabilities(rawValue: 1 << 6)
+    static let recoverySecrets = JamfCapabilities(rawValue: 1 << 7)
+    /// Passcode state is not in the bulk device list, only in the per-device
+    /// record, so it is read when a device is selected.
+    static let passcodeOnDemand = JamfCapabilities(rawValue: 1 << 9)
+    /// Links from a device to its record in the web interface. Jamf School
+    /// publishes no URL for one.
+    static let deviceLink = JamfCapabilities(rawValue: 1 << 10)
+}
+
 nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {
     case apiClient
     case usernamePassword
@@ -41,11 +122,16 @@ nonisolated enum JamfRegion: String, Codable, CaseIterable, Identifiable {
 nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     var id = UUID()
     var name = ""
+    /// Which Jamf product this is. Absent from servers saved before Jamf
+    /// School was supported, which were all Jamf Pro.
+    var flavor: JamfFlavor = .pro
     /// The Jamf Pro server URL. API requests go here directly, except in
     /// Platform API mode where the regional gateway takes them. Links into the
     /// Jamf Pro web interface are always built from this, since the gateway
     /// host cannot serve them.
     var baseURL = ""
+    /// Jamf Pro only. Jamf School authenticates with HTTP Basic, using the
+    /// Network ID as the user and the API key as the password.
     var authMethod: JamfAuthMethod = .apiClient
     /// Client ID or username depending on `authMethod`. The matching secret
     /// (client secret or password) lives in the keychain under `secretKeychainKey`.
@@ -73,7 +159,18 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
 
     /// Host that API requests are sent to.
     var apiBaseURL: String {
-        authMethod == .platformGateway ? region.gatewayHost : normalizedBaseURL
+        // Jamf School has no gateway, so the server URL is always the host,
+        // whatever an authentication method left over from Jamf Pro says.
+        guard flavor == .pro else { return normalizedBaseURL }
+        return authMethod == .platformGateway ? region.gatewayHost : normalizedBaseURL
+    }
+
+    var capabilities: JamfCapabilities { flavor.capabilities }
+
+    /// True only for a Jamf Pro server on the Platform API gateway. Jamf
+    /// School can never be on it, whatever `authMethod` holds.
+    var isUsingPlatformGateway: Bool {
+        flavor == .pro && authMethod == .platformGateway
     }
 }
 
@@ -86,6 +183,10 @@ extension JamfServerConfig {
         baseURL = try container.decode(String.self, forKey: .baseURL)
         authMethod = try container.decode(JamfAuthMethod.self, forKey: .authMethod)
         account = try container.decode(String.self, forKey: .account)
+        // Added with Jamf School support, so absent from servers saved by
+        // earlier versions. Those were all Jamf Pro; without a default the
+        // whole list fails to decode and every configured server disappears.
+        flavor = try container.decodeIfPresent(JamfFlavor.self, forKey: .flavor) ?? .pro
         // Added with Platform API support, so absent from servers saved by
         // earlier versions. Without defaults the whole list fails to decode
         // and silently disappears.
@@ -113,9 +214,50 @@ nonisolated enum AppAppearance: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// Which of Apple's two sibling organization services an account belongs to.
+///
+/// The APIs are the same one with two front doors: identical paths, identical
+/// device attributes, and the same OAuth flow differing only in scope. Only
+/// the set of device activities differs, which `supportsRelease` covers.
+nonisolated enum AppleOrgKind: String, Codable, CaseIterable, Identifiable, Sendable {
+    case business
+    case school
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .business: "Apple Business"
+        case .school: "Apple School Manager"
+        }
+    }
+
+    var host: URL {
+        switch self {
+        case .business: URL(string: "https://api-business.apple.com")!
+        case .school: URL(string: "https://api-school.apple.com")!
+        }
+    }
+
+    /// OAuth scope. The token endpoint is shared; only this value differs.
+    var scope: String {
+        switch self {
+        case .business: "business.api"
+        case .school: "school.api"
+        }
+    }
+
+    /// Apple School Manager has no RELEASE_DEVICES activity, so devices
+    /// cannot be released from the organization there.
+    var supportsRelease: Bool { self == .business }
+}
+
 nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
     var id = UUID()
     var name = ""
+    /// Which service this account is for. Absent from configurations saved
+    /// before Apple School Manager was supported, which were all Business.
+    var kind: AppleOrgKind = .business
     var clientID = ""
     var keyID = ""
 
@@ -134,6 +276,22 @@ nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
     var isConfigured: Bool {
         !clientID.trimmingCharacters(in: .whitespaces).isEmpty
             && !keyID.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+}
+
+// Declared in an extension so the memberwise initialiser is still synthesised.
+extension ABMConfig {
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        clientID = try container.decode(String.self, forKey: .clientID)
+        keyID = try container.decode(String.self, forKey: .keyID)
+        // Added with Apple School Manager support, so absent from
+        // organizations saved by earlier versions. Those were all Apple
+        // Business; without a default the whole list fails to decode and
+        // every configured organization silently disappears.
+        kind = try container.decodeIfPresent(AppleOrgKind.self, forKey: .kind) ?? .business
     }
 }
 

@@ -38,7 +38,7 @@ nonisolated struct DeviceFilters: Equatable {
             && appleBusiness.matches(report)
             && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
             && prestage.matches(report.jamf.value?.prestageID, hasRecord: report.jamf.value != nil)
-            && site.matches(report.jamf.value?.normalizedSiteID, hasRecord: report.jamf.value != nil)
+            && site.matches(report.jamf.value?.groupingID, hasRecord: report.jamf.value != nil)
             && issues.allSatisfy { $0.matches(report) }
     }
 
@@ -116,11 +116,11 @@ nonisolated struct DeviceFilters: Equatable {
 
         var id: String { rawValue }
 
-        var label: String {
+        func label(for flavor: JamfFlavor = .pro) -> String {
             switch self {
             case .mdmProfileExpired: "MDM profile expired"
-            case .appleBusinessOnly: "In Apple Business, no Jamf Pro record"
-            case .jamfProOnly: "In Jamf Pro, not in Apple Business"
+            case .appleBusinessOnly: "No \(flavor.label) record"
+            case .jamfProOnly: "Not in the Apple organization"
             case .migrationInProgress: "Migration in progress"
             case .fileVaultOff: "FileVault not enabled"
             case .noPasscode: "No passcode set"
@@ -189,7 +189,7 @@ nonisolated struct FilterOptions {
     var showPrestages: Bool { !prestages.isEmpty || prestageNone > 0 }
     var showSites: Bool { !sites.isEmpty || siteNone > 0 }
 
-    init(reports: [DeviceReport]) {
+    init(reports: [DeviceReport], capabilities: JamfCapabilities = JamfFlavor.pro.capabilities) {
         var serverCounts: [String: (name: String, count: Int)] = [:]
         var prestageCounts: [String: (name: String, count: Int)] = [:]
         var siteCounts: [String: (name: String, count: Int)] = [:]
@@ -215,8 +215,8 @@ nonisolated struct FilterOptions {
                 } else {
                     prestageNone += 1
                 }
-                if let id = jamf.normalizedSiteID {
-                    let name = jamf.siteName ?? id
+                if let id = jamf.groupingID {
+                    let name = jamf.locationName ?? jamf.siteName ?? id
                     siteCounts[id] = (name, (siteCounts[id]?.count ?? 0) + 1)
                 } else {
                     siteNone += 1
@@ -242,11 +242,19 @@ nonisolated struct FilterOptions {
             .filter { $0.1 > 0 }
 
         // Issues that could apply to this mix of devices, with how many match.
+        //
+        // A criterion the connection has no source for is left out entirely
+        // rather than offered with a count of zero: on Jamf School, filtering
+        // for an expired MDM profile would hide every device, having read no
+        // expiry for any of them. Passcode state is excluded for the same
+        // reason the coverage and update columns are: Jamf School reports it
+        // per device, so a lookup has it for none of them yet.
         issues = DeviceFilters.Issue.allCases
             .filter { issue in
                 switch issue {
-                case .fileVaultOff: hasComputers
-                case .noPasscode: hasMobileDevices
+                case .fileVaultOff: hasComputers && capabilities.contains(.fileVault)
+                case .noPasscode: hasMobileDevices && !capabilities.contains(.passcodeOnDemand)
+                case .mdmProfileExpired: capabilities.contains(.mdmProfileExpiry)
                 default: true
                 }
             }
@@ -260,5 +268,12 @@ extension JamfInfo {
     var normalizedSiteID: String? {
         guard let siteID, siteID != "-1" else { return nil }
         return siteID
+    }
+
+    /// What the record is grouped under: a Jamf Pro site or a Jamf School
+    /// location. One filter covers both, since a record only ever has one of
+    /// them and the question being asked is the same.
+    var groupingID: String? {
+        locationID ?? normalizedSiteID
     }
 }
