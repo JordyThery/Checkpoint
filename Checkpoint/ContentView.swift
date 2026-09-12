@@ -11,6 +11,20 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var importMessage: String?
     @State private var deviceFilter: DeviceFilter = .all
+    @State private var showingGroupPicker = false
+    @State private var pendingGroup: PendingGroup?
+
+    /// A chosen group, held until its size has been confirmed. A group can
+    /// hold several hundred devices, which the name alone does not reveal.
+    private struct PendingGroup: Identifiable {
+        let id = UUID()
+        let group: JamfGroup
+        let serials: [String]
+    }
+
+    /// Above this, a group lookup asks first. Small groups go straight
+    /// through: a confirmation nobody can answer usefully is just a delay.
+    private static let confirmGroupLookupAbove = 25
 
     private enum DeviceFilter: String, CaseIterable, Identifiable {
         case all = "All"
@@ -109,6 +123,24 @@ struct ContentView: View {
         .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item]) { result in
             handleImport(result)
         }
+        .sheet(isPresented: $showingGroupPicker) {
+            GroupPickerView { group, serials in
+                handleGroup(group, serials: serials)
+            }
+            .environment(model)
+        }
+        .alert(
+            pendingGroup.map { "Look up \(LookupModel.deviceCount($0.serials)) from “\($0.group.name)”?" } ?? "",
+            isPresented: Binding(get: { pendingGroup != nil }, set: { if !$0 { pendingGroup = nil } })
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Look Up") {
+                pendingGroup = nil
+                lookUp()
+            }
+        } message: {
+            Text("Each device is checked against both Apple Business and Jamf Pro, so a group this size takes a while.")
+        }
         .alert(
             "Import",
             isPresented: Binding(get: { importMessage != nil }, set: { if !$0 { importMessage = nil } })
@@ -132,6 +164,9 @@ struct ContentView: View {
             Button("Import…") { showingImporter = true }
                 .help("Import a text or CSV file with one serial number per line")
                 .disabled(model.isLoading)
+            Button("Group…") { showingGroupPicker = true }
+                .help("Look up every device in a Jamf Pro group")
+                .disabled(model.isLoading || settings.jamfServers.isEmpty)
             Button("Clear") { clear() }
                 .help("Remove every device from the list")
                 .disabled(model.isLoading || (model.reports.isEmpty && serialsText.isEmpty))
@@ -142,9 +177,19 @@ struct ContentView: View {
             .keyboardShortcut(.defaultAction)
             .disabled(model.isLoading || serialsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             if model.isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .padding(.top, 4)
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    // Lookups run through a fixed window, so a large list
+                    // takes long enough to be worth counting down.
+                    if model.totalLookups > Self.confirmGroupLookupAbove {
+                        Text("\(model.completedLookups) of \(model.totalLookups)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                .padding(.top, 4)
             }
         }
         .padding(12)
@@ -256,6 +301,18 @@ struct ContentView: View {
         selection.removeAll()
         let text = serialsText
         Task { await model.lookUp(serialsText: text) }
+    }
+
+    /// Puts a group's serials in the field, then either looks them up or asks
+    /// first, depending on how many there are. The field is filled either way,
+    /// so declining the confirmation leaves the serials ready to run manually.
+    private func handleGroup(_ group: JamfGroup, serials: [String]) {
+        serialsText = serials.joined(separator: "\n")
+        if serials.count > Self.confirmGroupLookupAbove {
+            pendingGroup = PendingGroup(group: group, serials: serials)
+        } else {
+            lookUp()
+        }
     }
 
     private func clear() {

@@ -21,6 +21,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | Device lookup, including FileVault state, passcode state and software update status | Read Computers, Read Mobile Devices |
 | PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
+| Looking up a group | Read Computer Groups, Read Mobile Device Groups |
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | FileVault recovery key | View Disk Encryption Recovery Key |

@@ -259,6 +259,10 @@ final class LookupModel {
 
     var reports: [DeviceReport] = []
     var isLoading = false
+    /// Progress through a lookup. Zero total means no lookup is running, or
+    /// one too small to be worth reporting on.
+    private(set) var completedLookups = 0
+    private(set) var totalLookups = 0
     var selectedABMOrgID: UUID?
     var selectedJamfServerID: UUID?
     var mdmServers: [MDMServer] = []
@@ -358,27 +362,43 @@ final class LookupModel {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
+    /// How many devices are looked up at once.
+    ///
+    /// Each device costs several requests across both APIs, and Apple rate
+    /// limits hard enough that the clients are cached to avoid re-signing in.
+    /// A group or a pasted list can hold several hundred serials, so the work
+    /// is fed through a fixed window rather than started all at once.
+    static let maximumConcurrentLookups = 8
+
     func lookUp(serialsText: String) async {
         let serials = Self.parseSerials(serialsText)
         guard !serials.isEmpty else { return }
         isLoading = true
         defer { isLoading = false }
         reports = serials.map { DeviceReport(serial: $0) }
+        completedLookups = 0
+        totalLookups = serials.count
+        defer { totalLookups = 0 }
 
         let context = await makeContext()
         await withTaskGroup(of: (String, FetchState<ABMInfo>, FetchState<JamfInfo>).self) { group in
-            for serial in serials {
+            var pending = serials.makeIterator()
+            func addNext() {
+                guard let serial = pending.next() else { return }
                 group.addTask {
                     async let abm = Self.fetchABM(context: context, serial: serial)
                     async let jamf = Self.fetchJamf(context: context, serial: serial)
                     return await (serial, abm, jamf)
                 }
             }
+            for _ in 0..<Self.maximumConcurrentLookups { addNext() }
             for await (serial, abmState, jamfState) in group {
                 if let index = reports.firstIndex(where: { $0.serial == serial }) {
                     reports[index].abm = abmState
                     reports[index].jamf = jamfState
                 }
+                completedLookups += 1
+                addNext()
             }
         }
     }
@@ -619,6 +639,31 @@ final class LookupModel {
             }
             return pin
         }
+    }
+
+    // MARK: Groups
+
+    /// Every computer and mobile device group on the selected server, both
+    /// smart and static, sorted for display.
+    func jamfGroups() async throws -> [JamfGroup] {
+        guard let jamf = makeJamfClient() else {
+            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+        }
+        var all: [JamfGroup] = []
+        for kind in JamfGroupKind.allCases {
+            all += try await jamf.groups(kind: kind)
+        }
+        return all.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    /// The serial numbers in a group.
+    func serials(in group: JamfGroup) async throws -> [String] {
+        guard let jamf = makeJamfClient() else {
+            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+        }
+        return try await jamf.groupSerials(group)
     }
 
     // MARK: Per-device detail

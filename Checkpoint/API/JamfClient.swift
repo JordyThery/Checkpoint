@@ -151,6 +151,39 @@ nonisolated enum JamfDisplay {
     }
 }
 
+nonisolated enum JamfGroupKind: String, Sendable, CaseIterable, Identifiable {
+    case computer
+    case mobileDevice
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .computer: "Computers"
+        case .mobileDevice: "Mobile Devices"
+        }
+    }
+
+    /// Classic API resource. The modern endpoints return computer group
+    /// membership as bare record IDs, which would need a request per device
+    /// to resolve; the Classic ones carry the serial numbers directly.
+    var groupResource: String {
+        switch self {
+        case .computer: "computergroups"
+        case .mobileDevice: "mobiledevicegroups"
+        }
+    }
+}
+
+struct JamfGroup: Sendable, Identifiable, Hashable {
+    let id: String
+    let name: String
+    let isSmart: Bool
+    let kind: JamfGroupKind
+
+    var typeLabel: String { isSmart ? "Smart" : "Static" }
+}
+
 struct JamfSite: Sendable, Identifiable, Hashable {
     let id: String
     let name: String
@@ -902,6 +935,59 @@ actor JamfClient {
         }
         let parsed = try? JSONDecoder().decode(ErrorResponse.self, from: data)
         return parsed?.errors?.contains { $0.code == "NOT_FOUND" } ?? false
+    }
+
+    // MARK: Groups
+
+    /// Every computer or mobile device group on the server, smart and static
+    /// alike. Both kinds are listed together because either can be a useful
+    /// source of serial numbers.
+    func groups(kind: JamfGroupKind) async throws -> [JamfGroup] {
+        struct Response: Decodable {
+            let computer_groups: [Item]?
+            let mobile_device_groups: [Item]?
+            struct Item: Decodable {
+                let id: Int
+                let name: String?
+                let is_smart: Bool?
+            }
+        }
+        let (data, status) = try await send(path: "/JSSResource/\(kind.groupResource)")
+        try throwIfError(status: status, data: data)
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        let items = decoded.computer_groups ?? decoded.mobile_device_groups ?? []
+        return items.map {
+            JamfGroup(
+                id: String($0.id),
+                name: $0.name ?? "Group \($0.id)",
+                isSmart: $0.is_smart ?? false,
+                kind: kind
+            )
+        }
+    }
+
+    /// The serial numbers of a group's members, in one request. Members
+    /// without a serial, which Jamf Pro reports for records that never
+    /// completed inventory, are left out.
+    func groupSerials(_ group: JamfGroup) async throws -> [String] {
+        struct Response: Decodable {
+            let computer_group: Group?
+            let mobile_device_group: Group?
+            struct Group: Decodable {
+                let computers: [Member]?
+                let mobile_devices: [Member]?
+            }
+            struct Member: Decodable { let serial_number: String? }
+        }
+        let (data, status) = try await send(path: "/JSSResource/\(group.kind.groupResource)/id/\(group.id)")
+        try throwIfError(status: status, data: data)
+        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        let container = decoded.computer_group ?? decoded.mobile_device_group
+        let members = container?.computers ?? container?.mobile_devices ?? []
+        var seen = Set<String>()
+        return members
+            .compactMap { $0.serial_number?.trimmingCharacters(in: .whitespaces).uppercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     // MARK: Managed software updates
