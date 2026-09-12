@@ -26,7 +26,7 @@ A different product from Jamf Pro with a much smaller API, so Checkpoint shows l
 
 Create the key under **Organization → Settings → API → Add API Key**. Authentication is the **Network ID** as the user and the **API key** as the password; the Network ID is under **Devices → Enroll Device(s)**.
 
-Each key carries its own list of permitted methods, chosen when you create it. Grant only what you intend to use: a missing method refuses one feature rather than the connection, and Checkpoint reports it as a missing method rather than as bad credentials.
+**There is no role to choose.** Unlike an Apple API account, which takes a Role Access setting, a Jamf School key is granted individual methods when you create it. Grant only what you intend to use: a missing method refuses one feature rather than the connection, and Checkpoint reports it as a missing method rather than as bad credentials.
 
 | Feature | Methods the key needs |
 | --- | --- |

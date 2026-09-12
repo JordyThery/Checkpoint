@@ -26,11 +26,13 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | | FileVault and passcode state | Passcode state |
 | | Software update state, as the device reports it | |
 
-Jamf School's API is much smaller than Jamf Pro's. Where it has no source — FileVault, MDM profile expiration, software update state, the enrollment dates, PreStage scope and the recovery secrets — those columns, rows and actions are **hidden rather than shown empty**.
-
 Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, record deletion, and MDM commands. See [Features](docs/features.md).
 
-![Checkpoint showing a Mac and an iPad with their Apple Business and Jamf Pro status side by side, with the bulk actions inspector open](docs/screenshot.png)
+![Checkpoint showing four Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
+
+Apple School Manager with Jamf School. Columns and actions the connected product has no source for are left out rather than shown empty:
+
+![The same window connected to Apple School Manager and Jamf School, showing location and ADE profile columns in place of the Jamf Pro ones](docs/screenshot-jamf-school.png)
 
 ## Documentation
 
@@ -42,7 +44,8 @@ Every discrepancy can be resolved from the same window: MDM assignments and migr
 
 - macOS 15 or later
 - An Apple Business or Apple School Manager API account per organization, with the **Device Enrollment Manager** role or higher
-- A Jamf Pro server, connected by API client, username and password, or the Platform API gateway; or a Jamf School instance, connected by Network ID and API key
+- A Jamf Pro server, connected by API client, username and password, or the Platform API gateway
+- Or a Jamf School instance, connected by Network ID and API key. There is no role to choose: a key is granted individual methods instead
 - Jamf Pro 11.30+ for the Last Contact attribute
 
 ## Security

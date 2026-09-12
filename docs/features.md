@@ -30,6 +30,8 @@ Multiple organizations, of either Apple service, and multiple Jamf servers, of e
 
 Both fill the serial field, and both confirm before starting when the list is large or when the Apple organization has to be read first — neither a group name nor an order number reveals that it covers several hundred devices, or that it will take a minute.
 
+![The order picker listing Apple School Manager order numbers with the number of devices on each](screenshot-order.png)
+
 ## Reading in bulk
 
 Above 15 devices the Apple organization is read in bulk instead of one device at a time. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device does not scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
@@ -65,5 +67,7 @@ Managed local administrator accounts are listed as Jamf Pro lists them, one row 
 Window → Activity Log (⌥⌘L) shows what Checkpoint asked each service to do and how it answered, in two tiers: the action you requested, and each HTTP request made to carry it out. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
 
 The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Jamf School attaches an owner to every device record, so the owner and any notes are withheld too — in a school those are pupils.
+
+![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
 
 Copy and export each come in a masked form, replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognisable without being named. Use it when attaching a log to a bug report.
