@@ -622,12 +622,37 @@ actor ABMClient {
         return token.access_token
     }
 
+    /// Reads the downloaded private key.
+    ///
+    /// Apple School Manager hands out a key whose armour says
+    /// `EC PRIVATE KEY`, the SEC1 label, wrapped around a PKCS#8 body. CryptoKit
+    /// believes the label, parses it as SEC1 and fails; OpenSSL accepts the
+    /// same file because it inspects the contents instead. The armour is
+    /// therefore swapped and retried, which costs nothing when the label was
+    /// right to begin with and still rejects a key that is genuinely wrong.
+    private nonisolated static func readPrivateKey(_ pem: String) throws -> P256.Signing.PrivateKey {
+        let trimmed = pem.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let key = try? P256.Signing.PrivateKey(pemRepresentation: trimmed) { return key }
+
+        let swapped: String
+        if trimmed.contains("BEGIN EC PRIVATE KEY") {
+            swapped = trimmed
+                .replacingOccurrences(of: "BEGIN EC PRIVATE KEY", with: "BEGIN PRIVATE KEY")
+                .replacingOccurrences(of: "END EC PRIVATE KEY", with: "END PRIVATE KEY")
+        } else {
+            swapped = trimmed
+                .replacingOccurrences(of: "BEGIN PRIVATE KEY", with: "BEGIN EC PRIVATE KEY")
+                .replacingOccurrences(of: "END PRIVATE KEY", with: "END EC PRIVATE KEY")
+        }
+        return try P256.Signing.PrivateKey(pemRepresentation: swapped)
+    }
+
     private func makeClientAssertion() throws -> String {
         let key: P256.Signing.PrivateKey
         do {
-            key = try P256.Signing.PrivateKey(pemRepresentation: privateKeyPEM)
+            key = try Self.readPrivateKey(privateKeyPEM)
         } catch {
-            throw APIError(message: "Could not read the \(kind.label) private key (expected a PEM-encoded EC P-256 key): \(error.localizedDescription)")
+            throw APIError(message: "Could not read the \(kind.label) private key. Expected the PEM-encoded EC P-256 key downloaded when the API account was created.")
         }
         let now = Int(Date().timeIntervalSince1970)
         let header: [String: Any] = ["alg": "ES256", "kid": keyID, "typ": "JWT"]
