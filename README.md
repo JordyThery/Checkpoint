@@ -45,7 +45,7 @@ Multiple Apple Business organizations and multiple Jamf Pro servers (e.g. produc
 
 **Order…** lists the Apple Business order numbers in your organization with the number of devices on each. Apple cannot search devices by order number, so Checkpoint reads the device list once and reuses it; the first use takes about a minute and later ones are immediate.
 
-Both fill the serial field, and both ask for confirmation above 25 devices, since neither a group name nor an order number reveals that it covers several hundred.
+Both fill the serial field, and both confirm before starting when the list is large or when Apple Business has to be read first — neither a group name nor an order number reveals that it covers several hundred devices, or that it will take a minute.
 
 Above 15 devices, Apple Business is read in bulk instead of one device at a time. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device does not scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
 
@@ -54,6 +54,8 @@ The one thing not available in bulk is **AppleCare coverage**, which Apple serve
 ### Filtering the results
 
 **Filter** narrows the list to devices matching every chosen criterion: Apple Business status, MDM server, PreStage, site, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
+
+The menu offers only what the devices in front of you actually use, with a count beside each: a list of Macs shows the four PreStages they are in rather than every PreStage on the server, and criteria that cannot apply to the list are left out.
 
 Filtering only reads what the lookup already fetched, so it costs nothing. Warranty coverage and software update status are deliberately not filterable: neither is present for every row, so filtering on them would quietly exclude devices whose value had simply not been fetched.
 

@@ -32,6 +32,12 @@ struct ContentView: View {
         model.reports.filter(filters.matches)
     }
 
+    /// Built from every loaded device, not the filtered subset, so choosing a
+    /// filter does not remove the other options from the menu.
+    private var filterOptions: FilterOptions {
+        FilterOptions(reports: model.reports)
+    }
+
     /// Intersected with what is on screen, so an action can never reach a
     /// device the filter has hidden. The selection is pruned when the filter
     /// changes as well; this is the guarantee, that is the housekeeping.
@@ -153,7 +159,7 @@ struct ContentView: View {
                 lookUp()
             }
         } message: {
-            Text("Each device is checked against both Apple Business and Jamf Pro, so a group this size takes a while.")
+            Text(pendingGroupMessage)
         }
         .alert(
             "Import",
@@ -266,28 +272,44 @@ struct ContentView: View {
 
     private var filterMenu: some View {
         Menu {
-            Picker("Apple Business", selection: $filters.appleBusiness) {
-                ForEach(DeviceFilters.ABMStatus.allCases) { status in
-                    Text(status.rawValue).tag(status)
+            // Built here rather than in the enclosing body: the menu's content
+            // is only evaluated when it opens, and scanning every report on
+            // each render would cost a pass per device during a lookup.
+            let options = filterOptions
+            if options.showAppleBusiness {
+                Picker("Apple Business", selection: $filters.appleBusiness) {
+                    Text("Any").tag(DeviceFilters.ABMStatus.any)
+                    ForEach(options.statuses, id: \.status) { entry in
+                        Text("\(entry.status.rawValue) (\(entry.count))").tag(entry.status)
+                    }
                 }
             }
-            assignmentPicker("MDM Server", selection: $filters.mdmServer,
-                             options: model.mdmServers.map { ($0.id, $0.name) })
-            assignmentPicker("PreStage", selection: $filters.prestage,
-                             options: (model.prestages + model.mobilePrestages).map { ($0.id, $0.displayName) })
-            if !model.sites.isEmpty {
-                assignmentPicker("Site", selection: $filters.site,
-                                 options: model.sites.map { ($0.id, $0.name) })
+            if options.showServers {
+                assignmentPicker("MDM Server", selection: $filters.mdmServer,
+                                 options: options.servers, noneCount: options.serverNone)
             }
-            Divider()
-            Section("Only show devices with") {
-                ForEach(DeviceFilters.Issue.allCases) { issue in
-                    Toggle(issue.label, isOn: Binding(
-                        get: { filters.issues.contains(issue) },
-                        set: { on in
-                            if on { filters.issues.insert(issue) } else { filters.issues.remove(issue) }
-                        }
-                    ))
+            if options.showPrestages {
+                assignmentPicker("PreStage", selection: $filters.prestage,
+                                 options: options.prestages, noneCount: options.prestageNone)
+            }
+            if options.showSites {
+                assignmentPicker("Site", selection: $filters.site,
+                                 options: options.sites, noneCount: options.siteNone)
+            }
+            if !options.issues.isEmpty {
+                Divider()
+                Section("Only show devices with") {
+                    ForEach(options.issues, id: \.issue) { entry in
+                        Toggle("\(entry.issue.label) (\(entry.count))", isOn: Binding(
+                            get: { filters.issues.contains(entry.issue) },
+                            set: { on in
+                                if on { filters.issues.insert(entry.issue) } else { filters.issues.remove(entry.issue) }
+                            }
+                        ))
+                        // Offering a condition nothing matches would only empty
+                        // the table; the count already gives the answer.
+                        .disabled(entry.count == 0 && !filters.issues.contains(entry.issue))
+                    }
                 }
             }
             Divider()
@@ -306,18 +328,21 @@ struct ContentView: View {
         .help("Narrow the list to devices matching every chosen criterion")
     }
 
-    /// Any / None / a specific record. Options are the ones the current
-    /// results can actually match, so the menu never offers a dead end.
+    /// Any / None / a specific value, listing only values some loaded device
+    /// has, so the menu never offers a choice that would match nothing.
     private func assignmentPicker(
         _ title: String,
         selection: Binding<DeviceFilters.Assignment>,
-        options: [(id: String, name: String)]
+        options: [FilterOptions.Option],
+        noneCount: Int
     ) -> some View {
         Picker(title, selection: selection) {
             Text("Any").tag(DeviceFilters.Assignment.any)
-            Text("None").tag(DeviceFilters.Assignment.none)
-            ForEach(options, id: \.id) { option in
-                Text(option.name).tag(DeviceFilters.Assignment.id(option.id))
+            if noneCount > 0 {
+                Text("None (\(noneCount))").tag(DeviceFilters.Assignment.none)
+            }
+            ForEach(options) { option in
+                Text("\(option.name) (\(option.count))").tag(DeviceFilters.Assignment.id(option.id))
             }
         }
     }
@@ -387,12 +412,24 @@ struct ContentView: View {
         Task { await model.lookUp(serialsText: text) }
     }
 
+    private var pendingGroupMessage: String {
+        guard let pending = pendingGroup else { return "" }
+        if model.needsOrganizationRead(forDeviceCount: pending.serials.count) {
+            return "Apple Business is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against Jamf Pro."
+        }
+        return "Each device is checked against both Apple Business and Jamf Pro, so a list this size takes a while."
+    }
+
     /// Puts a group's or order's serials in the field, then either looks them
     /// up or asks first, depending on how many there are. The field is filled
     /// either way, so declining leaves the serials ready to run manually.
     private func loadSerials(named name: String, serials: [String]) {
         serialsText = serials.joined(separator: "\n")
-        if serials.count > Self.confirmGroupLookupAbove {
+        // Confirm for a large list, and also whenever Apple Business has to be
+        // read first: that takes about a minute, and a group of twenty gives
+        // no hint that it will.
+        if serials.count > Self.confirmGroupLookupAbove
+            || model.needsOrganizationRead(forDeviceCount: serials.count) {
             pendingGroup = PendingGroup(name: name, serials: serials)
         } else {
             lookUp()

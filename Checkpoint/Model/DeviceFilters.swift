@@ -154,6 +154,106 @@ nonisolated struct DeviceFilters: Equatable {
     }
 }
 
+/// What the devices currently in the list can be filtered by.
+///
+/// Options come from the loaded devices rather than from the server, so the
+/// menu never offers a PreStage, site or server that nothing in the list
+/// uses: a lookup of twenty Macs should not present every iPad PreStage on
+/// the instance. Criteria that cannot apply are left out entirely, and ones
+/// that would match nothing are shown with a count of zero rather than
+/// silently emptying the table.
+///
+/// Always built from every loaded device, never from the filtered subset, so
+/// the menu does not shift underneath a filter as it is applied.
+nonisolated struct FilterOptions {
+    nonisolated struct Option: Identifiable, Hashable {
+        let id: String
+        let name: String
+        let count: Int
+    }
+
+    var servers: [Option] = []
+    var prestages: [Option] = []
+    var sites: [Option] = []
+    /// Whether any device has a record but no value, so None is worth offering.
+    var serverNone = 0
+    var prestageNone = 0
+    var siteNone = 0
+    var statuses: [(status: DeviceFilters.ABMStatus, count: Int)] = []
+    var issues: [(issue: DeviceFilters.Issue, count: Int)] = []
+    var hasComputers = false
+    var hasMobileDevices = false
+
+    var showAppleBusiness: Bool { !statuses.isEmpty }
+    var showServers: Bool { !servers.isEmpty || serverNone > 0 }
+    var showPrestages: Bool { !prestages.isEmpty || prestageNone > 0 }
+    var showSites: Bool { !sites.isEmpty || siteNone > 0 }
+
+    init(reports: [DeviceReport]) {
+        var serverCounts: [String: (name: String, count: Int)] = [:]
+        var prestageCounts: [String: (name: String, count: Int)] = [:]
+        var siteCounts: [String: (name: String, count: Int)] = [:]
+
+        for report in reports {
+            switch report.deviceKind {
+            case .computer: hasComputers = true
+            case .mobileDevice: hasMobileDevices = true
+            case nil: break
+            }
+            if let abm = report.abm.value {
+                if let id = abm.mdmServerID {
+                    let name = abm.mdmServerName ?? id
+                    serverCounts[id] = (name, (serverCounts[id]?.count ?? 0) + 1)
+                } else {
+                    serverNone += 1
+                }
+            }
+            if let jamf = report.jamf.value {
+                if let id = jamf.prestageID {
+                    let name = jamf.prestageName ?? id
+                    prestageCounts[id] = (name, (prestageCounts[id]?.count ?? 0) + 1)
+                } else {
+                    prestageNone += 1
+                }
+                if let id = jamf.normalizedSiteID {
+                    let name = jamf.siteName ?? id
+                    siteCounts[id] = (name, (siteCounts[id]?.count ?? 0) + 1)
+                } else {
+                    siteNone += 1
+                }
+            }
+        }
+
+        func sorted(_ counts: [String: (name: String, count: Int)]) -> [Option] {
+            counts
+                .map { Option(id: $0.key, name: $0.value.name, count: $0.value.count) }
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
+        servers = sorted(serverCounts)
+        prestages = sorted(prestageCounts)
+        sites = sorted(siteCounts)
+
+        // Only statuses some device is actually in.
+        statuses = DeviceFilters.ABMStatus.allCases
+            .filter { $0 != .any }
+            .map { status in
+                (status, reports.count { status.matches($0) })
+            }
+            .filter { $0.1 > 0 }
+
+        // Issues that could apply to this mix of devices, with how many match.
+        issues = DeviceFilters.Issue.allCases
+            .filter { issue in
+                switch issue {
+                case .fileVaultOff: hasComputers
+                case .noPasscode: hasMobileDevices
+                default: true
+                }
+            }
+            .map { issue in (issue, reports.count { issue.matches($0) }) }
+    }
+}
+
 extension JamfInfo {
     /// Site ID with Jamf Pro's "no site" sentinel treated as absent, so the
     /// filter can offer None alongside the real sites.

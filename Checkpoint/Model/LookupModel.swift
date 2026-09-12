@@ -723,6 +723,13 @@ final class LookupModel {
         selectedABMOrg.flatMap { abmSnapshots[$0.id] }
     }
 
+    /// Whether a lookup of this many devices would have to read the whole
+    /// Apple Business organization first, which takes about a minute. False
+    /// once a snapshot has been read, since it is reused.
+    func needsOrganizationRead(forDeviceCount count: Int) -> Bool {
+        isABMConfigured && count >= Self.snapshotThreshold && cachedSnapshot() == nil
+    }
+
     /// Discards the cached snapshot for the selected organization. Called
     /// after anything that changes Apple Business, so the next bulk lookup
     /// does not report the state from before the change.
