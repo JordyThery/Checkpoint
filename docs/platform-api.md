@@ -38,6 +38,7 @@ Permissions are granted per capability on the integration, rather than per privi
 | Restart and Shut Down | Device actions: Execute, plus Inventory: Read to resolve the device |
 | FileVault recovery key, Recovery Lock password, device lock PIN | Device secrets: Read |
 | Managed local administrator accounts and passwords | Device secrets: Read |
+| Looking up a group | Inventory: Read |
 
 ## What the gateway cannot carry
 
@@ -51,7 +52,9 @@ Permissions are granted per capability on the integration, rather than per privi
 
 Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need one of the three above.
 
-FileVault state, mobile passcode state, software update status and managed local administrator accounts were each checked over both connections and returned identical results, so there is no difference in what Checkpoint can show.
+FileVault state, mobile passcode state, software update status, managed local administrator accounts and the group lookup were each checked over both connections and returned identical results, so there is no difference in what Checkpoint can show.
+
+Group membership comes from the Classic endpoints, which the gateway serves under `/proclassic`. The modern computer equivalent returns bare record IDs rather than serial numbers, which would cost a request per device to resolve.
 
 ## Notes on gateway behaviour
 

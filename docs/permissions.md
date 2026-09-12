@@ -23,7 +23,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | Device lookup, including FileVault state, passcode state and software update status | Read Computers, Read Mobile Devices |
 | PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
-| Looking up a group | Read Computer Groups, Read Mobile Device Groups |
+| Looking up a group | Read Smart Computer Groups, Read Static Computer Groups, Read Smart Mobile Device Groups, Read Static Mobile Device Groups |
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | FileVault recovery key | View Disk Encryption Recovery Key |
@@ -52,6 +52,10 @@ Every command needs **View MDM command information in Jamf Pro API**, plus the p
 | Redeploy Jamf Framework | Send Computer Remote Command to Install Package, Read Computer Check-In |
 
 Shut Down is offered for mobile devices only, because Jamf Pro has no equivalent computer privilege.
+
+Jamf Pro has no single "Read Computer Groups" privilege: smart and static are separate. Checkpoint lists both kinds together, so granting only one half hides the other from the group picker.
+
+Looking up an Apple Business order needs no Jamf Pro privilege and no extra Apple Business role — the order numbers come from the device list Checkpoint already reads. Filtering the results needs nothing at all; it reads what the lookup returned.
 
 ### Optional privileges
 
