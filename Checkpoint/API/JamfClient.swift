@@ -622,7 +622,7 @@ actor JamfClient {
     }
 
     func deleteComputer(id: String) async throws {
-        let (data, status) = try await send(path: "/api/v1/computers-inventory/\(id)", method: "DELETE")
+        let (data, status) = try await send(path: "/api/v4/computers-inventory/\(id)", method: "DELETE")
         try throwIfError(status: status, data: data)
     }
 
@@ -1149,7 +1149,7 @@ actor JamfClient {
     func setComputerSite(computerID: String, siteID: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["general": ["siteId": siteID]])
         let (data, status) = try await send(
-            path: "/api/v1/computers-inventory-detail/\(computerID)",
+            path: "/api/v4/computers-inventory-detail/\(computerID)",
             method: "PATCH",
             body: body
         )
