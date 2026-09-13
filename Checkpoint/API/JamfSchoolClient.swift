@@ -43,12 +43,6 @@ struct JamfSchoolDevice: Sendable {
         if osPrefix?.lowercased() == "macos" { return .computer }
         return .mobileDevice
     }
-
-    var osDisplay: String? {
-        guard let osPrefix, !osPrefix.isEmpty else { return nil }
-        guard let osVersion, !osVersion.isEmpty else { return osPrefix }
-        return "\(osPrefix) \(osVersion)"
-    }
 }
 
 /// The per-device record, which is a different shape from the list entry.

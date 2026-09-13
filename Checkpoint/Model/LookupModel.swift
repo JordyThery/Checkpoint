@@ -47,12 +47,12 @@ struct JamfInfo: Sendable {
     var encryption: JamfDiskEncryption?
     /// Passcode and encryption state (mobile devices).
     var security: JamfMobileSecurity?
-    /// The installed OS, from inventory. Also what tells an enforced update
-    /// the device already has from one it still owes.
+    /// The installed OS, from inventory. Also what distinguishes an enforced
+    /// update the device already has from one it still owes.
     var osVersion: String?
     /// Jamf Pro only; Jamf School reports no build.
     var osBuild: String?
-    /// Jamf School only, which names the OS rather than giving its build.
+    /// Jamf School only, which names the OS instead of reporting a build.
     var osName: String?
     var lastEnrolledDate: String?
     var reportDate: String?

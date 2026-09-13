@@ -806,8 +806,8 @@ actor JamfClient {
         if apiVersion == "v4" {
             queryItems.append(URLQueryItem(name: "section", value: "DISK_ENCRYPTION"))
             // Asked for alongside the others rather than in a second request.
-            // Needed to tell an enforced update the device already has from
-            // one it still owes.
+            // Reported as the installed OS, and compared against an enforced
+            // update to tell one the device already has from one it still owes.
             queryItems.append(URLQueryItem(name: "section", value: "OPERATING_SYSTEM"))
         }
         queryItems += [

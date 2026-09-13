@@ -178,8 +178,8 @@ nonisolated struct FilterOptions {
     var servers: [Option] = []
     var prestages: [Option] = []
     var sites: [Option] = []
-    /// Installed OS versions, which unlike coverage or update state arrive
-    /// with the lookup and so are present for every row.
+    /// Installed OS versions. Unlike coverage or update state, these come
+    /// with the lookup rather than per device, so they can be filtered on.
     var osVersions: [Option] = []
     /// Whether any device has a record but no value, so None is worth offering.
     var serverNone = 0
@@ -230,9 +230,8 @@ nonisolated struct FilterOptions {
                 } else {
                     siteNone += 1
                 }
-                // Grouped by version alone rather than by what the row shows,
-                // so a Mac and an iPad on the same release fall together
-                // whichever product reported them.
+                // Grouped by version rather than by the displayed string, so
+                // a Mac and an iPad on the same release fall together.
                 if let version = jamf.osVersion, !version.isEmpty {
                     osCounts[version] = (version, (osCounts[version]?.count ?? 0) + 1)
                 } else {
@@ -247,8 +246,8 @@ nonisolated struct FilterOptions {
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
         servers = sorted(serverCounts)
-        // localizedStandardCompare orders numerically, so 26.10 follows 26.9
-        // rather than preceding it.
+        // localizedStandardCompare compares numerically, so 26.10 follows
+        // 26.9 rather than preceding it.
         osVersions = sorted(osCounts)
         prestages = sorted(prestageCounts)
         sites = sorted(siteCounts)
@@ -283,12 +282,10 @@ nonisolated struct FilterOptions {
 }
 
 extension JamfInfo {
-    /// The installed OS as the connected product reports it.
-    ///
-    /// Jamf Pro gives a version and build; Jamf School names the OS instead,
-    /// having no build. Each is shown in its most informative form rather
-    /// than trimmed to a common shape that would discard what one of them
-    /// knows.
+    /// The installed OS as the connected product reports it: a version and
+    /// build from Jamf Pro, or a named OS and version from Jamf School, which
+    /// reports no build. Each keeps what its product knows rather than being
+    /// trimmed to a common shape.
     var osDisplay: String? {
         guard let osVersion, !osVersion.isEmpty else { return nil }
         if let osBuild, !osBuild.isEmpty { return "\(osVersion) (\(osBuild))" }
