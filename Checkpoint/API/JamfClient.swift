@@ -591,13 +591,18 @@ struct JamfDDMStatus: Sendable {
     ///
     /// The status report gives identifiers and verdicts but not payloads, so
     /// the enforced version has to be fetched. Rejected ones come first
-    /// because they matter most, then plain configurations, then blueprint
-    /// components; the list is capped because a device can hold two dozen and
-    /// only one of them is a software update declaration.
+    /// because they matter most; the list is capped because a device can hold
+    /// two dozen and only one of them enforces software updates.
+    ///
+    /// Blueprint components are left out. Jamf Pro answers `500` with an
+    /// empty error list for every `Blueprint_…` identifier, so asking costs a
+    /// request per declaration and returns nothing. A blueprint-driven
+    /// enforcement that the device has *rejected* is still reported, since
+    /// that comes from the status report rather than from this lookup.
     func declarationsWorthResolving(limit: Int = 8) -> [JamfDeclaration] {
-        let ordered = invalidDeclarations
-            + declarations.filter { $0.validity != .invalid && $0.blueprintID == nil }
-            + declarations.filter { $0.validity != .invalid && $0.blueprintID != nil && $0.active }
+        let resolvable = declarations.filter { $0.blueprintID == nil }
+        let ordered = resolvable.filter { $0.validity == .invalid }
+            + resolvable.filter { $0.validity != .invalid }
         var seen = Set<String>()
         return ordered.filter { seen.insert($0.identifier).inserted }.prefix(limit).map { $0 }
     }
