@@ -25,6 +25,7 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | Model, order number, purchase source | MDM profile expiration | Managed and supervised state |
 | | FileVault and passcode state | Passcode state |
 | | Software update state, as the device reports it | |
+| | Declaration status and enforced update target | |
 
 Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, record deletion, and MDM commands. See [Features](docs/features.md).
 
@@ -36,7 +37,7 @@ Apple School Manager with Jamf School. Columns and actions the connected product
 
 ## Documentation
 
-- **[Features](docs/features.md)** — actions, MDM commands, group and order lookups, filtering, migration, recovery secrets, activity log
+- **[Features](docs/features.md)** — actions, MDM commands, lookups, filtering, migration, software updates and declarations, recovery secrets, activity log
 - **[Permissions](docs/permissions.md)** — the Apple role, the Jamf Pro privileges and the Jamf School API-key methods each feature needs
 - **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through Jamf's gateway, and the three commands it cannot carry
 

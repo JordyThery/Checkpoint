@@ -99,21 +99,9 @@ Without **View Local Admin Password**, the Managed Local Administrator Accounts 
 
 Reading the rotation interval, which the confirmation quotes before a password is shown, additionally needs **Read User-Initiated Enrollment** and **Update Local Admin Password Settings** — Jamf Pro guards that setting with an update privilege even for reading it. Without them the confirmation says only that a rotation follows, and the password is still shown.
 
-Software update state comes from the device's own declarative status report and so needs no privilege beyond **Read Computers** and **Read Mobile Devices**. Apple has moved software updates to declarative management, and Jamf Pro's managed software update plans and per-product statuses are both deprecated, so neither is used.
+Software update state, declaration status and the enforced update target all come from the device's declarative status report and the declaration behind it. None needs a privilege beyond **Read Computers** and **Read Mobile Devices**, so an ordinary lookup already covers them. Apple has moved software updates to declarative management, and Jamf Pro's update plans and per-product statuses are both deprecated, so neither is used.
 
-A device that has sent no declarative status report reads "Not reported".
-
-Alongside it, Checkpoint shows what the device made of the declarations sent to it, from the same request and needing no further privilege. This is the device's verdict rather than the server's intent, and the two can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A software update declaration the device has rejected means nothing is enforcing updates on it, however healthy the blueprint looks — and the device's own reason is shown verbatim, because it names the version at fault.
-
-Declarations are counted by outcome — active, invalid, and held but not applied — since a device can carry two dozen and have one in effect, and reporting only the active count would read as healthy.
-
-The enforced target is read back from the declaration itself, since the status report names a device's declarations without saying what they contain. That needs no further privilege either: the declaration endpoint takes the same **Read Computers** and **Read Mobile Devices** as the lookup.
-
-The target is compared against the installed OS, so an enforcement the device has already met reads as satisfied rather than as a missed deadline, and one that would cross to another major release is marked as an upgrade. The installed version comes from the inventory section of the lookup's own request, so it costs nothing extra.
-
-One limit: Jamf Pro will not serve a declaration whose identifier comes from a blueprint, answering `500` for those, so the target cannot be read when a blueprint is what enforces the update. The enforced deadline still appears under Software Update, since Apple sends that only while an update is enforced, and a blueprint-driven declaration the device has rejected is still reported — that comes from the status report rather than from reading the declaration.
-
-What the row shows is driven by `softwareupdate.install-state`, which Apple defines as the one value that says what the device is doing: `none` means nothing is pending and the last update succeeded. The version, deadline and failure that accompany it are kept by the report long after they stop being true — a Mac that installed an update months ago still carries the version it was offered and the deadline it was given — so they are shown only while an update is actually outstanding. A failure the report still remembers is shown as history, with the date it happened, rather than as a current problem. Beta enrolment is reported separately and is not subject to that staleness — Apple requires the key on every report — so it is stated either way, naming the programme or saying the device is not enrolled.
+What each value means, and which of them the report keeps after they stop being true, is described in [Features](features.md#software-updates-and-declarations).
 
 FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.
 

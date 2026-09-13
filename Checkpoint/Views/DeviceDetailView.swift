@@ -656,15 +656,11 @@ struct DeviceDetailView: View {
         }
     }
 
-    /// What the device last reported about software updates through
-    /// declarative management.
+    /// What the device last reported about software updates.
     ///
-    /// Only the version and deadline of an update that is actually outstanding
-    /// are shown. The report keeps the last version it offered and the
-    /// deadline that came with it long after the device has installed them, so
-    /// showing those unconditionally reported an update as pending on a Mac
-    /// that was already up to date. A failure the report still remembers is
-    /// shown as history rather than as a problem, for the same reason.
+    /// The version and deadline appear only while an update is outstanding,
+    /// and a failure the report still remembers appears as history: the
+    /// report keeps all three long after they stop being true.
     @ViewBuilder
     private func softwareUpdateRow(_ update: JamfSoftwareUpdateStatus?) -> some View {
         LabeledContent("Software Update") {
@@ -748,11 +744,11 @@ struct DeviceDetailView: View {
     /// What the device made of the declarations sent to it, and when it last
     /// said so.
     ///
-    /// Worth its own rows because the server's view and the device's can
-    /// disagree completely: Jamf Pro reports a blueprint as deployed once it
-    /// has handed the declaration over, while the device decides whether it
-    /// can be applied. A rejected software update declaration means nothing is
-    /// enforcing updates, however healthy the blueprint looks.
+    /// Its own rows because the server's view and the device's can disagree:
+    /// Jamf Pro reports a blueprint as deployed once it has handed the
+    /// declaration over, while the device decides whether it can be applied.
+    /// A rejected software update declaration means nothing is enforcing
+    /// updates, however healthy the blueprint looks.
     @ViewBuilder
     private var declarationRows: some View {
         if let ddm, !ddm.declarations.isEmpty {

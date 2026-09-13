@@ -161,35 +161,26 @@ struct JamfLocalAdminAccount: Sendable, Identifiable, Hashable {
     }
 }
 
-/// A device's software update state, as the device itself last reported it
-/// through declarative device management.
+/// A device's software update state, as it last reported it through
+/// declarative device management. Jamf Pro's update plans and per-product
+/// statuses are deprecated and not used.
 ///
-/// Read from the device's declarative status report rather than from Jamf
-/// Pro's managed software update plans or statuses. Software updates are
-/// declarative now; the plan is Jamf Pro's orchestration record, while this
-/// is what the device says about itself.
+/// **`install-state` is the state; everything beside it is detail or
+/// history.** Apple defines it as the one scalar saying what the device is
+/// doing: `none` means nothing is pending and the last update succeeded,
+/// while `waiting`, `downloading`, `prepared`, `installing` and `failed` each
+/// mean one is in flight.
 ///
-/// **`install-state` is the state; everything else is detail or history.**
+/// `pending-version` and `failure-reason` are dictionaries in Apple's schema,
+/// which Jamf flattens into dotted keys, so each arrives with a null value of
+/// its own. They are containers rather than signals: read as "nothing is
+/// pending", they would report that forever.
 ///
-/// Apple defines `softwareupdate.install-state` as the one scalar that says
-/// what the device is doing: `none` means "there's no software update pending,
-/// and any previous software update succeeded", and the other values —
-/// `waiting`, `downloading`, `prepared`, `installing`, `failed` — each mean one
-/// is in flight. It is also the key Jamf refreshes most often.
-///
-/// The other two are dictionaries in Apple's schema, which Jamf flattens into
-/// dotted keys. `softwareupdate.pending-version` and
-/// `softwareupdate.failure-reason` therefore always arrive with a null value
-/// of their own — they are containers, not signals, and reading them as
-/// "nothing is pending" would report that forever.
-///
-/// Their sub-keys are real but not self-describing. Apple clears `os-version`
-/// and `build-version` to empty strings once nothing is pending, and sets
-/// `failure-reason.count` to zero, but Jamf keeps the last non-empty value it
-/// saw. So a Mac that updated successfully months ago still carries the
-/// version it was offered, the deadline it was given and a failure count from
-/// a since-resolved attempt. Those are history, and `install-state` is what
-/// says whether they are also the present.
+/// Their sub-keys are real but not self-describing. Apple empties
+/// `os-version` and `build-version` and zeroes `failure-reason.count` once
+/// nothing is pending, but Jamf keeps the last non-empty value it saw, so a
+/// Mac that updated months ago still carries the version it was offered, the
+/// deadline it was given, and a count from a resolved attempt.
 struct JamfSoftwareUpdateStatus: Sendable {
     /// `softwareupdate.install-state`: none, waiting, downloading, prepared,
     /// installing or failed.
@@ -406,22 +397,19 @@ struct JamfDeclaration: Sendable, Identifiable {
 /// Parses the declaration status value, which is not JSON.
 ///
 /// Jamf flattens Apple's `management.declarations` dictionary and renders each
-/// entry with a Java-style `toString`, giving unquoted keys and values, nested
-/// `{}` and `[]`, and free-text error messages containing brackets, colons and
-/// quotation marks:
+/// entry with a Java-style `toString`: unquoted keys and values, nested `{}`
+/// and `[]`, and free-text errors containing brackets, colons and commas.
 ///
 /// ```
 /// {active=true, identifier=…, valid=valid, server-token=…},{reasons=[{details=
 /// {Error=[kSUCoreErrorDDMInvalidDeclarationFailure] Invalid declaration: target
-/// OS version (15.7.3) is older than current version (15.7.9)}, description=
-/// Configuration cannot be applied, code=Error.ConfigurationCannotBeApplied}],
-/// active=true, identifier=…, valid=invalid, …}
+/// OS version (15.7.3) is older than current version (15.7.9)}, …}], …}
 /// ```
 ///
-/// Nothing here is documented, so every step degrades rather than fails: a
-/// record that will not parse contributes what can be salvaged, and an
-/// unreadable value yields an empty list instead of throwing. A missing
-/// warning is bad; losing the software update row to a parse error is worse.
+/// None of it is documented, so every step degrades rather than fails: an
+/// unparsable record contributes what can be salvaged, and an unreadable
+/// value yields an empty list. A missing warning is bad; losing the software
+/// update row to a parse error is worse.
 nonisolated enum JamfDeclarationParsing {
     static func declarations(from value: String?) -> [JamfDeclaration] {
         guard let value, !value.isEmpty else { return [] }

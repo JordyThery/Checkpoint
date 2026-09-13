@@ -58,11 +58,15 @@ Deadlines cannot be more than 90 days out, and shortening a deadline, or setting
 
 ## Software updates and declarations
 
-Jamf Pro only. Software update state comes from the device's own declarative status report rather than from Jamf Pro's deprecated update plans, and `install-state` is what says whether anything is pending. The version, deadline and failure beside it are kept by the report long after they stop being true, so they are shown only while an update is outstanding.
+Jamf Pro only; Jamf School reports none of this.
 
-Alongside it, Checkpoint shows what the device made of the declarations sent to it. This is the device's verdict rather than the server's intent, and they can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A rejected software update declaration means nothing is enforcing updates, however healthy the blueprint looks — and the device's reason is shown as written, because it names the version at fault.
+**Software update state** comes from the device's own declarative status report. `install-state` is what says whether anything is pending: `none` means nothing is, and that the last update succeeded. The version, deadline and failure beside it are kept by the report long after they stop being true — a Mac that updated months ago still carries the version it was offered — so they appear only while an update is outstanding, and a remembered failure is shown as history with its date. Beta enrolment is exempt, since Apple requires that key on every report, so it is stated either way.
 
-The enforced target and its install-by date are read back from the declaration, since the status report names a device's declarations without saying what they contain. On a Platform API connection the blueprint is named and linked; a direct connection shows its identifier, blueprints having no endpoint on a Jamf Pro instance.
+**Declaration status** is the device's verdict rather than the server's intent, and the two can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A rejected software update declaration means nothing is enforcing updates, however healthy the blueprint looks, and the device's reason is shown as written because it names the version at fault. Declarations are counted by outcome — active, invalid, and held but not applied — since a device can carry two dozen with one in effect.
+
+**The enforced target** is read back from the declaration, which the status report identifies without saying what it contains, then compared against the installed OS. An enforcement the device has already met reads as satisfied rather than as a missed deadline; one still owed keeps its deadline and names what is installed instead. A target in another major release is marked as an upgrade.
+
+Two limits. Jamf Pro will not serve a declaration whose identifier comes from a blueprint, so the target cannot be read when a blueprint is what enforces the update — the deadline still appears under Software Update, and a rejected declaration is still reported, both coming from the status report. And blueprints have no endpoint on a Jamf Pro instance, so only a [Platform API](platform-api.md) connection can name one; a direct connection shows its identifier.
 
 ## Recovery secrets
 
