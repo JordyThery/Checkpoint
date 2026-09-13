@@ -519,6 +519,9 @@ struct DeviceDetailView: View {
     private func jamfDetails(_ info: JamfInfo) -> some View {
         let capabilities = model.jamfCapabilities
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
+        if let os = info.osDisplay {
+            LabeledContent("OS Version", value: os)
+        }
         if capabilities.contains(.sites), model.sites.isEmpty {
             LabeledContent("Site", value: info.siteName ?? "None")
         }

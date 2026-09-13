@@ -47,10 +47,13 @@ struct JamfInfo: Sendable {
     var encryption: JamfDiskEncryption?
     /// Passcode and encryption state (mobile devices).
     var security: JamfMobileSecurity?
-    /// The installed OS, from inventory. Needed to tell an enforced update
+    /// The installed OS, from inventory. Also what tells an enforced update
     /// the device already has from one it still owes.
     var osVersion: String?
+    /// Jamf Pro only; Jamf School reports no build.
     var osBuild: String?
+    /// Jamf School only, which names the OS rather than giving its build.
+    var osName: String?
     var lastEnrolledDate: String?
     var reportDate: String?
     /// Last check-in (Jamf binary; computers only).
@@ -1634,6 +1637,8 @@ final class LookupModel {
             kind: device.kind,
             udid: device.udid,
             name: device.name,
+            osVersion: device.osVersion?.isEmpty == false ? device.osVersion : nil,
+            osName: device.osPrefix?.isEmpty == false ? device.osPrefix : nil,
             lastContact: DateFormatting.isoFromInstanceLocal(
                 device.lastCheckin,
                 timeZone: context.schoolTimeZone

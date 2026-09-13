@@ -17,6 +17,7 @@ nonisolated struct DeviceFilters: Equatable {
     var mdmServer: Assignment = .any
     var prestage: Assignment = .any
     var site: Assignment = .any
+    var osVersion: Assignment = .any
     /// Applied together: a device must satisfy all of them.
     var issues: Set<Issue> = []
 
@@ -30,6 +31,7 @@ nonisolated struct DeviceFilters: Equatable {
         if mdmServer != .any { count += 1 }
         if prestage != .any { count += 1 }
         if site != .any { count += 1 }
+        if osVersion != .any { count += 1 }
         return count
     }
 
@@ -39,6 +41,7 @@ nonisolated struct DeviceFilters: Equatable {
             && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
             && prestage.matches(report.jamf.value?.prestageID, hasRecord: report.jamf.value != nil)
             && site.matches(report.jamf.value?.groupingID, hasRecord: report.jamf.value != nil)
+            && osVersion.matches(report.jamf.value?.osVersion, hasRecord: report.jamf.value != nil)
             && issues.allSatisfy { $0.matches(report) }
     }
 
@@ -175,10 +178,14 @@ nonisolated struct FilterOptions {
     var servers: [Option] = []
     var prestages: [Option] = []
     var sites: [Option] = []
+    /// Installed OS versions, which unlike coverage or update state arrive
+    /// with the lookup and so are present for every row.
+    var osVersions: [Option] = []
     /// Whether any device has a record but no value, so None is worth offering.
     var serverNone = 0
     var prestageNone = 0
     var siteNone = 0
+    var osVersionNone = 0
     var statuses: [(status: DeviceFilters.ABMStatus, count: Int)] = []
     var issues: [(issue: DeviceFilters.Issue, count: Int)] = []
     var hasComputers = false
@@ -188,11 +195,13 @@ nonisolated struct FilterOptions {
     var showServers: Bool { !servers.isEmpty || serverNone > 0 }
     var showPrestages: Bool { !prestages.isEmpty || prestageNone > 0 }
     var showSites: Bool { !sites.isEmpty || siteNone > 0 }
+    var showOSVersions: Bool { !osVersions.isEmpty || osVersionNone > 0 }
 
     init(reports: [DeviceReport], capabilities: JamfCapabilities = JamfFlavor.pro.capabilities) {
         var serverCounts: [String: (name: String, count: Int)] = [:]
         var prestageCounts: [String: (name: String, count: Int)] = [:]
         var siteCounts: [String: (name: String, count: Int)] = [:]
+        var osCounts: [String: (name: String, count: Int)] = [:]
 
         for report in reports {
             switch report.deviceKind {
@@ -221,6 +230,14 @@ nonisolated struct FilterOptions {
                 } else {
                     siteNone += 1
                 }
+                // Grouped by version alone rather than by what the row shows,
+                // so a Mac and an iPad on the same release fall together
+                // whichever product reported them.
+                if let version = jamf.osVersion, !version.isEmpty {
+                    osCounts[version] = (version, (osCounts[version]?.count ?? 0) + 1)
+                } else {
+                    osVersionNone += 1
+                }
             }
         }
 
@@ -230,6 +247,9 @@ nonisolated struct FilterOptions {
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
         servers = sorted(serverCounts)
+        // localizedStandardCompare orders numerically, so 26.10 follows 26.9
+        // rather than preceding it.
+        osVersions = sorted(osCounts)
         prestages = sorted(prestageCounts)
         sites = sorted(siteCounts)
 
@@ -263,6 +283,19 @@ nonisolated struct FilterOptions {
 }
 
 extension JamfInfo {
+    /// The installed OS as the connected product reports it.
+    ///
+    /// Jamf Pro gives a version and build; Jamf School names the OS instead,
+    /// having no build. Each is shown in its most informative form rather
+    /// than trimmed to a common shape that would discard what one of them
+    /// knows.
+    var osDisplay: String? {
+        guard let osVersion, !osVersion.isEmpty else { return nil }
+        if let osBuild, !osBuild.isEmpty { return "\(osVersion) (\(osBuild))" }
+        if let osName, !osName.isEmpty { return "\(osName) \(osVersion)" }
+        return osVersion
+    }
+
     /// Site ID with Jamf Pro's "no site" sentinel treated as absent, so the
     /// filter can offer None alongside the real sites.
     var normalizedSiteID: String? {

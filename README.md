@@ -24,6 +24,7 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | Warranty and AppleCare coverage | Enrollment, inventory and contact dates | Last check-in |
 | Model, order number, purchase source | MDM profile expiration | Managed and supervised state |
 | | FileVault and passcode state | Passcode state |
+| | Installed OS version and build | Installed OS version |
 | | Software update state, as the device reports it | |
 | | Declaration status and enforced update target | |
 

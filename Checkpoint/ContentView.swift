@@ -292,6 +292,10 @@ struct ContentView: View {
                 assignmentPicker(model.jamfFlavor.enrollmentProfileLabel, selection: $filters.prestage,
                                  options: options.prestages, noneCount: options.prestageNone)
             }
+            if options.showOSVersions {
+                assignmentPicker("OS Version", selection: $filters.osVersion,
+                                 options: options.osVersions, noneCount: options.osVersionNone)
+            }
             if options.showSites {
                 assignmentPicker(
                     model.jamfCapabilities.contains(.locations) ? "Location" : "Site",
@@ -370,6 +374,9 @@ struct ContentView: View {
                 }
                 TableColumn("\(model.jamfFlavor.label) Device Name") { (report: DeviceReport) in
                     JamfStatusCell(state: report.jamf)
+                }
+                TableColumn("OS Version") { (report: DeviceReport) in
+                    FetchText(state: report.jamf) { $0.osDisplay ?? "—" }
                 }
                 TableColumn(model.jamfFlavor.enrollmentProfileLabel) { (report: DeviceReport) in
                     FetchText(state: report.jamf) { $0.prestageName ?? "None" }
