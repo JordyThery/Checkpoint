@@ -101,7 +101,9 @@ Reading the rotation interval, which the confirmation quotes before a password i
 
 Software update state comes from the device's own declarative status report and so needs no privilege beyond **Read Computers** and **Read Mobile Devices**. Apple has moved software updates to declarative management, and Jamf Pro's managed software update plans and per-product statuses are both deprecated, so neither is used.
 
-A device that has sent no declarative status report reads "Not reported". The report also keeps a pending version and its deadline after they have lapsed, which is why Checkpoint shows the time the device reported them.
+A device that has sent no declarative status report reads "Not reported".
+
+What the row shows is driven by `softwareupdate.install-state`, which Apple defines as the one value that says what the device is doing: `none` means nothing is pending and the last update succeeded. The version, deadline and failure that accompany it are kept by the report long after they stop being true — a Mac that installed an update months ago still carries the version it was offered and the deadline it was given — so they are shown only while an update is actually outstanding. A failure the report still remembers is shown as history, with the date it happened, rather than as a current problem.
 
 FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.
 

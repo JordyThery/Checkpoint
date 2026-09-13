@@ -646,39 +646,56 @@ struct DeviceDetailView: View {
     }
 
     /// What the device last reported about software updates through
-    /// declarative management. Reported times are shown alongside the values,
-    /// because the report keeps a pending version and its deadline after they
-    /// have lapsed.
+    /// declarative management.
+    ///
+    /// Only the version and deadline of an update that is actually outstanding
+    /// are shown. The report keeps the last version it offered and the
+    /// deadline that came with it long after the device has installed them, so
+    /// showing those unconditionally reported an update as pending on a Mac
+    /// that was already up to date. A failure the report still remembers is
+    /// shown as history rather than as a problem, for the same reason.
     @ViewBuilder
     private func softwareUpdateRow(_ update: JamfSoftwareUpdateStatus?) -> some View {
         LabeledContent("Software Update") {
             if let update {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(update.displayState)
-                        .foregroundStyle(update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .foregroundStyle(updateStateTint(update))
                     if let version = update.pendingVersion {
                         Text(version).font(.caption).foregroundStyle(.secondary)
                     }
-                    if let deadline = update.deadline {
+                    if update.hasPendingUpdate, let deadline = update.deadline {
                         let overdue = deadline < Date()
                         Text("\(overdue ? "Was due" : "Due") \(DateFormatting.short(deadline))")
                             .font(.caption)
                             .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                     }
-                    if update.hasPendingUpdate, let reported = update.pendingReportedAt {
+                    if update.hasPendingUpdate, update.isEnforced {
+                        Text("Enforced by a declaration")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if update.hasPendingUpdate, let reported = update.offerReportedAt {
                         Text("Reported \(DateFormatting.short(reported))")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
-                    if update.hasFailure {
-                        Text(update.failureReason ?? "Software update failed.")
+                    if update.hasCurrentFailure {
+                        Text(update.lastFailureReason ?? "Software update failed.")
                             .font(.caption)
                             .foregroundStyle(.red)
-                        if let at = update.failureAt {
+                        if let at = update.lastFailureAt {
                             Text("Failed \(DateFormatting.short(at))")
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
                         }
+                    } else if update.hasPastFailure, let at = update.lastFailureAt {
+                        // Deliberately tertiary and past tense: this is a
+                        // record of an attempt that is no longer current.
+                        Text("Last failed \(DateFormatting.short(at))")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .help(update.lastFailureReason ?? "Software update failed.")
                     }
                     if let beta = update.betaEnrollment {
                         Text(beta).font(.caption).foregroundStyle(.secondary)
@@ -690,6 +707,11 @@ struct DeviceDetailView: View {
                     .help("The device has not sent a declarative status report, so it is not managed declaratively or has not reported yet.")
             }
         }
+    }
+
+    private func updateStateTint(_ update: JamfSoftwareUpdateStatus) -> AnyShapeStyle {
+        if update.hasCurrentFailure { return AnyShapeStyle(.red) }
+        return update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
     @ViewBuilder

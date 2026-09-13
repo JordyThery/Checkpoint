@@ -163,57 +163,102 @@ struct JamfLocalAdminAccount: Sendable, Identifiable, Hashable {
 /// declarative now; the plan is Jamf Pro's orchestration record, while this
 /// is what the device says about itself.
 ///
-/// The report keeps sub-keys after the value above them clears, so a Mac can
-/// still carry a pending version and deadline from months ago. Each value
-/// therefore travels with the time the device reported it, and the failure
-/// block is gated on the current failure count rather than on the presence of
-/// a reason.
+/// **`install-state` is the state; everything else is detail or history.**
+///
+/// Apple defines `softwareupdate.install-state` as the one scalar that says
+/// what the device is doing: `none` means "there's no software update pending,
+/// and any previous software update succeeded", and the other values —
+/// `waiting`, `downloading`, `prepared`, `installing`, `failed` — each mean one
+/// is in flight. It is also the key Jamf refreshes most often.
+///
+/// The other two are dictionaries in Apple's schema, which Jamf flattens into
+/// dotted keys. `softwareupdate.pending-version` and
+/// `softwareupdate.failure-reason` therefore always arrive with a null value
+/// of their own — they are containers, not signals, and reading them as
+/// "nothing is pending" would report that forever.
+///
+/// Their sub-keys are real but not self-describing. Apple clears `os-version`
+/// and `build-version` to empty strings once nothing is pending, and sets
+/// `failure-reason.count` to zero, but Jamf keeps the last non-empty value it
+/// saw. So a Mac that updated successfully months ago still carries the
+/// version it was offered, the deadline it was given and a failure count from
+/// a since-resolved attempt. Those are history, and `install-state` is what
+/// says whether they are also the present.
 struct JamfSoftwareUpdateStatus: Sendable {
-    /// `softwareupdate.install-state`, e.g. none, downloading, installing.
+    /// `softwareupdate.install-state`: none, waiting, downloading, prepared,
+    /// installing or failed.
     let installState: String?
-    let pendingOSVersion: String?
-    let pendingBuildVersion: String?
+    /// `softwareupdate.install-reason.reason`. An array in Apple's schema,
+    /// flattened by Jamf. `declaration` means a managed declaration forced the
+    /// update; the rest say how the user reached it.
+    let installReason: String?
+    /// `.os-version` and `.build-version`: the version the device was last
+    /// offered, which it may since have installed.
+    let offeredOSVersion: String?
+    let offeredBuildVersion: String?
+    /// `.target-local-date-time`. Apple sends this only while an update is
+    /// being enforced, so its presence is itself the signal.
     let deadline: Date?
-    /// When the device last reported the pending version, so a stale value is
-    /// visible as stale rather than presented as current.
-    let pendingReportedAt: Date?
+    /// When the device last reported that offer.
+    let offerReportedAt: Date?
     let failureCount: Int?
-    let failureReason: String?
-    let failureAt: Date?
+    let lastFailureReason: String?
+    let lastFailureAt: Date?
     /// Non-empty when the Mac is enrolled in a beta programme.
     let betaEnrollment: String?
+    /// Whether the device reported any software update status at all.
+    let isReported: Bool
 
-    /// Whether the device is doing something about an update right now.
-    var isInstalling: Bool {
-        guard let state = installState?.lowercased() else { return false }
-        return !state.isEmpty && state != "none"
-    }
+    private var state: String { (installState ?? "").lowercased() }
 
+    /// Anything other than `none` means an update is outstanding, including
+    /// one that is currently failing.
     var hasPendingUpdate: Bool {
-        !(pendingOSVersion ?? "").isEmpty
+        !state.isEmpty && state != "none"
     }
 
-    /// A current failure, as opposed to a reason left behind by an old one.
-    var hasFailure: Bool {
-        (failureCount ?? 0) > 0
+    /// The device is actively working on the update rather than stalled on it.
+    var isInstalling: Bool {
+        hasPendingUpdate && state != "failed"
     }
 
-    /// Nothing was reported at all: the device is not managed declaratively,
-    /// or has not yet sent a status report.
-    var isReported: Bool {
-        installState != nil || hasPendingUpdate || hasFailure || betaEnrollment != nil
+    /// The device is failing to install the update it has now.
+    var hasCurrentFailure: Bool {
+        state == "failed"
     }
 
+    /// A failure the report still remembers from an attempt that is no longer
+    /// current. Worth showing, but as history rather than a problem.
+    var hasPastFailure: Bool {
+        !hasCurrentFailure && (failureCount ?? 0) > 0 && lastFailureAt != nil
+    }
+
+    /// Whether the update is being enforced rather than left to the user.
+    /// Apple signals this two ways and either is enough.
+    var isEnforced: Bool {
+        deadline != nil || (installReason ?? "").lowercased().contains("declaration")
+    }
+
+    /// Apple's states, in prose. Unknown values are sentence-cased rather than
+    /// dropped, so a state added later still shows something truthful.
     var displayState: String {
-        if isInstalling { return JamfDisplay.sentenceCase(installState ?? "") }
-        if hasPendingUpdate { return "Update pending" }
-        return "No pending update"
+        switch state {
+        case "", "none": "No pending update"
+        case "waiting": "Waiting to start"
+        case "downloading": "Downloading"
+        case "prepared": "Ready to install"
+        case "installing": "Installing"
+        case "failed": "Update failed"
+        default: JamfDisplay.sentenceCase(state)
+        }
     }
 
-    /// Target version with its build, when the device reported one.
+    /// The pending version with its build. Nil unless something is actually
+    /// pending, so a version the device has already installed is never shown
+    /// as one still due.
     var pendingVersion: String? {
-        guard hasPendingUpdate, let version = pendingOSVersion else { return nil }
-        guard let build = pendingBuildVersion, !build.isEmpty else { return version }
+        guard hasPendingUpdate, let version = offeredOSVersion, !version.isEmpty else { return nil }
+        guard let build = offeredBuildVersion, !build.isEmpty else { return version }
         return "\(version) (\(build))"
     }
 }
@@ -1129,20 +1174,32 @@ actor JamfClient {
             return value
         }
 
-        let result = JamfSoftwareUpdateStatus(
+        // A device that has never reported declaratively carries none of these
+        // keys at all, which is different from reporting that it has nothing
+        // to do.
+        let reported = values.keys.contains { $0.hasPrefix("softwareupdate.") }
+        guard reported else { return nil }
+
+        return JamfSoftwareUpdateStatus(
+            // The one scalar that says what the device is doing. The two
+            // dictionaries are deliberately not read as signals: Jamf flattens
+            // them, so softwareupdate.pending-version and
+            // softwareupdate.failure-reason always arrive null whatever the
+            // device reported.
             installState: text("softwareupdate.install-state"),
-            pendingOSVersion: text("softwareupdate.pending-version.os-version"),
-            pendingBuildVersion: text("softwareupdate.pending-version.build-version"),
+            installReason: text("softwareupdate.install-reason.reason"),
+            offeredOSVersion: text("softwareupdate.pending-version.os-version"),
+            offeredBuildVersion: text("softwareupdate.pending-version.build-version"),
             deadline: text("softwareupdate.pending-version.target-local-date-time")
                 .flatMap(DateFormatting.parseStatusItemDate),
-            pendingReportedAt: values["softwareupdate.pending-version.os-version"]?.reportedAt,
+            offerReportedAt: values["softwareupdate.pending-version.os-version"]?.reportedAt,
             failureCount: text("softwareupdate.failure-reason.count").flatMap(Int.init),
-            failureReason: text("softwareupdate.failure-reason.reason"),
-            failureAt: text("softwareupdate.failure-reason.timestamp")
+            lastFailureReason: text("softwareupdate.failure-reason.reason"),
+            lastFailureAt: text("softwareupdate.failure-reason.timestamp")
                 .flatMap(DateFormatting.parseStatusItemDate),
-            betaEnrollment: text("softwareupdate.beta-enrollment")
+            betaEnrollment: text("softwareupdate.beta-enrollment"),
+            isReported: true
         )
-        return result.isReported ? result : nil
     }
 
     // MARK: Sites
