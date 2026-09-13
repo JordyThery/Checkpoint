@@ -204,8 +204,12 @@ struct JamfSoftwareUpdateStatus: Sendable {
     let failureCount: Int?
     let lastFailureReason: String?
     let lastFailureAt: Date?
-    /// Non-empty when the Mac is enrolled in a beta programme.
+    /// The beta programme the device is enrolled in. Apple sends an empty
+    /// string when there is none, so nil here means either.
     let betaEnrollment: String?
+    /// Whether the device reported its beta enrolment at all. Separates "not
+    /// enrolled", which is worth stating, from "never said", which is not.
+    let betaReported: Bool
     /// Whether the device reported any software update status at all.
     let isReported: Bool
 
@@ -251,6 +255,20 @@ struct JamfSoftwareUpdateStatus: Sendable {
         case "failed": "Update failed"
         default: JamfDisplay.sentenceCase(state)
         }
+    }
+
+    /// The beta programme, or that there is none. Nil only when the device
+    /// has not reported either way.
+    ///
+    /// Unlike the version and the deadline, this is not stale: Apple requires
+    /// the key on every report, so what it last said is what is true now.
+    var betaDisplay: String? {
+        if let betaEnrollment, !betaEnrollment.isEmpty { return betaEnrollment }
+        return betaReported ? "Not enrolled" : nil
+    }
+
+    var isInBetaProgram: Bool {
+        !(betaEnrollment ?? "").isEmpty
     }
 
     /// The pending version with its build. Nil unless something is actually
@@ -1198,6 +1216,10 @@ actor JamfClient {
             lastFailureAt: text("softwareupdate.failure-reason.timestamp")
                 .flatMap(DateFormatting.parseStatusItemDate),
             betaEnrollment: text("softwareupdate.beta-enrollment"),
+            // Presence, not value: Apple sends an empty string for a device
+            // that is in no beta programme, and text() cannot tell that from
+            // a key the device never sent.
+            betaReported: values.keys.contains("softwareupdate.beta-enrollment"),
             isReported: true
         )
     }

@@ -562,6 +562,7 @@ struct DeviceDetailView: View {
             // plan" is itself the answer, and leaving the row out looked like
             // a feature that did not work.
             softwareUpdateRow(softwareUpdate)
+            betaProgramRow(softwareUpdate)
         }
     }
 
@@ -697,14 +698,28 @@ struct DeviceDetailView: View {
                             .foregroundStyle(.tertiary)
                             .help(update.lastFailureReason ?? "Software update failed.")
                     }
-                    if let beta = update.betaEnrollment {
-                        Text(beta).font(.caption).foregroundStyle(.secondary)
-                    }
                 }
             } else {
                 Text("Not reported")
                     .foregroundStyle(.secondary)
                     .help("The device has not sent a declarative status report, so it is not managed declaratively or has not reported yet.")
+            }
+        }
+    }
+
+    /// Whether the device is on a beta release, stated either way.
+    ///
+    /// Its own row rather than a line under Software Update: it is a standing
+    /// fact about the device rather than part of a pending update, and "not
+    /// enrolled" is worth saying rather than leaving to be inferred from an
+    /// absent line.
+    @ViewBuilder
+    private func betaProgramRow(_ update: JamfSoftwareUpdateStatus?) -> some View {
+        if let update, let beta = update.betaDisplay {
+            LabeledContent("Beta Program") {
+                Text(beta)
+                    .foregroundStyle(update.isInBetaProgram ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .multilineTextAlignment(.trailing)
             }
         }
     }
