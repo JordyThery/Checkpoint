@@ -284,6 +284,16 @@ nonisolated enum ActivityRedaction {
         "WiFiMAC", "bluetoothMAC",
     ]
 
+    /// Declarative status items that name the device.
+    ///
+    /// These carry the identifier as a value rather than under a telling key —
+    /// `{"key": "device.identifier.udid", "value": "…"}` — so matching key
+    /// names alone never sees them.
+    static let identifierStatusItems: Set<String> = [
+        "device.identifier.serial-number",
+        "device.identifier.udid",
+    ]
+
     static let placeholder = "••••••"
     static let maximumBodyLength = 20_000
 
@@ -331,6 +341,12 @@ nonisolated enum ActivityRedaction {
 
     private static func scrubbed(_ value: Any, identifiers: inout Set<String>) -> Any {
         if let dictionary = value as? [String: Any] {
+            // A status item names the device in its value, so it is matched on
+            // what the item is rather than on what the key is called.
+            if let name = dictionary["key"] as? String,
+               matches(name, identifierStatusItems) {
+                collect(dictionary["value"], into: &identifiers)
+            }
             var result: [String: Any] = [:]
             for (key, inner) in dictionary {
                 if matches(key, secretKeys) || matches(key, personalKeys) {
