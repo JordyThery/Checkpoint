@@ -103,6 +103,10 @@ Software update state comes from the device's own declarative status report and 
 
 A device that has sent no declarative status report reads "Not reported".
 
+Alongside it, Checkpoint shows what the device made of the declarations sent to it, from the same request and needing no further privilege. This is the device's verdict rather than the server's intent, and the two can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A software update declaration the device has rejected means nothing is enforcing updates on it, however healthy the blueprint looks — and the device's own reason is shown verbatim, because it names the version at fault.
+
+Declarations are counted by outcome — active, invalid, and held but not applied — since a device can carry two dozen and have one in effect, and reporting only the active count would read as healthy.
+
 What the row shows is driven by `softwareupdate.install-state`, which Apple defines as the one value that says what the device is doing: `none` means nothing is pending and the last update succeeded. The version, deadline and failure that accompany it are kept by the report long after they stop being true — a Mac that installed an update months ago still carries the version it was offered and the deadline it was given — so they are shown only while an update is actually outstanding. A failure the report still remembers is shown as history, with the date it happened, rather than as a current problem. Beta enrolment is reported separately and is not subject to that staleness — Apple requires the key on every report — so it is stated either way, naming the programme or saying the device is not enrolled.
 
 FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.

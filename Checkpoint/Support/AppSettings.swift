@@ -24,7 +24,7 @@ nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendab
     var capabilities: JamfCapabilities {
         switch self {
         case .pro: [.sites, .prestageScope, .enrollmentDates, .mdmProfileExpiry,
-                    .fileVault, .softwareUpdate, .recoverySecrets, .deviceLink]
+                    .fileVault, .softwareUpdate, .declarations, .recoverySecrets, .deviceLink]
         case .school: [.locations, .passcodeOnDemand]
         }
     }
@@ -80,6 +80,9 @@ nonisolated struct JamfCapabilities: OptionSet, Sendable {
     /// Links from a device to its record in the web interface. Jamf School
     /// publishes no URL for one.
     static let deviceLink = JamfCapabilities(rawValue: 1 << 10)
+    /// Declarative management status: which declarations a device has
+    /// processed, and whether it accepted them. Jamf School has no DDM.
+    static let declarations = JamfCapabilities(rawValue: 1 << 11)
 }
 
 nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {

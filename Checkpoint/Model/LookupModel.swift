@@ -911,12 +911,13 @@ final class LookupModel {
         return try? await school.deviceDetails(udid: udid)
     }
 
-    /// The device's software update state, as it last reported it through
-    /// declarative device management. Nil when it has reported nothing.
-    func softwareUpdateStatus(for report: DeviceReport) async -> JamfSoftwareUpdateStatus? {
+    /// What the device last reported about itself declaratively: its software
+    /// update state and the declarations it has processed. One request serves
+    /// both. Nil when it has reported nothing.
+    func ddmStatus(for report: DeviceReport) async -> JamfDDMStatus? {
         guard let info = report.jamf.value, let jamf = makeJamfClient(),
               let managementID = info.managementID, !managementID.isEmpty else { return nil }
-        return try? await jamf.softwareUpdateStatus(managementID: managementID)
+        return try? await jamf.ddmStatus(managementID: managementID)
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list

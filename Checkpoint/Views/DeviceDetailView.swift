@@ -31,7 +31,9 @@ struct DeviceDetailView: View {
     @State private var pin = ""
     @State private var localAdmins: [JamfLocalAdminAccount] = []
     @State private var rotationTime: TimeInterval?
-    @State private var softwareUpdate: JamfSoftwareUpdateStatus?
+    /// The device's declarative status report: software update state and the
+    /// declarations it has processed, from one request.
+    @State private var ddm: JamfDDMStatus?
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
     @State private var loadedCoverage: [AppleCareCoverage]?
@@ -561,8 +563,11 @@ struct DeviceDetailView: View {
             // Always shown for a device with a Jamf Pro record: "no update
             // plan" is itself the answer, and leaving the row out looked like
             // a feature that did not work.
-            softwareUpdateRow(softwareUpdate)
-            betaProgramRow(softwareUpdate)
+            softwareUpdateRow(ddm?.softwareUpdate)
+            betaProgramRow(ddm?.softwareUpdate)
+        }
+        if capabilities.contains(.declarations) {
+            declarationRows
         }
     }
 
@@ -729,6 +734,94 @@ struct DeviceDetailView: View {
         return update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
+    /// What the device made of the declarations sent to it, and when it last
+    /// said so.
+    ///
+    /// Worth its own rows because the server's view and the device's can
+    /// disagree completely: Jamf Pro reports a blueprint as deployed once it
+    /// has handed the declaration over, while the device decides whether it
+    /// can be applied. A rejected software update declaration means nothing is
+    /// enforcing updates, however healthy the blueprint looks.
+    @ViewBuilder
+    private var declarationRows: some View {
+        if let ddm, !ddm.declarations.isEmpty {
+            if let rejected = ddm.rejectedUpdateEnforcement {
+                LabeledContent("Update Enforcement") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Rejected by the device")
+                            .foregroundStyle(.red)
+                        // Apple's own words: they name the version that no
+                        // longer applies, which is the actionable part.
+                        ForEach(Array(rejected.reasons.prefix(2)), id: \.self) { reason in
+                            Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.trailing)
+                        }
+                        blueprintLink(for: rejected)
+                    }
+                }
+            }
+            LabeledContent("Declarations") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(declarationSummary(ddm))
+                        .foregroundStyle(ddm.invalidDeclarations.isEmpty && ddm.notAppliedDeclarations.isEmpty
+                                         ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                    // Ones already spelled out above are not repeated.
+                    ForEach(otherInvalidDeclarations(ddm)) { declaration in
+                        Text(declaration.reasons.first ?? declaration.identifier)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                            .lineLimit(2)
+                    }
+                }
+            }
+        }
+        if let reported = ddm?.reportedAt {
+            LabeledContent("Status Reported") {
+                // A report months old describes a device that has stopped
+                // talking, not one that is in the state shown above.
+                let stale = reported < Date().addingTimeInterval(-30 * 24 * 60 * 60)
+                Text(DateFormatting.short(reported))
+                    .foregroundStyle(stale ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                    .help(stale ? "The device has not sent a declarative status report in over a month, so everything above may be out of date." : "")
+            }
+        }
+    }
+
+    /// Counts every outcome, not just the good one. A device can hold two
+    /// dozen declarations with only one in effect, and reporting the active
+    /// count alone would read as healthy.
+    private func declarationSummary(_ ddm: JamfDDMStatus) -> String {
+        var parts = ["\(ddm.activeDeclarations.count) active"]
+        if !ddm.invalidDeclarations.isEmpty {
+            parts.append("\(ddm.invalidDeclarations.count) invalid")
+        }
+        if !ddm.notAppliedDeclarations.isEmpty {
+            parts.append("\(ddm.notAppliedDeclarations.count) not applied")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+    private func otherInvalidDeclarations(_ ddm: JamfDDMStatus) -> [JamfDeclaration] {
+        let named = ddm.rejectedUpdateEnforcement?.identifier
+        return ddm.invalidDeclarations.filter { $0.identifier != named }
+    }
+
+    /// Links a declaration back to the blueprint that produced it, when the
+    /// identifier names one and the connection can serve web links.
+    @ViewBuilder
+    private func blueprintLink(for declaration: JamfDeclaration) -> some View {
+        if let blueprint = declaration.blueprintID,
+           model.jamfCapabilities.contains(.deviceLink),
+           let base = model.selectedJamfServer?.normalizedBaseURL,
+           let url = URL(string: "\(base)/view/mfe/blueprints/\(blueprint)") {
+            Link("Open blueprint", destination: url)
+                .font(.caption)
+        }
+    }
+
     @ViewBuilder
     private func jamfActions(_ info: JamfInfo) -> some View {
         let capabilities = model.jamfCapabilities
@@ -819,7 +912,7 @@ struct DeviceDetailView: View {
     private func loadDeviceDetail() async {
         localAdmins = []
         rotationTime = nil
-        softwareUpdate = nil
+        ddm = nil
         loadedCoverage = nil
         schoolDetails = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
@@ -831,7 +924,7 @@ struct DeviceDetailView: View {
             schoolDetails = await model.jamfSchoolDetails(for: report)
             return
         }
-        softwareUpdate = await model.softwareUpdateStatus(for: report)
+        ddm = await model.ddmStatus(for: report)
         guard report.jamf.value?.kind == .computer else { return }
         localAdmins = await model.localAdminAccounts(for: report)
         if !localAdmins.isEmpty {

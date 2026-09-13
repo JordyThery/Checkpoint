@@ -227,12 +227,19 @@ struct JamfSoftwareUpdateStatus: Sendable {
     }
 
     /// The device is failing to install the update it has now.
+    ///
+    /// Either it says so outright, or it has an update outstanding and a
+    /// non-zero failure count: Apple defines that count as failures of the
+    /// *current* update, so while something is pending those failures are
+    /// about it. A Mac can sit at `prepared` and retry the install a hundred
+    /// times, and calling that history would bury the only sign of it.
     var hasCurrentFailure: Bool {
-        state == "failed"
+        state == "failed" || (hasPendingUpdate && (failureCount ?? 0) > 0)
     }
 
     /// A failure the report still remembers from an attempt that is no longer
-    /// current. Worth showing, but as history rather than a problem.
+    /// current. With nothing pending, Apple's definition says the count should
+    /// be zero, so a non-zero one is a leftover: worth showing, as history.
     var hasPastFailure: Bool {
         !hasCurrentFailure && (failureCount ?? 0) > 0 && lastFailureAt != nil
     }
@@ -278,6 +285,183 @@ struct JamfSoftwareUpdateStatus: Sendable {
         guard hasPendingUpdate, let version = offeredOSVersion, !version.isEmpty else { return nil }
         guard let build = offeredBuildVersion, !build.isEmpty else { return version }
         return "\(version) (\(build))"
+    }
+}
+
+/// Whether the device accepted a declaration.
+nonisolated enum JamfDeclarationValidity: String, Sendable {
+    case valid
+    case invalid
+    case unknown
+}
+
+/// One declaration as the device reports it in `management.declarations`.
+///
+/// This is the device's own verdict, not the server's intent, which is what
+/// makes it worth reading: Jamf Pro reports a blueprint as deployed once it
+/// has delivered the declaration, while the device says whether it could
+/// actually be applied.
+struct JamfDeclaration: Sendable, Identifiable {
+    let identifier: String
+    let active: Bool
+    let validity: JamfDeclarationValidity
+    /// The device's failure text, kept verbatim. Apple words these better
+    /// than any paraphrase, and they name the offending version.
+    let reasons: [String]
+
+    var id: String { identifier }
+
+    /// The blueprint this came from, when Jamf built the identifier from one.
+    /// They are shaped `Blueprint_<uuid>_s1_c1_sys_cfg1`.
+    var blueprintID: String? {
+        let prefix = "Blueprint_"
+        guard identifier.hasPrefix(prefix) else { return nil }
+        let candidate = identifier.dropFirst(prefix.count).prefix(36)
+        return UUID(uuidString: String(candidate)) == nil ? nil : String(candidate)
+    }
+
+    /// Whether the failure text names a target OS version, which is how a
+    /// software update enforcement declaration identifies itself without
+    /// fetching the declaration body.
+    var concernsUpdateEnforcement: Bool {
+        reasons.contains { $0.localizedCaseInsensitiveContains("target OS version") }
+    }
+}
+
+/// Parses the declaration status value, which is not JSON.
+///
+/// Jamf flattens Apple's `management.declarations` dictionary and renders each
+/// entry with a Java-style `toString`, giving unquoted keys and values, nested
+/// `{}` and `[]`, and free-text error messages containing brackets, colons and
+/// quotation marks:
+///
+/// ```
+/// {active=true, identifier=…, valid=valid, server-token=…},{reasons=[{details=
+/// {Error=[kSUCoreErrorDDMInvalidDeclarationFailure] Invalid declaration: target
+/// OS version (15.7.3) is older than current version (15.7.9)}, description=
+/// Configuration cannot be applied, code=Error.ConfigurationCannotBeApplied}],
+/// active=true, identifier=…, valid=invalid, …}
+/// ```
+///
+/// Nothing here is documented, so every step degrades rather than fails: a
+/// record that will not parse contributes what can be salvaged, and an
+/// unreadable value yields an empty list instead of throwing. A missing
+/// warning is bad; losing the software update row to a parse error is worse.
+nonisolated enum JamfDeclarationParsing {
+    static func declarations(from value: String?) -> [JamfDeclaration] {
+        guard let value, !value.isEmpty else { return [] }
+        return splitTopLevel(value, separator: ",")
+            .compactMap(declaration(from:))
+    }
+
+    private static func declaration(from record: String) -> JamfDeclaration? {
+        let trimmed = record.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{") else { return nil }
+        let fields = map(from: trimmed)
+
+        // Salvage rather than give up: a record whose identifier cannot be
+        // read is still worth reporting if it says it is invalid.
+        let identifier = fields["identifier"] ?? fields["Identifier"]
+        let validity = fields["valid"].flatMap(JamfDeclarationValidity.init(rawValue:))
+        guard identifier != nil || validity == .invalid else { return nil }
+
+        return JamfDeclaration(
+            identifier: identifier ?? "Unidentified declaration",
+            active: fields["active"] == "true",
+            validity: validity ?? .unknown,
+            reasons: reasons(from: fields["reasons"])
+        )
+    }
+
+    /// The human-readable half of each reason. Apple puts the useful sentence
+    /// in `details.Error`; `description` is the generic form of the same thing.
+    private static func reasons(from value: String?) -> [String] {
+        guard let value else { return [] }
+        let inner = unwrap(value, open: "[", close: "]")
+        return splitTopLevel(inner, separator: ",").compactMap { record in
+            let fields = map(from: record.trimmingCharacters(in: .whitespacesAndNewlines))
+            let details = map(from: fields["details"] ?? "")
+            let text = details["Error"] ?? fields["description"] ?? fields["code"]
+            guard let text, !text.isEmpty else { return nil }
+            return text
+        }
+    }
+
+    /// Reads `{key=value, key=value}` into a dictionary, keeping nested
+    /// structures intact as their raw text.
+    private static func map(from value: String) -> [String: String] {
+        let inner = unwrap(value.trimmingCharacters(in: .whitespacesAndNewlines), open: "{", close: "}")
+        var result: [String: String] = [:]
+        for field in splitTopLevel(inner, separator: ",") {
+            let piece = field.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let equals = piece.firstIndex(of: "=") else { continue }
+            let key = String(piece[piece.startIndex..<equals]).trimmingCharacters(in: .whitespaces)
+            let text = String(piece[piece.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
+            guard !key.isEmpty, result[key] == nil else { continue }
+            result[key] = text
+        }
+        return result
+    }
+
+    private static func unwrap(_ value: String, open: Character, close: Character) -> String {
+        guard value.first == open, value.last == close, value.count >= 2 else { return value }
+        return String(value.dropFirst().dropLast())
+    }
+
+    /// Splits on a separator that is not inside braces or brackets. Free text
+    /// in these values contains both, so a naive split tears records apart.
+    private static func splitTopLevel(_ value: String, separator: Character) -> [String] {
+        var parts: [String] = []
+        var current = ""
+        var depth = 0
+        for character in value {
+            switch character {
+            case "{", "[": depth += 1
+            case "}", "]": depth -= 1
+            default: break
+            }
+            if character == separator, depth <= 0 {
+                parts.append(current)
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append(current) }
+        return parts
+    }
+}
+
+/// Everything one declarative status report says, from a single request.
+struct JamfDDMStatus: Sendable {
+    let softwareUpdate: JamfSoftwareUpdateStatus?
+    /// Configuration declarations, as the device reports them.
+    let declarations: [JamfDeclaration]
+    /// The newest report time across every status item, which is how stale
+    /// the whole picture is.
+    let reportedAt: Date?
+
+    var invalidDeclarations: [JamfDeclaration] {
+        declarations.filter { $0.validity == .invalid }
+    }
+
+    var activeDeclarations: [JamfDeclaration] {
+        declarations.filter { $0.active && $0.validity != .invalid }
+    }
+
+    /// Declarations the device holds but has not put into effect, almost
+    /// always because their activation failed. They are neither active nor
+    /// rejected, so counting only those two hides them — and on a device
+    /// where an activation has broken, they can be nearly all of them.
+    var notAppliedDeclarations: [JamfDeclaration] {
+        declarations.filter { !$0.active && $0.validity != .invalid }
+    }
+
+    /// The invalid declaration that concerns software update enforcement, if
+    /// any. This is the one worth calling out: while it is rejected, nothing
+    /// is enforcing updates on the device however the server reports it.
+    var rejectedUpdateEnforcement: JamfDeclaration? {
+        invalidDeclarations.first { $0.concernsUpdateEnforcement }
     }
 }
 
@@ -1154,18 +1338,23 @@ actor JamfClient {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    // MARK: Software updates
+    // MARK: Declarative status
 
-    /// The device's software update state from its declarative status report.
+    /// What the device last reported about itself declaratively: its software
+    /// update state and the declarations it has processed.
     ///
-    /// This is the only supported source: Apple has moved software updates to
-    /// declarative management, and Jamf Pro's managed software update plans
-    /// and per-product statuses are both deprecated. Needs nothing beyond the
-    /// read privileges a lookup already uses.
+    /// Both come from one request because they come from one report, and they
+    /// explain each other — a rejected enforcement declaration is why a device
+    /// with nothing pending is nonetheless not being updated.
+    ///
+    /// This is the only supported source for software updates: Apple has moved
+    /// them to declarative management, and Jamf Pro's managed software update
+    /// plans and per-product statuses are both deprecated. Needs nothing
+    /// beyond the read privileges a lookup already uses.
     ///
     /// Nil when the device has sent no report, which is the answer for a
     /// device that is not declaratively managed.
-    func softwareUpdateStatus(managementID: String) async throws -> JamfSoftwareUpdateStatus? {
+    func ddmStatus(managementID: String) async throws -> JamfDDMStatus? {
         struct Response: Decodable {
             let statusItems: [Item]?
             struct Item: Decodable {
@@ -1178,6 +1367,7 @@ actor JamfClient {
         if status == 403 || status == 404 { return nil }
         try throwIfError(status: status, data: data)
         let items = try JSONDecoder().decode(Response.self, from: data).statusItems ?? []
+        guard !items.isEmpty else { return nil }
 
         // Exact keys only. The report can also carry malformed leftovers such
         // as softwareupdate.pending-version.softwareupdate.target-local-date-time,
@@ -1192,11 +1382,37 @@ actor JamfClient {
             return value
         }
 
-        // A device that has never reported declaratively carries none of these
-        // keys at all, which is different from reporting that it has nothing
-        // to do.
-        let reported = values.keys.contains { $0.hasPrefix("softwareupdate.") }
-        guard reported else { return nil }
+        let declarations = JamfDeclarationParsing.declarations(
+            from: values["management.declarations.configurations"]?.value
+        )
+        let newestReport = values.values.compactMap(\.reportedAt).max()
+
+        return JamfDDMStatus(
+            softwareUpdate: softwareUpdate(values: values, text: text),
+            declarations: declarations,
+            reportedAt: newestReport
+        )
+    }
+
+    /// The software update half of a status report, or nil when the device
+    /// reported none of those keys. Reporting nothing is different from
+    /// reporting that there is nothing to do.
+    private func softwareUpdate(
+        values: [String: (value: String?, reportedAt: Date?)],
+        text: (String) -> String?
+    ) -> JamfSoftwareUpdateStatus? {
+        guard values.keys.contains(where: { $0.hasPrefix("softwareupdate.") }) else { return nil }
+
+        // The deadline belongs to the offer beside it. Jamf keeps whichever
+        // value it last saw, so a deadline recorded before the current offer
+        // was reported is a leftover from an earlier enforcement and saying
+        // "was due" from it would be inventing a deadline for this update.
+        let offerReportedAt = values["softwareupdate.pending-version.os-version"]?.reportedAt
+        let deadlineReportedAt = values["softwareupdate.pending-version.target-local-date-time"]?.reportedAt
+        let deadlineIsCurrent: Bool = {
+            guard let offerReportedAt, let deadlineReportedAt else { return true }
+            return deadlineReportedAt >= offerReportedAt
+        }()
 
         return JamfSoftwareUpdateStatus(
             // The one scalar that says what the device is doing. The two
@@ -1208,9 +1424,11 @@ actor JamfClient {
             installReason: text("softwareupdate.install-reason.reason"),
             offeredOSVersion: text("softwareupdate.pending-version.os-version"),
             offeredBuildVersion: text("softwareupdate.pending-version.build-version"),
-            deadline: text("softwareupdate.pending-version.target-local-date-time")
-                .flatMap(DateFormatting.parseStatusItemDate),
-            offerReportedAt: values["softwareupdate.pending-version.os-version"]?.reportedAt,
+            deadline: deadlineIsCurrent
+                ? text("softwareupdate.pending-version.target-local-date-time")
+                    .flatMap(DateFormatting.parseStatusItemDate)
+                : nil,
+            offerReportedAt: offerReportedAt,
             failureCount: text("softwareupdate.failure-reason.count").flatMap(Int.init),
             lastFailureReason: text("softwareupdate.failure-reason.reason"),
             lastFailureAt: text("softwareupdate.failure-reason.timestamp")
