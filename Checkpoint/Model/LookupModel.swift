@@ -47,6 +47,10 @@ struct JamfInfo: Sendable {
     var encryption: JamfDiskEncryption?
     /// Passcode and encryption state (mobile devices).
     var security: JamfMobileSecurity?
+    /// The installed OS, from inventory. Needed to tell an enforced update
+    /// the device already has from one it still owes.
+    var osVersion: String?
+    var osBuild: String?
     var lastEnrolledDate: String?
     var reportDate: String?
     /// Last check-in (Jamf binary; computers only).
@@ -1666,6 +1670,8 @@ final class LookupModel {
                     siteName: record.siteName,
                     adeInstanceID: context.adeInstanceBySerial[serial],
                     encryption: record.encryption,
+                    osVersion: record.osVersion,
+                    osBuild: record.osBuild,
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.reportDate,
                     lastContactTime: record.lastContactTime,
@@ -1690,6 +1696,8 @@ final class LookupModel {
                     adeInstanceID: context.adeInstanceBySerial[serial],
                     unlockToken: record.unlockToken,
                     security: record.security,
+                    osVersion: record.osVersion,
+                    osBuild: record.osBuild,
                     lastEnrolledDate: record.lastEnrolledDate,
                     reportDate: record.lastInventoryDate,
                     lastContactTime: nil,

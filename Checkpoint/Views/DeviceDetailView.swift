@@ -736,8 +736,12 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// Red is reserved for the state that is itself a failure. Painting
+    /// "Ready to install" red because a later attempt failed labels a sound
+    /// state as a broken one, and the failure below already carries the
+    /// colour.
     private func updateStateTint(_ update: JamfSoftwareUpdateStatus) -> AnyShapeStyle {
-        if update.hasCurrentFailure { return AnyShapeStyle(.red) }
+        if update.isFailedState { return AnyShapeStyle(.red) }
         return update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
@@ -758,12 +762,19 @@ struct DeviceDetailView: View {
             let rejected = ddm.invalidDeclarations.first { $0.identifier == enforcement?.declarationID }
                 ?? ddm.rejectedUpdateEnforcement
             if rejected != nil || enforcement != nil {
+                let installed = report.jamf.value?.osVersion
+                let satisfied = enforcement?.isSatisfied(
+                    byOSVersion: installed,
+                    build: report.jamf.value?.osBuild
+                ) ?? false
                 LabeledContent("Update Enforcement") {
                     VStack(alignment: .trailing, spacing: 2) {
                         if rejected != nil {
                             Text("Rejected by the device").foregroundStyle(.red)
+                        } else if satisfied {
+                            Text("Satisfied").foregroundStyle(.secondary)
                         } else {
-                            Text("Enforced").foregroundStyle(.primary)
+                            Text("Outstanding").foregroundStyle(.primary)
                         }
                         // The target, read from the declaration. It is the
                         // version a device is actually held to, which is not
@@ -771,10 +782,24 @@ struct DeviceDetailView: View {
                         if let target = enforcement?.targetVersion {
                             Text(target).font(.caption).foregroundStyle(.secondary)
                         }
-                        if let due = enforcement?.targetLocalDateTime {
-                            Text("\(due < Date() ? "Was due" : "Due") \(DateFormatting.short(due))")
+                        // A date in the past means a missed deadline only
+                        // while the target is still owed. On a device that
+                        // complied it is just when it had to comply by.
+                        if !satisfied, let due = enforcement?.targetLocalDateTime {
+                            let overdue = due < Date()
+                            Text("\(overdue ? "Was due" : "Due") \(DateFormatting.short(due))")
                                 .font(.caption)
-                                .foregroundStyle(due < Date() ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                                .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        }
+                        if !satisfied, let installed, !installed.isEmpty {
+                            Text("Installed \(installed)")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        if !satisfied, enforcement?.isMajorUpgrade(fromOSVersion: installed) == true {
+                            Text("Major upgrade")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                         // Apple's own words: they name the version that no
                         // longer applies, which is the actionable part.

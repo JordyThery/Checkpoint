@@ -27,6 +27,10 @@ struct JamfComputerRecord: Sendable {
     /// section, which reports encryption without carrying the recovery key,
     /// so it needs no privilege beyond Read Computers.
     let encryption: JamfDiskEncryption?
+    /// The installed OS, from inventory rather than the declarative report,
+    /// which keeps whatever it last saw.
+    let osVersion: String?
+    let osBuild: String?
 }
 
 /// A Mac's FileVault state, as reported by inventory.
@@ -131,6 +135,8 @@ struct JamfMobileDeviceRecord: Sendable {
     /// Escrowed unlock token, required by the ClearPasscode MDM command.
     let unlockToken: String?
     let security: JamfMobileSecurity?
+    let osVersion: String?
+    let osBuild: String?
 }
 
 /// A managed local administrator account that Jamf Pro holds a password for.
@@ -225,6 +231,10 @@ struct JamfSoftwareUpdateStatus: Sendable {
     var isInstalling: Bool {
         hasPendingUpdate && state != "failed"
     }
+
+    /// The device reports the update itself as failed, as opposed to being
+    /// mid-attempt with failures behind it.
+    var isFailedState: Bool { state == "failed" }
 
     /// The device is failing to install the update it has now.
     ///
@@ -517,6 +527,32 @@ struct JamfUpdateEnforcement: Sendable {
         guard let targetBuildVersion, !targetBuildVersion.isEmpty else { return targetOSVersion }
         return "\(targetOSVersion) (\(targetBuildVersion))"
     }
+
+    /// Whether the device already runs what it is being held to.
+    ///
+    /// Without this, an enforced target and a date in the past read as a
+    /// missed deadline whether the device complied or not — and a satisfied
+    /// declaration is the common case, since a service that re-issues these
+    /// leaves the old one behind once it succeeds.
+    func isSatisfied(byOSVersion installed: String?, build: String?) -> Bool {
+        guard let target = targetOSVersion, !target.isEmpty else { return false }
+        // A build match is exact; nothing else needs checking.
+        if let targetBuildVersion, !targetBuildVersion.isEmpty,
+           let build, !build.isEmpty, targetBuildVersion == build {
+            return true
+        }
+        guard let installed, !installed.isEmpty else { return false }
+        // Numeric comparison, so 26.10 sorts above 26.9 rather than below it.
+        return installed.compare(target, options: .numeric) != .orderedAscending
+    }
+
+    /// Whether reaching the target means crossing to another major release,
+    /// which many organizations enforce separately from minor updates.
+    func isMajorUpgrade(fromOSVersion installed: String?) -> Bool {
+        guard let target = targetOSVersion?.split(separator: ".").first,
+              let current = installed?.split(separator: ".").first else { return false }
+        return target != current
+    }
 }
 
 /// Everything one declarative status report says, from a single request.
@@ -730,6 +766,7 @@ actor JamfClient {
                 let udid: String?
                 let general: General?
                 let diskEncryption: DiskEncryption?
+                let operatingSystem: OperatingSystem?
             }
             struct DiskEncryption: Decodable {
                 let fileVault2Enabled: Bool?
@@ -739,6 +776,10 @@ actor JamfClient {
             struct Partition: Decodable {
                 let partitionFileVault2State: String?
                 let partitionFileVault2Percent: Int?
+            }
+            struct OperatingSystem: Decodable {
+                let version: String?
+                let build: String?
             }
             struct General: Decodable {
                 let name: String?
@@ -771,6 +812,10 @@ actor JamfClient {
         var queryItems = [URLQueryItem(name: "section", value: "GENERAL")]
         if apiVersion == "v4" {
             queryItems.append(URLQueryItem(name: "section", value: "DISK_ENCRYPTION"))
+            // Asked for alongside the others rather than in a second request.
+            // Needed to tell an enforced update the device already has from
+            // one it still owes.
+            queryItems.append(URLQueryItem(name: "section", value: "OPERATING_SYSTEM"))
         }
         queryItems += [
             URLQueryItem(name: "page-size", value: "10"),
@@ -814,7 +859,9 @@ actor JamfClient {
                     bootPartitionPercent: $0.bootPartitionEncryptionDetails?.partitionFileVault2Percent,
                     recoveryKeyValidity: $0.individualRecoveryKeyValidityStatus
                 )
-            }
+            },
+            osVersion: item.operatingSystem?.version,
+            osBuild: item.operatingSystem?.build
         )
     }
 
@@ -846,6 +893,8 @@ actor JamfClient {
             let lastContactTimestamp: String?
             let lastEnrollmentTimestamp: String?
             let mdmProfileExpirationTimestamp: String?
+            let osVersion: String?
+            let osBuild: String?
             let site: Site?
             // The escrowed unlock token lives in the per-OS detail object.
             let ios: OSDetails?
@@ -906,7 +955,9 @@ actor JamfClient {
                     passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
                     hardwareEncryption: $0.hardwareEncryption
                 )
-            }
+            },
+            osVersion: detail?.osVersion,
+            osBuild: detail?.osBuild
         )
     }
 
