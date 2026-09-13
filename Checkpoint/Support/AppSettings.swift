@@ -83,6 +83,9 @@ nonisolated struct JamfCapabilities: OptionSet, Sendable {
     /// Declarative management status: which declarations a device has
     /// processed, and whether it accepted them. Jamf School has no DDM.
     static let declarations = JamfCapabilities(rawValue: 1 << 11)
+    /// Blueprint names. A platform feature with no endpoint on a Jamf Pro
+    /// instance, so only the gateway can resolve an identifier to a name.
+    static let blueprintNames = JamfCapabilities(rawValue: 1 << 12)
 }
 
 nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {
@@ -168,7 +171,14 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
         return authMethod == .platformGateway ? region.gatewayHost : normalizedBaseURL
     }
 
-    var capabilities: JamfCapabilities { flavor.capabilities }
+    /// What this connection can do, which is the product's capabilities plus
+    /// anything only the gateway reaches. Blueprints are a platform feature,
+    /// so a direct Jamf Pro connection cannot name one.
+    var capabilities: JamfCapabilities {
+        var result = flavor.capabilities
+        if isUsingPlatformGateway { result.insert(.blueprintNames) }
+        return result
+    }
 
     /// True only for a Jamf Pro server on the Platform API gateway. Jamf
     /// School can never be on it, whatever `authMethod` holds.

@@ -107,6 +107,8 @@ Alongside it, Checkpoint shows what the device made of the declarations sent to 
 
 Declarations are counted by outcome — active, invalid, and held but not applied — since a device can carry two dozen and have one in effect, and reporting only the active count would read as healthy.
 
+The enforced target is read back from the declaration itself, since the status report names a device's declarations without saying what they contain. That needs no further privilege either: the declaration endpoint takes the same **Read Computers** and **Read Mobile Devices** as the lookup.
+
 What the row shows is driven by `softwareupdate.install-state`, which Apple defines as the one value that says what the device is doing: `none` means nothing is pending and the last update succeeded. The version, deadline and failure that accompany it are kept by the report long after they stop being true — a Mac that installed an update months ago still carries the version it was offered and the deadline it was given — so they are shown only while an update is actually outstanding. A failure the report still remembers is shown as history, with the date it happened, rather than as a current problem. Beta enrolment is reported separately and is not subject to that staleness — Apple requires the key on every report — so it is stated either way, naming the programme or saying the device is not enrolled.
 
 FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.

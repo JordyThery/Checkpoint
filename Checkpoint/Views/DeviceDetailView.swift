@@ -34,6 +34,11 @@ struct DeviceDetailView: View {
     /// The device's declarative status report: software update state and the
     /// declarations it has processed, from one request.
     @State private var ddm: JamfDDMStatus?
+    /// The software update target the device is held to, read back from the
+    /// declaration itself because the status report does not carry it.
+    @State private var enforcement: JamfUpdateEnforcement?
+    /// The blueprint a declaration came from, named when the connection can.
+    @State private var blueprintName: String?
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
     @State private var loadedCoverage: [AppleCareCoverage]?
@@ -676,20 +681,22 @@ struct DeviceDetailView: View {
                             .font(.caption)
                             .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
                     }
-                    if update.hasPendingUpdate, update.isEnforced {
-                        Text("Enforced by a declaration")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    // Enforcement is not restated here: the deadline above
+                    // only exists while an update is enforced, and the
+                    // Update Enforcement row below says what by and when.
                     if update.hasPendingUpdate, let reported = update.offerReportedAt {
                         Text("Reported \(DateFormatting.short(reported))")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
                     if update.hasCurrentFailure {
-                        Text(update.lastFailureReason ?? "Software update failed.")
+                        // The readable sentence, with the whole NSError text
+                        // kept in the tooltip for diagnosis.
+                        Text(update.failureSummary ?? "Software update failed.")
                             .font(.caption)
                             .foregroundStyle(.red)
+                            .multilineTextAlignment(.trailing)
+                            .help(update.lastFailureReason ?? "")
                         if let at = update.lastFailureAt {
                             Text("Failed \(DateFormatting.short(at))")
                                 .font(.caption)
@@ -701,13 +708,13 @@ struct DeviceDetailView: View {
                         Text("Last failed \(DateFormatting.short(at))")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
-                            .help(update.lastFailureReason ?? "Software update failed.")
+                            .help(update.failureSummary ?? "Software update failed.")
                     }
                 }
             } else {
                 Text("Not reported")
                     .foregroundStyle(.secondary)
-                    .help("The device has not sent a declarative status report, so it is not managed declaratively or has not reported yet.")
+                    .help("The device has sent no declarative status report, so it is either not managed declaratively or has not reported yet.")
             }
         }
     }
@@ -745,20 +752,39 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private var declarationRows: some View {
         if let ddm, !ddm.declarations.isEmpty {
-            if let rejected = ddm.rejectedUpdateEnforcement {
+            // Once the declaration has been read back, its identifier settles
+            // which one enforces updates. Without it, the device's own
+            // wording is the only clue.
+            let rejected = ddm.invalidDeclarations.first { $0.identifier == enforcement?.declarationID }
+                ?? ddm.rejectedUpdateEnforcement
+            if rejected != nil || enforcement != nil {
                 LabeledContent("Update Enforcement") {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("Rejected by the device")
-                            .foregroundStyle(.red)
+                        if rejected != nil {
+                            Text("Rejected by the device").foregroundStyle(.red)
+                        } else {
+                            Text("Enforced").foregroundStyle(.primary)
+                        }
+                        // The target, read from the declaration. It is the
+                        // version a device is actually held to, which is not
+                        // the same as the one it has been offered.
+                        if let target = enforcement?.targetVersion {
+                            Text(target).font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let due = enforcement?.targetLocalDateTime {
+                            Text("\(due < Date() ? "Was due" : "Due") \(DateFormatting.short(due))")
+                                .font(.caption)
+                                .foregroundStyle(due < Date() ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        }
                         // Apple's own words: they name the version that no
                         // longer applies, which is the actionable part.
-                        ForEach(Array(rejected.reasons.prefix(2)), id: \.self) { reason in
+                        ForEach(Array((rejected?.reasons ?? []).prefix(2)), id: \.self) { reason in
                             Text(reason)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.trailing)
                         }
-                        blueprintLink(for: rejected)
+                        if let declaration = rejected { blueprintLink(for: declaration) }
                     }
                 }
             }
@@ -785,7 +811,7 @@ struct DeviceDetailView: View {
                 let stale = reported < Date().addingTimeInterval(-30 * 24 * 60 * 60)
                 Text(DateFormatting.short(reported))
                     .foregroundStyle(stale ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
-                    .help(stale ? "The device has not sent a declarative status report in over a month, so everything above may be out of date." : "")
+                    .help(stale ? "Over a month old, so everything above may have changed since." : "")
             }
         }
     }
@@ -809,16 +835,19 @@ struct DeviceDetailView: View {
         return ddm.invalidDeclarations.filter { $0.identifier != named }
     }
 
-    /// Links a declaration back to the blueprint that produced it, when the
-    /// identifier names one and the connection can serve web links.
+    /// Links a declaration back to the blueprint that produced it, named when
+    /// the connection can resolve one and identified by UUID otherwise.
+    ///
+    /// The link is built from the server URL rather than the API host, since
+    /// the gateway serves no web interface.
     @ViewBuilder
     private func blueprintLink(for declaration: JamfDeclaration) -> some View {
         if let blueprint = declaration.blueprintID,
-           model.jamfCapabilities.contains(.deviceLink),
            let base = model.selectedJamfServer?.normalizedBaseURL,
            let url = URL(string: "\(base)/view/mfe/blueprints/\(blueprint)") {
-            Link("Open blueprint", destination: url)
+            Link(blueprintName ?? "Open blueprint", destination: url)
                 .font(.caption)
+                .help(blueprintName == nil ? blueprint : "Blueprint \(blueprint)")
         }
     }
 
@@ -913,6 +942,8 @@ struct DeviceDetailView: View {
         localAdmins = []
         rotationTime = nil
         ddm = nil
+        enforcement = nil
+        blueprintName = nil
         loadedCoverage = nil
         schoolDetails = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
@@ -925,6 +956,15 @@ struct DeviceDetailView: View {
             return
         }
         ddm = await model.ddmStatus(for: report)
+        // Both need the status first, and neither is worth a request for a
+        // device with nothing declarative to say.
+        if let ddm {
+            enforcement = await model.updateEnforcement(in: ddm)
+            if let blueprint = ddm.rejectedUpdateEnforcement?.blueprintID
+                ?? ddm.declarations.compactMap(\.blueprintID).first {
+                blueprintName = await model.blueprintName(for: blueprint)
+            }
+        }
         guard report.jamf.value?.kind == .computer else { return }
         localAdmins = await model.localAdminAccounts(for: report)
         if !localAdmins.isEmpty {

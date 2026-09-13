@@ -367,6 +367,8 @@ final class LookupModel {
     private var jamfSchoolClients: [String: JamfSchoolClient] = [:]
     /// LAPS rotation time per server, cached because it is server-wide.
     private var rotationTimes: [UUID: TimeInterval] = [:]
+    /// Blueprint names per server, cached for the same reason.
+    private var blueprintNames: [UUID: [String: String]] = [:]
     /// The time zone a Jamf School instance reports its timestamps in, per
     /// server. Instance-wide, and only the per-device endpoint names it, so it
     /// is read once and kept.
@@ -918,6 +920,35 @@ final class LookupModel {
         guard let info = report.jamf.value, let jamf = makeJamfClient(),
               let managementID = info.managementID, !managementID.isEmpty else { return nil }
         return try? await jamf.ddmStatus(managementID: managementID)
+    }
+
+    /// The software update target the device is being held to.
+    ///
+    /// The status report names the device's declarations but not what they
+    /// contain, so the enforced version is read back from the server. Worth
+    /// the extra requests only for the device being looked at, which is why
+    /// this is separate from the status fetch.
+    func updateEnforcement(in status: JamfDDMStatus) async -> JamfUpdateEnforcement? {
+        guard let jamf = makeJamfClient() else { return nil }
+        let candidates = status.declarationsWorthResolving()
+        guard !candidates.isEmpty else { return nil }
+        return await jamf.updateEnforcement(among: candidates)
+    }
+
+    /// The name of a blueprint, when the connection can resolve one.
+    ///
+    /// Read once per server and kept: the list is server-wide and small, and
+    /// several devices in a selection usually share a blueprint. A direct
+    /// Jamf Pro connection has no blueprints endpoint, so this stays nil and
+    /// callers fall back to the identifier.
+    func blueprintName(for id: String) async -> String? {
+        guard let server = selectedJamfServer,
+              server.capabilities.contains(.blueprintNames),
+              let jamf = makeJamfClient() else { return nil }
+        if let cached = blueprintNames[server.id] { return cached[id] }
+        let names = (try? await jamf.blueprintNames()) ?? [:]
+        blueprintNames[server.id] = names
+        return names[id]
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list

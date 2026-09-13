@@ -278,6 +278,68 @@ struct JamfSoftwareUpdateStatus: Sendable {
         !(betaEnrollment ?? "").isEmpty
     }
 
+    /// The failure in one readable sentence.
+    ///
+    /// macOS reports these as a whole `NSError` description — domain, code,
+    /// debug text and localised text, several hundred characters of it. The
+    /// sentence worth showing is the localised one, which macOS has already
+    /// written for a person and in their language; the rest belongs in a
+    /// tooltip. Anything that is already a plain sentence passes through.
+    var failureSummary: String? {
+        guard let raw = lastFailureReason?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else { return nil }
+        guard let sentence = Self.localizedDescription(in: raw) else { return raw }
+        guard let code = Self.errorCode(in: raw) else { return sentence }
+        return "\(sentence) (\(code))"
+    }
+
+    /// The value of `NSLocalizedDescription`, which ends where the next
+    /// `UserInfo` field or the enclosing brace begins.
+    ///
+    /// Stopping at the brace alone is not enough: these errors nest, and a
+    /// field after the sentence carries the scan into the inner error's text.
+    /// The sentence itself contains commas, so only a comma that starts
+    /// another field ends it.
+    private static func localizedDescription(in raw: String) -> String? {
+        guard let start = raw.range(of: "NSLocalizedDescription=") else { return nil }
+        let rest = raw[start.upperBound...]
+        var end = rest.endIndex
+        var index = rest.startIndex
+        while index < rest.endIndex {
+            if rest[index] == "}" {
+                end = index
+                break
+            }
+            if rest[index] == ",", beginsField(rest[rest.index(after: index)...]) {
+                end = index
+                break
+            }
+            index = rest.index(after: index)
+        }
+        let sentence = rest[rest.startIndex..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+        return sentence.isEmpty ? nil : sentence
+    }
+
+    /// Whether the text opens a new `Identifier=` field.
+    private static func beginsField(_ text: Substring) -> Bool {
+        var index = text.startIndex
+        while index < text.endIndex, text[index] == " " { index = text.index(after: index) }
+        guard index < text.endIndex, text[index].isLetter else { return false }
+        var scan = index
+        while scan < text.endIndex, text[scan].isLetter || text[scan].isNumber {
+            scan = text.index(after: scan)
+        }
+        return scan < text.endIndex && text[scan] == "="
+    }
+
+    /// The numeric code, kept because it is the handle for looking a failure
+    /// up: 7507 is the software update lock being held elsewhere.
+    private static func errorCode(in raw: String) -> String? {
+        guard let start = raw.range(of: "Code=") else { return nil }
+        let digits = raw[start.upperBound...].prefix { $0.isNumber }
+        return digits.isEmpty ? nil : "error \(digits)"
+    }
+
     /// The pending version with its build. Nil unless something is actually
     /// pending, so a version the device has already installed is never shown
     /// as one still due.
@@ -320,9 +382,12 @@ struct JamfDeclaration: Sendable, Identifiable {
         return UUID(uuidString: String(candidate)) == nil ? nil : String(candidate)
     }
 
-    /// Whether the failure text names a target OS version, which is how a
-    /// software update enforcement declaration identifies itself without
-    /// fetching the declaration body.
+    /// Whether the failure text names a target OS version.
+    ///
+    /// A guess from the device's wording, used only until the declaration
+    /// itself has been read back, which settles it by type. It holds for the
+    /// rejection that matters — a target the device has already passed — and
+    /// costs nothing when it does not.
     var concernsUpdateEnforcement: Bool {
         reasons.contains { $0.localizedCaseInsensitiveContains("target OS version") }
     }
@@ -432,6 +497,28 @@ nonisolated enum JamfDeclarationParsing {
     }
 }
 
+/// A software update enforcement declaration as the server holds it.
+///
+/// Apple defines no "latest version" declaration: only
+/// `com.apple.configuration.softwareupdate.enforcement.specific`, carrying a
+/// concrete version and install-by date. A management service offering
+/// "enforce the latest" resolves it to one of these and is responsible for
+/// re-issuing it as versions ship, so reading the target back is the only way
+/// to see what a device is actually being held to.
+struct JamfUpdateEnforcement: Sendable {
+    let declarationID: String
+    let targetOSVersion: String?
+    let targetBuildVersion: String?
+    let targetLocalDateTime: Date?
+
+    /// The target with its build, as the software update row shows versions.
+    var targetVersion: String? {
+        guard let targetOSVersion, !targetOSVersion.isEmpty else { return nil }
+        guard let targetBuildVersion, !targetBuildVersion.isEmpty else { return targetOSVersion }
+        return "\(targetOSVersion) (\(targetBuildVersion))"
+    }
+}
+
 /// Everything one declarative status report says, from a single request.
 struct JamfDDMStatus: Sendable {
     let softwareUpdate: JamfSoftwareUpdateStatus?
@@ -462,6 +549,21 @@ struct JamfDDMStatus: Sendable {
     /// is enforcing updates on the device however the server reports it.
     var rejectedUpdateEnforcement: JamfDeclaration? {
         invalidDeclarations.first { $0.concernsUpdateEnforcement }
+    }
+
+    /// Declarations worth asking the server about, most useful first.
+    ///
+    /// The status report gives identifiers and verdicts but not payloads, so
+    /// the enforced version has to be fetched. Rejected ones come first
+    /// because they matter most, then plain configurations, then blueprint
+    /// components; the list is capped because a device can hold two dozen and
+    /// only one of them is a software update declaration.
+    func declarationsWorthResolving(limit: Int = 8) -> [JamfDeclaration] {
+        let ordered = invalidDeclarations
+            + declarations.filter { $0.validity != .invalid && $0.blueprintID == nil }
+            + declarations.filter { $0.validity != .invalid && $0.blueprintID != nil && $0.active }
+        var seen = Set<String>()
+        return ordered.filter { seen.insert($0.identifier).inserted }.prefix(limit).map { $0 }
     }
 }
 
@@ -1439,6 +1541,99 @@ actor JamfClient {
             // a key the device never sent.
             betaReported: values.keys.contains("softwareupdate.beta-enrollment"),
             isReported: true
+        )
+    }
+
+    /// The software update enforcement declaration among those given, or nil
+    /// when none of them is one.
+    ///
+    /// The status report names declarations but does not say what they
+    /// contain, so each has to be read back. Nothing here throws: this runs
+    /// while someone browses a device, and a declaration the server will not
+    /// hand over is worth skipping rather than failing the whole row.
+    func updateEnforcement(among declarations: [JamfDeclaration]) async -> JamfUpdateEnforcement? {
+        for declaration in declarations {
+            // Two levels of optional: the request can fail, and a declaration
+            // that reads fine may simply not be an enforcement one.
+            if let found = ((try? await updateEnforcement(declarationID: declaration.identifier)) ?? nil) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    /// Reads one declaration, returning it only if it enforces a software
+    /// update. Others are legitimate — `management.status-subscriptions` is
+    /// the one most devices carry — so the type must be checked rather than
+    /// assumed from the declaration being valid.
+    private func updateEnforcement(declarationID: String) async throws -> JamfUpdateEnforcement? {
+        struct Response: Decodable {
+            let declarations: [Item]?
+            struct Item: Decodable {
+                let type: String?
+                /// The declaration's own payload, delivered as a JSON string
+                /// inside the JSON, so it needs decoding a second time.
+                let payloadJson: String?
+                let uuid: String?
+            }
+        }
+        struct Payload: Decodable {
+            let TargetOSVersion: String?
+            let TargetBuildVersion: String?
+            let TargetLocalDateTime: String?
+        }
+        let (data, status) = try await send(path: "/api/v1/dss-declarations/\(declarationID)")
+        guard (200...299).contains(status) else { return nil }
+        let items = (try? JSONDecoder().decode(Response.self, from: data))?.declarations ?? []
+        guard let item = items.first(where: {
+            $0.type == "com.apple.configuration.softwareupdate.enforcement.specific"
+        }) else { return nil }
+
+        let payload = item.payloadJson
+            .flatMap { Data($0.utf8) }
+            .flatMap { try? JSONDecoder().decode(Payload.self, from: $0) }
+        return JamfUpdateEnforcement(
+            declarationID: item.uuid ?? declarationID,
+            targetOSVersion: payload?.TargetOSVersion,
+            targetBuildVersion: payload?.TargetBuildVersion,
+            // Apple's format carries no time zone, so it is the device's own
+            // wall clock, like the deadline in the status report.
+            targetLocalDateTime: payload?.TargetLocalDateTime
+                .flatMap(DateFormatting.parseDeviceLocal)
+        )
+    }
+
+    /// Blueprint names, keyed by identifier.
+    ///
+    /// Platform API only: blueprints are a platform feature with no endpoint
+    /// on a Jamf Pro instance, so a direct connection can show only the
+    /// identifier a declaration carries. Server-wide and small, so callers
+    /// read it once per session.
+    func blueprintNames() async throws -> [String: String] {
+        struct Response: Decodable {
+            let results: [Item]?
+            struct Item: Decodable {
+                let id: String?
+                let name: String?
+            }
+        }
+        // Blueprints sit behind their own product prefix on the gateway, so
+        // the path is /blueprints/v1/blueprints. It is not one of the
+        // prefixes gatewayPath rewrites, and passes through as it stands.
+        let (data, status) = try await send(
+            path: "/blueprints/v1/blueprints",
+            queryItems: [URLQueryItem(name: "page-size", value: "200")]
+        )
+        guard (200...299).contains(status) else { return [:] }
+        let items = (try? JSONDecoder().decode(Response.self, from: data))?.results
+            ?? (try? JSONDecoder().decode([Response.Item].self, from: data))
+            ?? []
+        return Dictionary(
+            items.compactMap { item in
+                guard let id = item.id, let name = item.name, !name.isEmpty else { return nil }
+                return (id, name)
+            },
+            uniquingKeysWith: { first, _ in first }
         )
     }
 

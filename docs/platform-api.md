@@ -4,6 +4,10 @@
 >
 > See [Permissions](permissions.md) for a direct connection, and [Features](features.md) for what each feature does.
 
+## Blueprint names
+
+One thing only this connection can do. Blueprints are a platform feature with no endpoint on a Jamf Pro instance, so a direct connection shows the identifier a declaration carries while the gateway resolves it to a name. Grant the integration **`blueprints:read`**; without it the name is simply absent and the identifier is shown instead.
+
 Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. This is optional: an API client connection is simpler and carries every command.
 
 > This page describes the release it ships with. What the gateway can and cannot carry changes as Jamf extends it, so opening this page from a tag shows what was true for that version.
