@@ -4,10 +4,6 @@
 >
 > See [Permissions](permissions.md) for a direct connection, and [Features](features.md) for what each feature does.
 
-## Blueprint names
-
-One thing only this connection can do. Blueprints are a platform feature with no endpoint on a Jamf Pro instance, so a direct connection shows the identifier a declaration carries while the gateway resolves it to a name. Grant the integration **`blueprints:read`**; without it the name is simply absent and the identifier is shown instead.
-
 Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. This is optional: an API client connection is simpler and carries every command.
 
 > This page describes the release it ships with. What the gateway can and cannot carry changes as Jamf extends it, so opening this page from a tag shows what was true for that version.
@@ -51,6 +47,7 @@ Permissions are granted per capability on the integration, rather than per privi
 | Recovery Lock password | `recovery-lock:read` |
 | Device lock PIN | `computer-device-lock-pin:read` |
 | Managed local administrator accounts and passwords | `local-admin-passwords:read` |
+| Blueprint names on declarations | `blueprints:read` |
 
 The four secrets take four separate scopes, so granting one does not grant the others. Deleting a device record and changing a site declare no scope in the specification; the corresponding [Jamf Pro privileges](permissions.md) are the guide there.
 
@@ -69,6 +66,10 @@ Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Pro
 FileVault state, mobile passcode state, software update state, managed local administrator accounts and the group lookup were each checked over both connections and returned identical results, so there is no difference in what Checkpoint can show.
 
 Group membership comes from the Classic endpoints, which the gateway serves under `/proclassic`. The modern computer equivalent returns bare record IDs rather than serial numbers, which would cost a request per device to resolve.
+
+## What only the gateway can do
+
+Blueprints are a platform feature with no endpoint on a Jamf Pro instance. A direct connection can show only the identifier a declaration carries; this one resolves it to the blueprint's name and links to it. Without `blueprints:read` the name is absent and the identifier is shown instead.
 
 ## Notes on gateway behaviour
 

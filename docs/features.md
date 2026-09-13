@@ -56,6 +56,14 @@ Assigning a device to a different MDM server normally takes effect on the next w
 
 Deadlines cannot be more than 90 days out, and shortening a deadline, or setting one in the past, applies immediately without giving the user a chance to delay. Devices Apple reports as not migration-capable are skipped, and the option only appears when a device is eligible.
 
+## Software updates and declarations
+
+Jamf Pro only. Software update state comes from the device's own declarative status report rather than from Jamf Pro's deprecated update plans, and `install-state` is what says whether anything is pending. The version, deadline and failure beside it are kept by the report long after they stop being true, so they are shown only while an update is outstanding.
+
+Alongside it, Checkpoint shows what the device made of the declarations sent to it. This is the device's verdict rather than the server's intent, and they can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A rejected software update declaration means nothing is enforcing updates, however healthy the blueprint looks — and the device's reason is shown as written, because it names the version at fault.
+
+The enforced target and its install-by date are read back from the declaration, since the status report names a device's declarations without saying what they contain. On a Platform API connection the blueprint is named and linked; a direct connection shows its identifier, blueprints having no endpoint on a Jamf Pro instance.
+
 ## Recovery secrets
 
 Jamf Pro only. For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, the **device lock PIN**, and the password for each **managed local administrator account**. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
