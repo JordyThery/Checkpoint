@@ -1699,6 +1699,10 @@ final class LookupModel {
             // only used to group the filter menu, never sent anywhere.
             prestageID: device.depProfile?.isEmpty == false ? device.depProfile : nil,
             prestageName: device.depProfile?.isEmpty == false ? device.depProfile : nil,
+            // The console addresses a device by its UDID, which is also what
+            // its API keys on, so the link needs nothing the lookup does not
+            // already have.
+            webURL: context.jamfBaseURL.flatMap { URL(string: "\($0)/devices/details/\(device.udid)") },
             locationID: device.locationID,
             locationName: device.locationID.map { context.schoolLocationNames[$0] ?? "Location \($0)" },
             isManaged: device.isManaged,

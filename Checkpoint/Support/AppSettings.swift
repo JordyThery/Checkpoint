@@ -25,7 +25,7 @@ nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendab
         switch self {
         case .pro: [.sites, .prestageScope, .enrollmentDates, .mdmProfileExpiry,
                     .fileVault, .softwareUpdate, .declarations, .recoverySecrets, .deviceLink]
-        case .school: [.locations, .passcodeOnDemand]
+        case .school: [.locations, .passcodeOnDemand, .deviceLink]
         }
     }
 
@@ -77,8 +77,9 @@ nonisolated struct JamfCapabilities: OptionSet, Sendable {
     /// Passcode state is not in the bulk device list, only in the per-device
     /// record, so it is read when a device is selected.
     static let passcodeOnDemand = JamfCapabilities(rawValue: 1 << 9)
-    /// Links from a device to its record in the web interface. Jamf School
-    /// publishes no URL for one.
+    /// Links from a device to its record in the web interface. Built from
+    /// the server URL rather than published by either API, so it is a
+    /// capability of the product's console rather than of its API.
     static let deviceLink = JamfCapabilities(rawValue: 1 << 10)
     /// Declarative management status: which declarations a device has
     /// processed, and whether it accepted them. Jamf School has no DDM.
