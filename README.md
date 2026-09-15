@@ -38,7 +38,7 @@ Apple School Manager with Jamf School. Columns and actions the connected product
 
 ## Documentation
 
-- **[Features](docs/features.md)** — actions, MDM commands, lookups, filtering, migration, software updates and declarations, recovery secrets, activity log
+- **[Features](docs/features.md)** — actions, MDM commands, lookups, filtering and sorting, migration, software updates and declarations, recovery secrets, activity log
 - **[Permissions](docs/permissions.md)** — the Apple role, the Jamf Pro privileges and the Jamf School API-key methods each feature needs
 - **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through Jamf's gateway, and the three commands it cannot carry
 

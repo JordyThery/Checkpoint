@@ -16,6 +16,8 @@ Every action works on a single device or in bulk across a multi-selection, and a
 
 Multiple organizations, of either Apple service, and multiple Jamf servers, of either product, can be configured together and switched from the toolbar. Everything Checkpoint sends is recorded in the [activity log](#activity-log).
 
+Double-clicking a row, or the arrow at the end of it, opens the device's record in the Jamf Pro or Jamf School web interface. A Jamf Pro server reached through the [Platform API](platform-api.md) still links to its own URL, since the gateway host serves no web interface.
+
 ## MDM commands
 
 **Jamf Pro** — computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile. Mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile.
