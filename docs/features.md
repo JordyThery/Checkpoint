@@ -52,6 +52,8 @@ Filtering only reads what the lookup already fetched, so it costs nothing. Warra
 
 Hiding a device also deselects it, so an action can never reach a device you can no longer see.
 
+**Sort** by clicking a column header, and reverse it by clicking again. Rows stay in the order the serials were entered until you do. Columns sort by the text they show, so statuses group as they read and version numbers order numerically; the date columns sort by the date itself, treating a device that has never reported one as the least recently seen. Sorting is display only — it changes neither the filter nor the selection.
+
 ## MDM server migration
 
 Assigning a device to a different MDM server normally takes effect on the next wipe or enrollment. Apple can instead schedule a *migration*: the device keeps running under its current service until it moves, nothing is erased, and Apple prompts the user and enforces the deadline on-device. Checkpoint shows the migration status and deadline for each device, and can schedule, reschedule or cancel one, individually or in bulk.

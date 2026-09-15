@@ -11,6 +11,9 @@ struct ContentView: View {
     @State private var showingImporter = false
     @State private var importMessage: String?
     @State private var filters = DeviceFilters()
+    /// Empty until a column header is clicked, which leaves the rows in the
+    /// order the serials were entered.
+    @State private var sortOrder: [KeyPathComparator<DeviceReport>] = []
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
     @State private var pendingGroup: PendingGroup?
@@ -45,6 +48,14 @@ struct ContentView: View {
     /// filter does not remove the other options from the menu.
     private var filterOptions: FilterOptions {
         FilterOptions(reports: model.reports, capabilities: model.jamfCapabilities)
+    }
+
+    /// Rows in the order the table draws them. Sorting is display only: the
+    /// filter and the selection both work from the unsorted list.
+    private var sortedReports: [DeviceReport] {
+        // Not sorted with an empty comparator list, which is free to reorder
+        // equal elements and would scramble the entered order.
+        sortOrder.isEmpty ? visibleReports : visibleReports.sorted(using: sortOrder)
     }
 
     /// Intersected with what is on screen, so an action can never reach a
@@ -398,30 +409,30 @@ struct ContentView: View {
     }
 
     private var resultsTable: some View {
-        Table(visibleReports, selection: $selection) {
+        Table(sortedReports, selection: $selection, sortOrder: $sortOrder) {
             Group {
-                TableColumn("Serial Number") { (report: DeviceReport) in
+                TableColumn("Serial Number", value: \.serial) { (report: DeviceReport) in
                     Text(report.serial).monospaced()
                 }
-                TableColumn(model.abmKind.label) { (report: DeviceReport) in
+                TableColumn(model.abmKind.label, value: \.abmStatusText) { (report: DeviceReport) in
                     ABMStatusCell(state: report.abm)
                 }
-                TableColumn("MDM Server Assignment") { (report: DeviceReport) in
+                TableColumn("MDM Server Assignment", value: \.mdmServerText) { (report: DeviceReport) in
                     FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
                 }
-                TableColumn("Migration") { (report: DeviceReport) in
+                TableColumn("Migration", value: \.migrationText) { (report: DeviceReport) in
                     MigrationCell(state: report.abm)
                 }
-                TableColumn("Warranty Coverage") { (report: DeviceReport) in
+                TableColumn("Warranty Coverage", value: \.coverageText) { (report: DeviceReport) in
                     FetchText(state: report.abm) { Self.coverageSummary($0) }
                 }
-                TableColumn("\(model.jamfFlavor.label) Device Name") { (report: DeviceReport) in
+                TableColumn("\(model.jamfFlavor.label) Device Name", value: \.jamfNameText) { (report: DeviceReport) in
                     JamfStatusCell(state: report.jamf)
                 }
-                TableColumn("OS Version") { (report: DeviceReport) in
+                TableColumn("OS Version", value: \.osVersionText) { (report: DeviceReport) in
                     FetchText(state: report.jamf) { $0.osDisplay ?? "—" }
                 }
-                TableColumn(model.jamfFlavor.enrollmentProfileLabel) { (report: DeviceReport) in
+                TableColumn(model.jamfFlavor.enrollmentProfileLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
                     FetchText(state: report.jamf) { $0.prestageName ?? "None" }
                 }
             }
@@ -430,28 +441,28 @@ struct ContentView: View {
             // profile expiry would be em-dashes for every row.
             Group {
                 if model.jamfCapabilities.contains(.locations) {
-                    TableColumn("Location") { (report: DeviceReport) in
+                    TableColumn("Location", value: \.locationText) { (report: DeviceReport) in
                         FetchText(state: report.jamf) { $0.locationName ?? "None" }
                     }
                 }
                 if model.jamfCapabilities.contains(.enrollmentDates) {
-                    TableColumn("Last Enrollment Date") { (report: DeviceReport) in
+                    TableColumn("Last Enrollment Date", value: \.lastEnrolledSortDate) { (report: DeviceReport) in
                         FetchText(state: report.jamf) { DateFormatting.short($0.lastEnrolledDate) }
                     }
-                    TableColumn("Last Inventory Update") { (report: DeviceReport) in
+                    TableColumn("Last Inventory Update", value: \.reportSortDate) { (report: DeviceReport) in
                         FetchText(state: report.jamf) { DateFormatting.short($0.reportDate) }
                     }
                 }
-                TableColumn(model.jamfFlavor.lastContactLabel) { (report: DeviceReport) in
+                TableColumn(model.jamfFlavor.lastContactLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
                     FetchText(state: report.jamf) { DateFormatting.short($0.lastContact) }
                 }
                 if model.jamfCapabilities.contains(.enrollmentDates) {
-                    TableColumn("Last check-in") { (report: DeviceReport) in
+                    TableColumn("Last check-in", value: \.lastCheckInSortDate) { (report: DeviceReport) in
                         FetchText(state: report.jamf) { DateFormatting.short($0.lastContactTime) }
                     }
                 }
                 if model.jamfCapabilities.contains(.mdmProfileExpiry) {
-                    TableColumn("MDM Profile Expiration") { (report: DeviceReport) in
+                    TableColumn("MDM Profile Expiration", value: \.mdmProfileExpirationSortDate) { (report: DeviceReport) in
                         FetchText(state: report.jamf) { DateFormatting.dateOnly($0.mdmProfileExpiration) }
                     }
                 }
@@ -554,6 +565,90 @@ struct ContentView: View {
         return status == "Expired"
             ? "Expired \(DateFormatting.dateOnly(end))"
             : "\(status) until \(DateFormatting.dateOnly(end))"
+    }
+}
+
+// MARK: - Sorting
+
+private extension FetchState {
+    /// The text a cell shows, for a column to sort by. Sorting on the same
+    /// string the eye reads is what makes the order explainable; rows with
+    /// nothing to show carry the placeholder their cell draws, so they group
+    /// together instead of scattering.
+    func sortText(
+        notConfigured: String = "—",
+        notFound: String = "—",
+        _ text: (Value) -> String
+    ) -> String {
+        switch self {
+        case .pending: "…"
+        case .notConfigured: notConfigured
+        case .notFound: notFound
+        case .failed: "Error"
+        case .found(let value): text(value)
+        }
+    }
+}
+
+private extension DeviceReport {
+    var abmStatusText: String {
+        abm.sortText(notConfigured: "Not configured", notFound: "Not in org") { info in
+            if info.isReleased { return "Released" }
+            return info.device.status == "ASSIGNED" ? "Assigned" : "Unassigned"
+        }
+    }
+
+    var mdmServerText: String {
+        abm.sortText { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
+    }
+
+    var migrationText: String {
+        abm.sortText { info in
+            let device = info.device
+            if device.hasActiveMigration {
+                let due = DateFormatting.short(device.mdmMigrationDeadlineDateTime)
+                return due == "—" ? (device.mdmMigrationStatus?.capitalized ?? "In progress") : due
+            }
+            return device.migrationOutcome ?? "—"
+        }
+    }
+
+    var coverageText: String {
+        abm.sortText { ContentView.coverageSummary($0) }
+    }
+
+    var jamfNameText: String {
+        jamf.sortText(notConfigured: "Not configured", notFound: "No record") {
+            $0.name ?? "Record #\($0.computerID)"
+        }
+    }
+
+    var osVersionText: String {
+        // String rather than a parsed version: KeyPathComparator compares
+        // strings the way the Finder does, so 26.10 still follows 26.9.
+        jamf.sortText { $0.osDisplay ?? "—" }
+    }
+
+    var enrollmentProfileText: String {
+        jamf.sortText { $0.prestageName ?? "None" }
+    }
+
+    var locationText: String {
+        jamf.sortText { $0.locationName ?? "None" }
+    }
+
+    var lastEnrolledSortDate: Date { Self.sortDate(jamf.value?.lastEnrolledDate) }
+    var reportSortDate: Date { Self.sortDate(jamf.value?.reportDate) }
+    var lastContactSortDate: Date { Self.sortDate(jamf.value?.lastContact) }
+    var lastCheckInSortDate: Date { Self.sortDate(jamf.value?.lastContactTime) }
+    var mdmProfileExpirationSortDate: Date { Self.sortDate(jamf.value?.mdmProfileExpiration) }
+
+    /// Dates sort by value, not by the text shown, since a formatted date
+    /// does not sort as a date. A missing one sorts oldest: a device that has
+    /// never reported is the least recently seen, which is what someone
+    /// sorting by that column is looking for.
+    private static func sortDate(_ value: String?) -> Date {
+        value.flatMap(DateFormatting.parseISO) ?? .distantPast
     }
 }
 
