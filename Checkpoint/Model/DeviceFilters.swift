@@ -18,6 +18,9 @@ nonisolated struct DeviceFilters: Equatable {
     var prestage: Assignment = .any
     var site: Assignment = .any
     var osVersion: Assignment = .any
+    var lastEnrollment: DateWindow = .any
+    var lastInventory: DateWindow = .any
+    var lastContact: DateWindow = .any
     /// Applied together: a device must satisfy all of them.
     var issues: Set<Issue> = []
 
@@ -32,6 +35,9 @@ nonisolated struct DeviceFilters: Equatable {
         if prestage != .any { count += 1 }
         if site != .any { count += 1 }
         if osVersion != .any { count += 1 }
+        if lastEnrollment != .any { count += 1 }
+        if lastInventory != .any { count += 1 }
+        if lastContact != .any { count += 1 }
         return count
     }
 
@@ -42,6 +48,9 @@ nonisolated struct DeviceFilters: Equatable {
             && prestage.matches(report.jamf.value?.prestageID, hasRecord: report.jamf.value != nil)
             && site.matches(report.jamf.value?.groupingID, hasRecord: report.jamf.value != nil)
             && osVersion.matches(report.jamf.value?.osVersion, hasRecord: report.jamf.value != nil)
+            && lastEnrollment.matches(report.jamf.value?.lastEnrolledDate, hasRecord: report.jamf.value != nil)
+            && lastInventory.matches(report.jamf.value?.reportDate, hasRecord: report.jamf.value != nil)
+            && lastContact.matches(report.jamf.value?.lastContact, hasRecord: report.jamf.value != nil)
             && issues.allSatisfy { $0.matches(report) }
     }
 
@@ -105,6 +114,58 @@ nonisolated struct DeviceFilters: Equatable {
             case .none: hasRecord && value == nil
             case .id(let wanted): value == wanted
             }
+        }
+    }
+
+    /// How long ago a date was, as the presets a fleet is usually asked
+    /// about: what checked in today, what has been quiet a while.
+    ///
+    /// The windows overlap deliberately. "Less than 7 days ago" includes
+    /// today, because a device that reported this morning also reported this
+    /// week, and asking for one rarely means excluding the other.
+    nonisolated enum DateWindow: String, CaseIterable, Identifiable, Equatable {
+        case any = "Any"
+        case today = "Today"
+        case sevenDays = "Less than 7 days ago"
+        case thirtyDays = "Less than 30 days ago"
+        case overThirtyDays = "More than 30 days ago"
+        case overNinetyDays = "More than 90 days ago"
+        /// Has a record, but no date in this field at all.
+        case never = "Never"
+
+        var id: String { rawValue }
+
+        func matches(_ value: String?, hasRecord: Bool) -> Bool {
+            if self == .any { return true }
+            guard hasRecord else { return false }
+            return contains(value.flatMap(DateFormatting.parseISO))
+        }
+
+        /// Whether an already-parsed date falls in this window. Taken parsed
+        /// so that counting every window over every device costs one parse
+        /// per date rather than one per window.
+        ///
+        /// A date that was absent or unreadable counts as never, not as a
+        /// match for every window, so one odd value cannot land in two
+        /// buckets at once.
+        func contains(_ date: Date?) -> Bool {
+            guard let date else { return self == .never }
+            switch self {
+            case .any: return true
+            case .never: return false
+            case .today: return Calendar.current.isDateInToday(date)
+            case .sevenDays: return Self.days(since: date) < 7
+            case .thirtyDays: return Self.days(since: date) < 30
+            case .overThirtyDays: return Self.days(since: date) >= 30
+            case .overNinetyDays: return Self.days(since: date) >= 90
+            }
+        }
+
+        /// Whole days between a date and now. A date in the future counts as
+        /// zero days old: Jamf occasionally reports one, and it belongs with
+        /// the recent devices rather than the quiet ones.
+        private static func days(since date: Date) -> Int {
+            max(0, Calendar.current.dateComponents([.day], from: date, to: Date()).day ?? 0)
         }
     }
 
@@ -175,6 +236,13 @@ nonisolated struct FilterOptions {
         let count: Int
     }
 
+    /// A date window with how many devices fall in it.
+    nonisolated struct WindowCount: Identifiable, Hashable {
+        let window: DeviceFilters.DateWindow
+        let count: Int
+        var id: String { window.rawValue }
+    }
+
     var servers: [Option] = []
     var prestages: [Option] = []
     var sites: [Option] = []
@@ -186,6 +254,12 @@ nonisolated struct FilterOptions {
     var prestageNone = 0
     var siteNone = 0
     var osVersionNone = 0
+    /// Date windows per field, empty when no loaded device reports that
+    /// date — which is how Jamf School, having only a check-in, ends up
+    /// offering only the one picker.
+    var lastEnrollment: [WindowCount] = []
+    var lastInventory: [WindowCount] = []
+    var lastContact: [WindowCount] = []
     var statuses: [(status: DeviceFilters.ABMStatus, count: Int)] = []
     var issues: [(issue: DeviceFilters.Issue, count: Int)] = []
     var hasComputers = false
@@ -196,12 +270,23 @@ nonisolated struct FilterOptions {
     var showPrestages: Bool { !prestages.isEmpty || prestageNone > 0 }
     var showSites: Bool { !sites.isEmpty || siteNone > 0 }
     var showOSVersions: Bool { !osVersions.isEmpty || osVersionNone > 0 }
+    var showDates: Bool { !lastEnrollment.isEmpty || !lastInventory.isEmpty || !lastContact.isEmpty }
 
     init(reports: [DeviceReport], capabilities: JamfCapabilities = JamfFlavor.pro.capabilities) {
         var serverCounts: [String: (name: String, count: Int)] = [:]
         var prestageCounts: [String: (name: String, count: Int)] = [:]
         var siteCounts: [String: (name: String, count: Int)] = [:]
         var osCounts: [String: (name: String, count: Int)] = [:]
+        // Windows overlap, so a date is tested against each of them rather
+        // than assigned to one bucket. Parsed once per date to keep that from
+        // costing a parse per window.
+        let windows = DeviceFilters.DateWindow.allCases.filter { $0 != .any }
+        var enrollmentCounts = [Int](repeating: 0, count: windows.count)
+        var inventoryCounts = enrollmentCounts
+        var contactCounts = enrollmentCounts
+        var hasEnrollment = false
+        var hasInventory = false
+        var hasContact = false
 
         for report in reports {
             switch report.deviceKind {
@@ -237,6 +322,17 @@ nonisolated struct FilterOptions {
                 } else {
                     osVersionNone += 1
                 }
+                let enrollment = jamf.lastEnrolledDate.flatMap(DateFormatting.parseISO)
+                let inventory = jamf.reportDate.flatMap(DateFormatting.parseISO)
+                let contact = jamf.lastContact.flatMap(DateFormatting.parseISO)
+                hasEnrollment = hasEnrollment || enrollment != nil
+                hasInventory = hasInventory || inventory != nil
+                hasContact = hasContact || contact != nil
+                for (index, window) in windows.enumerated() {
+                    if window.contains(enrollment) { enrollmentCounts[index] += 1 }
+                    if window.contains(inventory) { inventoryCounts[index] += 1 }
+                    if window.contains(contact) { contactCounts[index] += 1 }
+                }
             }
         }
 
@@ -251,6 +347,14 @@ nonisolated struct FilterOptions {
         osVersions = sorted(osCounts)
         prestages = sorted(prestageCounts)
         sites = sorted(siteCounts)
+
+        func windowOptions(_ counts: [Int], reported: Bool) -> [WindowCount] {
+            guard reported else { return [] }
+            return zip(windows, counts).map { WindowCount(window: $0, count: $1) }
+        }
+        lastEnrollment = windowOptions(enrollmentCounts, reported: hasEnrollment)
+        lastInventory = windowOptions(inventoryCounts, reported: hasInventory)
+        lastContact = windowOptions(contactCounts, reported: hasContact)
 
         // Only statuses some device is actually in.
         statuses = DeviceFilters.ABMStatus.allCases

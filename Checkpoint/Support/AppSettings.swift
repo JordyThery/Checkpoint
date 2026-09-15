@@ -323,6 +323,10 @@ final class AppSettings {
     var jamfServers: [JamfServerConfig] { didSet { save() } }
     var abmOrgs: [ABMConfig] { didSet { save() } }
     var appearance: AppAppearance { didSet { save() } }
+    /// Whether the hint about an unconfigured service has been dismissed.
+    /// Kept, rather than shown again each launch, because running against one
+    /// service is a deliberate setup for some people.
+    var configurationHintDismissed: Bool { didSet { save() } }
 
     private init() {
         let defaults = UserDefaults.standard
@@ -332,6 +336,7 @@ final class AppSettings {
             .flatMap { try? JSONDecoder().decode([ABMConfig].self, from: $0) } ?? []
         appearance = defaults.string(forKey: "appearance")
             .flatMap(AppAppearance.init(rawValue:)) ?? .system
+        configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")
         if abmOrgs.isEmpty { migrateLegacyABMOrg() }
     }
 
@@ -366,5 +371,6 @@ final class AppSettings {
         if let data = try? JSONEncoder().encode(jamfServers) { defaults.set(data, forKey: "jamfServers") }
         if let data = try? JSONEncoder().encode(abmOrgs) { defaults.set(data, forKey: "abmOrgs") }
         defaults.set(appearance.rawValue, forKey: "appearance")
+        defaults.set(configurationHintDismissed, forKey: "configurationHintDismissed")
     }
 }

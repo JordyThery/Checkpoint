@@ -14,6 +14,15 @@ struct ContentView: View {
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
     @State private var pendingGroup: PendingGroup?
+    /// Which of the two places that take keys has focus. Without this the
+    /// serial field keeps it after a lookup, and the arrow keys edit text
+    /// instead of moving down the results.
+    @FocusState private var focus: FocusArea?
+
+    private enum FocusArea: Hashable {
+        case serials
+        case results
+    }
 
     /// A chosen group or order, held until its size has been confirmed.
     /// Either can hold several hundred devices, which the name alone does
@@ -50,7 +59,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 inputBar
-                if !model.isABMConfigured || settings.jamfServers.isEmpty {
+                if (!model.isABMConfigured || settings.jamfServers.isEmpty) && !settings.configurationHintDismissed {
                     configurationHint
                 }
                 Divider()
@@ -180,6 +189,7 @@ struct ContentView: View {
             )
             .lineLimit(1...6)
             .textFieldStyle(.roundedBorder)
+            .focused($focus, equals: .serials)
             .onSubmit(lookUp)
             Button("Import…") { showingImporter = true }
                 .help("Import a text or CSV file with one serial number per line")
@@ -238,6 +248,13 @@ struct ContentView: View {
             Button("Open Settings…") { openSettings() }
                 .buttonStyle(.link)
             Spacer()
+            Button {
+                settings.configurationHintDismissed = true
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Hide this message. It can be brought back in Settings")
         }
         .font(.callout)
         .padding(.horizontal, 12)
@@ -303,6 +320,18 @@ struct ContentView: View {
                     options: options.sites, noneCount: options.siteNone
                 )
             }
+            if options.showDates {
+                Divider()
+                if !options.lastEnrollment.isEmpty {
+                    datePicker("Last Enrollment", selection: $filters.lastEnrollment, options: options.lastEnrollment)
+                }
+                if !options.lastInventory.isEmpty {
+                    datePicker("Last Inventory Update", selection: $filters.lastInventory, options: options.lastInventory)
+                }
+                if !options.lastContact.isEmpty {
+                    datePicker(model.jamfFlavor.lastContactLabel, selection: $filters.lastContact, options: options.lastContact)
+                }
+            }
             if !options.issues.isEmpty {
                 Divider()
                 Section("Only show devices with") {
@@ -333,6 +362,20 @@ struct ContentView: View {
         .menuStyle(.button)
         .fixedSize()
         .help("Narrow the list to devices matching every chosen criterion")
+    }
+
+    /// How long ago a date was, as overlapping presets with a count each.
+    private func datePicker(
+        _ title: String,
+        selection: Binding<DeviceFilters.DateWindow>,
+        options: [FilterOptions.WindowCount]
+    ) -> some View {
+        Picker(title, selection: selection) {
+            Text("Any").tag(DeviceFilters.DateWindow.any)
+            ForEach(options) { option in
+                Text("\(option.window.rawValue) (\(option.count))").tag(option.window)
+            }
+        }
     }
 
     /// Any / None / a specific value, listing only values some loaded device
@@ -425,6 +468,7 @@ struct ContentView: View {
                 }
             }
         }
+        .focused($focus, equals: .results)
         .contextMenu(forSelectionType: DeviceReport.ID.self) { ids in
             Button("Open in \(model.jamfFlavor.label)") { openInJamf(ids) }
         } primaryAction: { ids in
@@ -435,7 +479,13 @@ struct ContentView: View {
     private func lookUp() {
         selection.removeAll()
         let text = serialsText
-        Task { await model.lookUp(serialsText: text) }
+        Task {
+            await model.lookUp(serialsText: text)
+            // Moved once the rows exist, so the arrow keys walk the results
+            // rather than the text that produced them. Clicking the field
+            // hands focus straight back.
+            if !model.reports.isEmpty { focus = .results }
+        }
     }
 
     private var pendingGroupMessage: String {

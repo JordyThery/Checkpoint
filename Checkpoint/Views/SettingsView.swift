@@ -29,6 +29,11 @@ struct GeneralSettingsTab: View {
                 }
             }
             .pickerStyle(.segmented)
+            Toggle("Warn when a service is not configured", isOn: Binding(
+                get: { !settings.configurationHintDismissed },
+                set: { settings.configurationHintDismissed = !$0 }
+            ))
+            .help("Show the message above the table when Apple Business, Apple School Manager or a Jamf server is missing")
         }
         .formStyle(.grouped)
     }

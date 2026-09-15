@@ -42,9 +42,11 @@ Jamf School has no request quota and no pagination, and serves the whole instanc
 
 ## Filtering the results
 
-**Filter** narrows the list to devices matching every chosen criterion: Apple organization status, MDM server, PreStage or ADE profile, site or location, installed OS version, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
+**Filter** narrows the list to devices matching every chosen criterion: Apple organization status, MDM server, PreStage or ADE profile, site or location, installed OS version, how long ago the device last enrolled, reported inventory or made contact, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
 
-The menu offers only what the devices in front of you actually use, with a count beside each: a list of Macs shows the four PreStages they are in rather than every PreStage on the server, and the OS versions offered are the ones the devices are running. Criteria that cannot apply to the list are left out.
+The menu offers only what the devices in front of you actually use, with a count beside each: a list of Macs shows the four PreStages they are in rather than every PreStage on the server, and the OS versions offered are the ones the devices are running. Criteria that cannot apply to the list are left out — a Jamf School lookup offers a check-in filter but no enrollment or inventory one, having no source for either.
+
+The date filters are presets rather than a range, and they overlap: "Less than 7 days ago" includes what reported today. "Never" means the device has a record with nothing in that field, which for last inventory usually means it has not reported since enrollment.
 
 Filtering only reads what the lookup already fetched, so it costs nothing. Warranty coverage and software update state are deliberately not filterable, and passcode state is not filterable on Jamf School: none is present for every row, so filtering on them would quietly exclude devices whose value had simply not been fetched.
 
