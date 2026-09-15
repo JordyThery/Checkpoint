@@ -38,8 +38,6 @@ struct JamfInfo: Sendable {
     var name: String?
     var siteID: String?
     var siteName: String?
-    /// Device-enrollment (ADE) instance that synced this serial, if any.
-    var adeInstanceID: String?
     /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
     var unlockToken: String?
     /// FileVault state (computers), from the inventory record rather than the
@@ -383,6 +381,12 @@ final class LookupModel {
     /// The last organization snapshot, per Apple Business organization.
     /// Discarded whenever Checkpoint changes anything in Apple Business.
     private var abmSnapshots: [UUID: ABMSnapshot] = [:]
+    /// Serial → device-enrollment (ADE) instance, per Jamf Pro server.
+    private var adeInstances: [UUID: [String: String]] = [:]
+    /// One read in flight per server, so a device selection and a bulk
+    /// selection arriving together do not both ask for it. Nil on failure,
+    /// which is kept distinct from an instance that has no ADE devices.
+    private var adeInstanceReads: [UUID: Task<[String: String]?, Never>] = [:]
 
     /// Above this many devices, Apple Business is read in bulk rather than
     /// one device at a time. Apple allows roughly twenty requests a minute
@@ -820,6 +824,42 @@ final class LookupModel {
             )
             return nil
         }
+    }
+
+    /// Which ADE token synced a serial, for filtering the PreStage pickers.
+    /// Nil until the map has been read, which leaves the pickers offering
+    /// every PreStage.
+    func adeInstance(forSerial serial: String) -> String? {
+        guard let id = selectedJamfServerID else { return nil }
+        return adeInstances[id]?[serial.uppercased()]
+    }
+
+    /// Reads which ADE token synced each device in the instance.
+    ///
+    /// Deliberately not part of a lookup. The map covers every device the
+    /// instance has ever synced through a token, so it costs the same for one
+    /// device as for four hundred, and Jamf serves it 500 devices at a time —
+    /// a large token takes the best part of a minute. Only the PreStage
+    /// pickers read it, and both fall back to the full list without it, so it
+    /// is read when a device is selected and then kept for the session.
+    func loadADEInstances() async {
+        guard let server = selectedJamfServer,
+              server.capabilities.contains(.prestageScope),
+              adeInstances[server.id] == nil else { return }
+        if let inFlight = adeInstanceReads[server.id] {
+            _ = await inFlight.value
+            return
+        }
+        guard let jamf = makeJamfClient() else { return }
+        let read = Task { try? await jamf.adeInstanceBySerial() }
+        adeInstanceReads[server.id] = read
+        // An empty map is kept: an instance may simply have no ADE devices,
+        // and re-walking every token to learn that again would be the slow
+        // path for nothing. A failed read is not kept, so it can be retried.
+        if let map = await read.value {
+            adeInstances[server.id] = map
+        }
+        adeInstanceReads[server.id] = nil
     }
 
     /// Order numbers in the organization, with how many devices each covers.
@@ -1517,7 +1557,6 @@ final class LookupModel {
         var computerPrestageNames: [String: String] = [:]
         var mobilePrestageBySerial: [String: String] = [:]
         var mobilePrestageNames: [String: String] = [:]
-        var adeInstanceBySerial: [String: String] = [:]
     }
 
     private func makeContext(deviceCount: Int = 0) async -> LookupContext {
@@ -1543,31 +1582,42 @@ final class LookupModel {
             context.mdmServerNames = Dictionary(mdmServers.map { ($0.id, $0.name) }) { first, _ in first }
         }
         if let jamf = context.jamf {
-            if let list = try? await jamf.prestages(family: .computer) {
+            // Started together rather than one after another. All five are
+            // independent, and every one has to finish before the first
+            // device is looked up, so serially they were five round trips of
+            // dead time at the head of every lookup.
+            async let computerPrestages = try? jamf.prestages(family: .computer)
+            async let mobileDevicePrestages = try? jamf.prestages(family: .mobileDevice)
+            async let siteList = try? jamf.sites()
+            async let computerScope = try? jamf.prestageAssignments(family: .computer)
+            async let mobileScope = try? jamf.prestageAssignments(family: .mobileDevice)
+            if let list = await computerPrestages {
                 prestages = list
             }
-            if let list = try? await jamf.prestages(family: .mobileDevice) {
+            if let list = await mobileDevicePrestages {
                 mobilePrestages = list
             }
-            if let list = try? await jamf.sites() {
+            if let list = await siteList {
                 sites = list
             }
             context.computerPrestageNames = Dictionary(prestages.map { ($0.id, $0.displayName) }) { first, _ in first }
             context.mobilePrestageNames = Dictionary(mobilePrestages.map { ($0.id, $0.displayName) }) { first, _ in first }
-            context.computerPrestageBySerial = (try? await jamf.prestageAssignments(family: .computer)) ?? [:]
-            context.mobilePrestageBySerial = (try? await jamf.prestageAssignments(family: .mobileDevice)) ?? [:]
-            context.adeInstanceBySerial = (try? await jamf.adeInstanceBySerial()) ?? [:]
+            context.computerPrestageBySerial = await computerScope ?? [:]
+            context.mobilePrestageBySerial = await mobileScope ?? [:]
         }
         if let school = context.school {
             // The whole fleet in one request. Jamf School offers no
             // pagination and no per-device serial route worth using, and has
             // no request quota, so this is both simpler and cheaper than
             // asking device by device.
-            context.schoolFleet = (try? await school.fleet()) ?? [:]
-            if let list = try? await school.locations() {
+            async let fleet = try? school.fleet()
+            async let locationList = try? school.locations()
+            context.schoolFleet = await fleet ?? [:]
+            if let list = await locationList {
                 jamfLocations = list
             }
             context.schoolLocationNames = Dictionary(jamfLocations.map { ($0.id, $0.name) }) { first, _ in first }
+            // Left until last: it reads one device out of the fleet above.
             context.schoolTimeZone = await jamfSchoolTimeZone(school: school, fleet: context.schoolFleet)
         }
         return context
@@ -1673,7 +1723,6 @@ final class LookupModel {
                     name: record.name,
                     siteID: record.siteID,
                     siteName: record.siteName,
-                    adeInstanceID: context.adeInstanceBySerial[serial],
                     encryption: record.encryption,
                     osVersion: record.osVersion,
                     osBuild: record.osBuild,
@@ -1698,7 +1747,6 @@ final class LookupModel {
                     name: record.name,
                     siteID: record.siteID,
                     siteName: record.siteName,
-                    adeInstanceID: context.adeInstanceBySerial[serial],
                     unlockToken: record.unlockToken,
                     security: record.security,
                     osVersion: record.osVersion,

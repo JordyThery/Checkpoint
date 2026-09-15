@@ -115,6 +115,9 @@ struct DeviceDetailView: View {
         .task(id: "\(report.serial)|\(report.abm.value != nil)|\(report.jamf.value?.computerID ?? "")") {
             await loadDeviceDetail()
         }
+        // Kept out of loadDeviceDetail: it is server-wide, cached for the
+        // session, and slow enough that the rows above should not wait on it.
+        .task { await model.loadADEInstances() }
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
@@ -196,7 +199,7 @@ struct DeviceDetailView: View {
     /// to the full list when the instance is unknown.
     private var prestageChoices: [JamfPrestage] {
         let all = report.jamf.value?.kind == .mobileDevice ? model.mobilePrestages : model.prestages
-        guard let instance = report.jamf.value?.adeInstanceID else { return all }
+        guard let instance = model.adeInstance(forSerial: report.serial) else { return all }
         let matching = all.filter { $0.enrollmentInstanceID == instance }
         return matching.isEmpty ? all : matching
     }

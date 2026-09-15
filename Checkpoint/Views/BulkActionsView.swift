@@ -120,7 +120,11 @@ struct BulkActionsView: View {
     /// one, the full list otherwise.
     private func prestageOptions(kind: JamfDeviceKind) -> [JamfPrestage] {
         let all = kind == .computer ? model.prestages : model.mobilePrestages
-        let instances = Set(reports.filter { $0.deviceKind == kind }.compactMap { $0.jamf.value?.adeInstanceID })
+        let instances = Set(
+            reports
+                .filter { $0.deviceKind == kind && $0.jamf.value != nil }
+                .compactMap { model.adeInstance(forSerial: $0.serial) }
+        )
         guard instances.count == 1, let instance = instances.first else { return all }
         let matching = all.filter { $0.enrollmentInstanceID == instance }
         return matching.isEmpty ? all : matching
@@ -275,6 +279,9 @@ struct BulkActionsView: View {
             }
         }
         .onAppear(perform: syncSelections)
+        // Server-wide and cached for the session; without it the PreStage
+        // picker simply offers every PreStage.
+        .task { await model.loadADEInstances() }
         .onChange(of: reportIDs) { syncSelections() }
         .onChange(of: currentMDMState) { _, newValue in mdmSelection = newValue }
         .onChange(of: currentPrestageState(kind: .computer)) { _, newValue in computerPrestageSelection = newValue }
