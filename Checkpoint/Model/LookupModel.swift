@@ -28,59 +28,16 @@ struct ABMInfo: Sendable {
     var isReleased: Bool { device.releasedFromOrgDateTime != nil }
 }
 
-struct JamfInfo: Sendable {
-    /// Computer or mobile device record ID, depending on `kind`.
-    var computerID: String
-    var kind: JamfDeviceKind
-    var udid: String?
-    /// UUID used by the modern /v2/mdm/commands endpoint.
-    var managementID: String?
-    var name: String?
-    var siteID: String?
-    var siteName: String?
-    /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
-    var unlockToken: String?
-    /// FileVault state (computers), from the inventory record rather than the
-    /// recovery-key endpoint, so an ordinary lookup can show it.
-    var encryption: JamfDiskEncryption?
-    /// Passcode and encryption state (mobile devices).
-    var security: JamfMobileSecurity?
-    /// The installed OS, from inventory. Also what distinguishes an enforced
-    /// update the device already has from one it still owes.
-    var osVersion: String?
-    /// Jamf Pro only; Jamf School reports no build.
-    var osBuild: String?
-    /// Jamf School only, which names the OS instead of reporting a build.
-    var osName: String?
-    var lastEnrolledDate: String?
-    var reportDate: String?
-    /// Last check-in (Jamf binary; computers only).
-    var lastContactTime: String?
-    /// Last Contact inventory attribute (Jamf Pro 11.30+, both kinds).
-    var lastContact: String?
-    var mdmProfileExpiration: String?
-    var prestageID: String?
-    var prestageName: String?
-    var webURL: URL?
-    /// Jamf School only: the location the record belongs to, which is that
-    /// product's equivalent of a site.
-    var locationID: String?
-    var locationName: String?
-    /// Jamf School only: whether the device is still managed and supervised.
-    var isManaged: Bool?
-    var isSupervised: Bool?
-}
-
 struct DeviceReport: Identifiable, Sendable {
     let serial: String
     var id: String { serial }
     var abm: FetchState<ABMInfo> = .pending
-    var jamf: FetchState<JamfInfo> = .pending
+    var mdm: FetchState<ManagedDeviceInfo> = .pending
 
-    /// Best-effort classification from the Jamf record kind, falling back to
+    /// Best-effort classification from the MDM record kind, falling back to
     /// the ABM product family. Nil when neither service knows the device.
-    var deviceKind: JamfDeviceKind? {
-        if let kind = jamf.value?.kind { return kind }
+    var deviceKind: DeviceKind? {
+        if let kind = mdm.value?.kind { return kind }
         if let family = abm.value?.device.productFamily {
             return family == "Mac" ? .computer : .mobileDevice
         }
@@ -116,19 +73,31 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// also defines clearing Activation Lock, which is deliberately not
     /// offered because Jamf Pro has no equivalent.
     ///
+    /// Intune keeps one collection for every platform, so the split here is
+    /// inferred from the platform rather than reported. Lock and clear
+    /// passcode are offered for mobile devices only: Graph accepts both
+    /// against a Mac, and neither does what the name suggests there.
+    /// Bypassing Activation Lock is left out for the same reason as in Jamf
+    /// School. Remove MDM Profile maps to Intune's retire, which is the
+    /// closest equivalent — see its message.
+    ///
     /// Adding or removing a command means a row in the privileges table in
     /// `docs/permissions.md`, and one in `docs/platform-api.md` if the gateway
     /// cannot carry it.
-    static func commands(for kind: JamfDeviceKind, flavor: JamfFlavor = .pro) -> [MDMCommand] {
-        switch (flavor, kind) {
-        case (.pro, .computer):
+    static func commands(for kind: DeviceKind, product: MDMProduct = .jamfPro) -> [MDMCommand] {
+        switch (product, kind) {
+        case (.jamfPro, .computer):
             [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
-        case (.pro, .mobileDevice):
+        case (.jamfPro, .mobileDevice):
             [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDownMobile, .wipeMobile, .unmanage, .blankPush, .renewProfile]
-        case (.school, .computer):
+        case (.jamfSchool, .computer):
             [.updateInventory, .restartMobile, .wipeComputer, .unmanage]
-        case (.school, .mobileDevice):
+        case (.jamfSchool, .mobileDevice):
             [.updateInventory, .restartMobile, .wipeMobile, .unmanage]
+        case (.intune, .computer):
+            [.updateInventory, .restartMobile, .shutDownMobile, .wipeComputer, .unmanage]
+        case (.intune, .mobileDevice):
+            [.updateInventory, .lockMobile, .clearPasscode, .restartMobile, .shutDownMobile, .wipeMobile, .unmanage]
         }
     }
 
@@ -139,14 +108,14 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         .unmanage, .wipeComputer, .wipeMobile,
     ]
 
-    func applies(to kind: JamfDeviceKind, flavor: JamfFlavor = .pro) -> Bool {
-        Self.commands(for: kind, flavor: flavor).contains(self)
+    func applies(to kind: DeviceKind, product: MDMProduct = .jamfPro) -> Bool {
+        Self.commands(for: kind, product: product).contains(self)
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
     /// it can be. The wording is the same for every blocked command: the
     /// reasons differ but the remedy does not.
-    func unavailabilityReason(via authMethod: JamfAuthMethod) -> String? {
+    func unavailabilityReason(via authMethod: MDMAuthMethod) -> String? {
         guard authMethod == .platformGateway, !worksOverGateway else { return nil }
         return "This command is currently unavailable over the Platform API and requires an API client connection."
     }
@@ -154,7 +123,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// Why this command would do nothing to this particular device, or nil.
     /// Distinct from the connection check above: this one is about the state
     /// of the device rather than what the connection can carry.
-    func inapplicabilityReason(for info: JamfInfo) -> String? {
+    func inapplicabilityReason(for info: ManagedDeviceInfo) -> String? {
         guard self == .clearPasscode, info.security?.passcodePresent == false else { return nil }
         return "This device has no passcode set."
     }
@@ -183,7 +152,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
 
     /// Body for the modern /v2/mdm/commands endpoint. Nil when the command is
     /// served by a Classic or dedicated endpoint instead.
-    func modernCommandData(for kind: JamfDeviceKind, passcode: String?) -> [String: any Sendable]? {
+    func modernCommandData(for kind: DeviceKind, passcode: String?) -> [String: any Sendable]? {
         guard applies(to: kind) else { return nil }
         switch self {
         case .lockComputer:
@@ -232,12 +201,12 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     ///
     /// Jamf Pro only. Jamf School's wipe endpoint takes no PIN, so asking for
     /// one there would collect a code that went nowhere.
-    func needsPIN(flavor: JamfFlavor = .pro) -> Bool {
-        guard flavor == .pro else { return false }
+    func needsPIN(product: MDMProduct = .jamfPro) -> Bool {
+        guard product == .jamfPro else { return false }
         return self == .lockComputer || self == .wipeComputer
     }
 
-    func message(for flavor: JamfFlavor = .pro) -> String {
+    func message(for product: MDMProduct = .jamfPro) -> String {
         switch self {
         case .lockComputer: "The Mac will lock immediately and require the PIN to be used again."
         case .wipeComputer: "All data on the Mac will be erased. This cannot be undone."
@@ -247,9 +216,10 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         case .updateInventory: "The device will be asked to submit a fresh inventory report."
         case .lockMobile: "The device will lock immediately; the owner's passcode unlocks it."
         case .unmanage:
-            switch flavor {
-            case .pro: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
-            case .school: "The MDM profile is removed, so Jamf School can no longer manage the device. Its record stays until you move it to the trash."
+            switch product {
+            case .jamfPro: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
+            case .jamfSchool: "The MDM profile is removed, so Jamf School can no longer manage the device. Its record stays until you move it to the trash."
+            case .intune: "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Unlike the Jamf products, the record goes too once the device acknowledges."
             }
         case .clearPasscode: "The device passcode will be removed."
         case .restartMobile: "The device will restart immediately."
@@ -355,7 +325,7 @@ final class LookupModel {
     private(set) var completedLookups = 0
     private(set) var totalLookups = 0
     var selectedABMOrgID: UUID?
-    var selectedJamfServerID: UUID?
+    var selectedConnectionID: UUID?
     var mdmServers: [MDMServer] = []
     var prestages: [JamfPrestage] = []
     var mobilePrestages: [JamfPrestage] = []
@@ -370,6 +340,7 @@ final class LookupModel {
     private var abmClients: [String: ABMClient] = [:]
     private var jamfClients: [String: JamfClient] = [:]
     private var jamfSchoolClients: [String: JamfSchoolClient] = [:]
+    private var intuneClients: [String: IntuneClient] = [:]
     /// LAPS rotation time per server, cached because it is server-wide.
     private var rotationTimes: [UUID: TimeInterval] = [:]
     /// Blueprint names per server, cached for the same reason.
@@ -402,7 +373,7 @@ final class LookupModel {
         self.settings = settings
         self.log = log ?? ActivityLog()
         selectedABMOrgID = settings.abmOrgs.first?.id
-        selectedJamfServerID = settings.jamfServers.first?.id
+        selectedConnectionID = settings.mdmConnections.first?.id
     }
 
     /// Records the outcome of a user-requested action, alongside the individual
@@ -416,7 +387,7 @@ final class LookupModel {
     ) {
         log.recordAction(
             service: service,
-            connection: service.isAppleOrganization ? selectedABMOrg?.displayName : selectedJamfServer?.displayName,
+            connection: service.isAppleOrganization ? selectedABMOrg?.displayName : selectedConnection?.displayName,
             summary: summary,
             outcome: outcome,
             serials: serials
@@ -445,8 +416,8 @@ final class LookupModel {
         settings.abmOrgs.first { $0.id == selectedABMOrgID } ?? settings.abmOrgs.first
     }
 
-    var selectedJamfServer: JamfServerConfig? {
-        settings.jamfServers.first { $0.id == selectedJamfServerID } ?? settings.jamfServers.first
+    var selectedConnection: MDMConnection? {
+        settings.mdmConnections.first { $0.id == selectedConnectionID } ?? settings.mdmConnections.first
     }
 
     var isABMConfigured: Bool {
@@ -463,26 +434,27 @@ final class LookupModel {
     /// True when the selected Jamf Pro server talks to the Platform API
     /// gateway, which exposes a narrower set of MDM commands.
     var isUsingPlatformAPI: Bool {
-        selectedJamfServer?.isUsingPlatformGateway ?? false
+        selectedConnection?.isUsingPlatformGateway ?? false
     }
 
-    /// Which Jamf product the selected server is. Jamf Pro when nothing is
-    /// selected, so a missing server never changes what the interface offers.
-    var jamfFlavor: JamfFlavor {
-        selectedJamfServer?.flavor ?? .pro
+    /// Which product the selected connection talks to. Jamf Pro when nothing
+    /// is selected, so a missing connection never changes what the interface
+    /// offers.
+    var mdmProduct: MDMProduct {
+        selectedConnection?.product ?? .jamfPro
     }
 
-    /// What the selected server can report and do. Drives which columns, rows
-    /// and actions exist at all: what a product cannot do is left out rather
-    /// than shown disabled.
-    var jamfCapabilities: JamfCapabilities {
-        selectedJamfServer?.capabilities ?? JamfFlavor.pro.capabilities
+    /// What the selected connection can report and do. Drives which columns,
+    /// rows and actions exist at all: what a product cannot do is left out
+    /// rather than shown disabled.
+    var mdmCapabilities: MDMCapabilities {
+        selectedConnection?.capabilities ?? MDMProduct.jamfPro.capabilities
     }
 
     /// Why the given command cannot be sent to the selected server, or nil.
     func unavailabilityReason(for command: MDMCommand) -> String? {
-        guard jamfFlavor == .pro else { return nil }
-        return command.unavailabilityReason(via: selectedJamfServer?.authMethod ?? .apiClient)
+        guard mdmProduct == .jamfPro else { return nil }
+        return command.unavailabilityReason(via: selectedConnection?.authMethod ?? .apiClient)
     }
 
     // MARK: Lookup
@@ -514,21 +486,21 @@ final class LookupModel {
         defer { totalLookups = 0 }
 
         let context = await makeContext(deviceCount: serials.count)
-        await withTaskGroup(of: (String, FetchState<ABMInfo>, FetchState<JamfInfo>).self) { group in
+        await withTaskGroup(of: (String, FetchState<ABMInfo>, FetchState<ManagedDeviceInfo>).self) { group in
             var pending = serials.makeIterator()
             func addNext() {
                 guard let serial = pending.next() else { return }
                 group.addTask {
                     async let abm = Self.fetchABM(context: context, serial: serial)
-                    async let jamf = Self.fetchJamf(context: context, serial: serial)
-                    return await (serial, abm, jamf)
+                    async let mdm = Self.fetchMDM(context: context, serial: serial)
+                    return await (serial, abm, mdm)
                 }
             }
             for _ in 0..<Self.maximumConcurrentLookups { addNext() }
-            for await (serial, abmState, jamfState) in group {
+            for await (serial, abmState, mdmState) in group {
                 if let index = reports.firstIndex(where: { $0.serial == serial }) {
                     reports[index].abm = abmState
-                    reports[index].jamf = jamfState
+                    reports[index].mdm = mdmState
                 }
                 completedLookups += 1
                 addNext()
@@ -544,7 +516,7 @@ final class LookupModel {
         for serial in serials {
             guard let index = reports.firstIndex(where: { $0.serial == serial }) else { continue }
             reports[index].abm = await Self.fetchABM(context: context, serial: serial)
-            reports[index].jamf = await Self.fetchJamf(context: context, serial: serial)
+            reports[index].mdm = await Self.fetchMDM(context: context, serial: serial)
         }
     }
 
@@ -830,7 +802,7 @@ final class LookupModel {
     /// Nil until the map has been read, which leaves the pickers offering
     /// every PreStage.
     func adeInstance(forSerial serial: String) -> String? {
-        guard let id = selectedJamfServerID else { return nil }
+        guard let id = selectedConnectionID else { return nil }
         return adeInstances[id]?[serial.uppercased()]
     }
 
@@ -843,7 +815,7 @@ final class LookupModel {
     /// pickers read it, and both fall back to the full list without it, so it
     /// is read when a device is selected and then kept for the session.
     func loadADEInstances() async {
-        guard let server = selectedJamfServer,
+        guard let server = selectedConnection,
               server.capabilities.contains(.prestageScope),
               adeInstances[server.id] == nil else { return }
         if let inFlight = adeInstanceReads[server.id] {
@@ -906,7 +878,7 @@ final class LookupModel {
             }
         }
         guard let jamf = makeJamfClient() else {
-            throw ActionError(message: "No \(jamfFlavor.label) server is selected or configured.")
+            throw ActionError(message: "No \(mdmProduct.label) server is selected or configured.")
         }
         var all: [JamfGroup] = []
         for kind in JamfGroupKind.allCases {
@@ -926,7 +898,7 @@ final class LookupModel {
                 .filter { !$0.isEmpty && seen.insert($0).inserted }
         }
         guard let jamf = makeJamfClient() else {
-            throw ActionError(message: "No \(jamfFlavor.label) server is selected or configured.")
+            throw ActionError(message: "No \(mdmProduct.label) server is selected or configured.")
         }
         return try await jamf.groupSerials(group)
     }
@@ -955,7 +927,7 @@ final class LookupModel {
     /// rather than making every lookup pay a request per device for a value
     /// the table does not show.
     func jamfSchoolDetails(for report: DeviceReport) async -> JamfSchoolDeviceDetails? {
-        guard let info = report.jamf.value, let school = makeJamfSchoolClient(),
+        guard let info = report.mdm.value, let school = makeJamfSchoolClient(),
               let udid = info.udid, !udid.isEmpty else { return nil }
         return try? await school.deviceDetails(udid: udid)
     }
@@ -964,7 +936,7 @@ final class LookupModel {
     /// update state and the declarations it has processed. One request serves
     /// both. Nil when it has reported nothing.
     func ddmStatus(for report: DeviceReport) async -> JamfDDMStatus? {
-        guard let info = report.jamf.value, let jamf = makeJamfClient(),
+        guard let info = report.mdm.value, let jamf = makeJamfClient(),
               let managementID = info.managementID, !managementID.isEmpty else { return nil }
         return try? await jamf.ddmStatus(managementID: managementID)
     }
@@ -989,7 +961,7 @@ final class LookupModel {
     /// Jamf Pro connection has no blueprints endpoint, so this stays nil and
     /// callers fall back to the identifier.
     func blueprintName(for id: String) async -> String? {
-        guard let server = selectedJamfServer,
+        guard let server = selectedConnection,
               server.capabilities.contains(.blueprintNames),
               let jamf = makeJamfClient() else { return nil }
         if let cached = blueprintNames[server.id] { return cached[id] }
@@ -1002,7 +974,7 @@ final class LookupModel {
     /// when there are none, the device is not a Mac, or the connection lacks
     /// the privilege. Called during ordinary browsing, so it never throws.
     func localAdminAccounts(for report: DeviceReport) async -> [JamfLocalAdminAccount] {
-        guard let info = report.jamf.value, info.kind == .computer,
+        guard let info = report.mdm.value, info.kind == .computer,
               let managementID = info.managementID, !managementID.isEmpty,
               let jamf = makeJamfClient() else { return [] }
         return (try? await jamf.localAdminAccounts(managementID: managementID)) ?? []
@@ -1014,7 +986,7 @@ final class LookupModel {
     /// This is a server-wide setting, so it is read once per server rather
     /// than each time a device is selected.
     func localAdminRotationTime() async -> TimeInterval? {
-        guard let serverID = selectedJamfServer?.id else { return nil }
+        guard let serverID = selectedConnection?.id else { return nil }
         if let cached = rotationTimes[serverID] { return cached }
         guard let jamf = makeJamfClient(),
               let seconds = try? await jamf.localAdminRotationTime(), seconds > 0 else { return nil }
@@ -1026,7 +998,7 @@ final class LookupModel {
     /// Reads a managed local administrator password. Recorded as a change
     /// rather than a read, because viewing queues a rotation.
     func localAdminPassword(for report: DeviceReport, account: JamfLocalAdminAccount) async throws -> String {
-        guard let info = report.jamf.value else {
+        guard let info = report.mdm.value else {
             throw ActionError(message: "\(report.serial) has no Jamf Pro record.")
         }
         guard info.kind == .computer else {
@@ -1048,41 +1020,48 @@ final class LookupModel {
     }
 
     private func computerID(for report: DeviceReport, action: String) throws -> String {
-        guard let info = report.jamf.value else {
+        guard let info = report.mdm.value else {
             throw ActionError(message: "\(report.serial) has no Jamf Pro record.")
         }
         guard info.kind == .computer else {
             throw ActionError(message: "\(action) apply to Macs only.")
         }
-        return info.computerID
+        return info.recordID
     }
 
-    /// Removes the devices' records. Jamf Pro deletes them; Jamf School moves
-    /// them to its trash, from where they can be restored.
-    func deleteFromJamf(reports: [DeviceReport]) async throws {
-        let flavor = jamfFlavor
+    /// Removes the devices' records. Jamf Pro and Intune delete them; Jamf
+    /// School moves them to its trash, from where they can be restored.
+    ///
+    /// Deleting an Intune record does nothing to the device: it stays enrolled
+    /// and reappears at its next check-in. Retiring it, which is what Remove
+    /// MDM Profile sends there, is the one that unmanages it.
+    func deleteMDMRecord(reports: [DeviceReport]) async throws {
+        let product = mdmProduct
         let school = makeJamfSchoolClient()
-        let jamf = school == nil ? makeJamfClient() : nil
-        guard school != nil || jamf != nil else {
-            throw ActionError(message: "No \(flavor.label) server is selected or configured.")
+        let intune = makeIntuneClient()
+        let jamf = (school == nil && intune == nil) ? makeJamfClient() : nil
+        guard school != nil || intune != nil || jamf != nil else {
+            throw ActionError(message: "No \(product.label) \(product.connectionNoun) is selected or configured.")
         }
         let withRecords = reports.compactMap { report in
-            report.jamf.value.map { (serial: report.serial, info: $0) }
+            report.mdm.value.map { (serial: report.serial, info: $0) }
         }
         guard !withRecords.isEmpty else {
-            throw ActionError(message: "None of the selected devices have a \(flavor.label) record.")
+            throw ActionError(message: "None of the selected devices have a \(product.label) record.")
         }
         var failures: [String] = []
         for entry in withRecords {
             do {
                 if let school {
-                    try await school.trash(udid: entry.info.computerID)
+                    try await school.trash(udid: entry.info.recordID)
+                } else if let intune {
+                    try await intune.deleteDevice(id: entry.info.recordID)
                 } else if let jamf {
                     switch entry.info.kind {
                     case .computer:
-                        try await jamf.deleteComputer(id: entry.info.computerID)
+                        try await jamf.deleteComputer(id: entry.info.recordID)
                     case .mobileDevice:
-                        try await jamf.deleteMobileDevice(id: entry.info.computerID)
+                        try await jamf.deleteMobileDevice(id: entry.info.recordID)
                     }
                 }
             } catch {
@@ -1090,13 +1069,13 @@ final class LookupModel {
             }
         }
         recordAction(
-            flavor.activityService,
+            product.activityService,
             Self.partialSummary(
-                flavor == .school ? "Trashed" : "Deleted",
+                product.removeRecordPastTense,
                 noun: "record",
                 of: withRecords.count,
                 failed: failures.count,
-                from: flavor.label
+                from: product.label
             ),
             serials: withRecords.map(\.serial),
             outcome: failures.isEmpty ? .succeeded : .failed
@@ -1116,20 +1095,20 @@ final class LookupModel {
             throw ActionError(message: "No Jamf School server is selected or configured.")
         }
         let moving = reports.compactMap { report in
-            report.jamf.value.map { (serial: report.serial, info: $0) }
+            report.mdm.value.map { (serial: report.serial, info: $0) }
         }.filter { $0.info.locationID != locationID }
         guard !moving.isEmpty else { return }
         let name = jamfLocations.first { $0.id == locationID }?.name ?? locationID
         let summary = "Moved \(Self.deviceCount(moving.map(\.serial))) to \(name)"
         try await recording(.jamfSchool, summary, serials: moving.map(\.serial)) {
-            let outcome = try await school.move(udids: moving.map(\.info.computerID), toLocation: locationID)
+            let outcome = try await school.move(udids: moving.map(\.info.recordID), toLocation: locationID)
             // The endpoint reports per device inside a success, so a device
             // that never moved has to be named here or the action would claim
             // to have moved it.
             guard outcome.unmoved.isEmpty else {
                 let unmoved = Set(outcome.unmoved)
                 let serials = moving
-                    .filter { unmoved.contains($0.info.computerID) }
+                    .filter { unmoved.contains($0.info.recordID) }
                     .map(\.serial)
                 let named = serials.isEmpty ? outcome.unmoved : serials
                 // Nearly always the owner: Jamf School refuses to move a
@@ -1146,14 +1125,14 @@ final class LookupModel {
     /// Moves the devices of the given kind between PreStage scopes. Pass nil
     /// to remove them from their current PreStage without adding them to
     /// another. Devices of the other kind in `reports` are skipped.
-    func setPrestage(reports: [DeviceReport], to newID: String?, kind: JamfDeviceKind) async throws {
+    func setPrestage(reports: [DeviceReport], to newID: String?, kind: DeviceKind) async throws {
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         let family: JamfPrestageFamily = kind == .computer ? .computer : .mobileDevice
         var removeByPrestage: [String: [String]] = [:]
         var affected: [String] = []
         for report in reports {
             guard report.deviceKind == kind else { continue }
-            let current = report.jamf.value?.prestageID
+            let current = report.mdm.value?.prestageID
             guard current != newID else { continue }
             if let current { removeByPrestage[current, default: []].append(report.serial) }
             affected.append(report.serial)
@@ -1180,7 +1159,7 @@ final class LookupModel {
     func setSite(reports: [DeviceReport], to siteID: String) async throws {
         guard let jamf = makeJamfClient() else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         let withRecords = reports.compactMap { report in
-            report.jamf.value.map { (serial: report.serial, info: $0) }
+            report.mdm.value.map { (serial: report.serial, info: $0) }
         }.filter { ($0.info.siteID ?? "-1") != siteID }
         guard !withRecords.isEmpty else { return }
         var failures: [String] = []
@@ -1188,9 +1167,9 @@ final class LookupModel {
             do {
                 switch entry.info.kind {
                 case .computer:
-                    try await jamf.setComputerSite(computerID: entry.info.computerID, siteID: siteID)
+                    try await jamf.setComputerSite(computerID: entry.info.recordID, siteID: siteID)
                 case .mobileDevice:
-                    try await jamf.setMobileDeviceSite(deviceID: entry.info.computerID, siteID: siteID)
+                    try await jamf.setMobileDeviceSite(deviceID: entry.info.recordID, siteID: siteID)
                 }
             } catch {
                 failures.append("\(entry.serial): \(error.localizedDescription)")
@@ -1214,11 +1193,12 @@ final class LookupModel {
     /// routed per record kind. Returns the number of devices it was sent to.
     @discardableResult
     func sendCommand(_ command: MDMCommand, reports: [DeviceReport], passcode: String? = nil) async throws -> Int {
-        let flavor = jamfFlavor
+        let product = mdmProduct
         let school = makeJamfSchoolClient()
-        let jamf = school == nil ? makeJamfClient() : nil
-        guard school != nil || jamf != nil else {
-            throw ActionError(message: "No \(flavor.label) server is selected or configured.")
+        let intune = makeIntuneClient()
+        let jamf = (school == nil && intune == nil) ? makeJamfClient() : nil
+        guard school != nil || intune != nil || jamf != nil else {
+            throw ActionError(message: "No \(product.label) \(product.connectionNoun) is selected or configured.")
         }
         // Fail before doing any work, so a command the connection cannot carry
         // never gets as far as a confirmation prompt.
@@ -1226,8 +1206,8 @@ final class LookupModel {
             throw ActionError(message: reason)
         }
         let targets = reports.compactMap { report in
-            report.jamf.value.map { (serial: report.serial, info: $0) }
-        }.filter { command.applies(to: $0.info.kind, flavor: flavor) }
+            report.mdm.value.map { (serial: report.serial, info: $0) }
+        }.filter { command.applies(to: $0.info.kind, product: product) }
         guard !targets.isEmpty else {
             throw ActionError(message: "\(command.title) doesn't apply to any of the selected devices.")
         }
@@ -1237,16 +1217,18 @@ final class LookupModel {
             let sent: Int
             if let school {
                 sent = try await routeSchool(command, school: school, targets: targets)
+            } else if let intune {
+                sent = try await routeIntune(command, intune: intune, targets: targets)
             } else if let jamf {
                 sent = try await route(command, jamf: jamf, targets: targets, passcode: passcode)
             } else {
                 sent = 0
             }
-            recordAction(flavor.activityService, "Sent \(command.title) to \(Self.deviceCount(sent))", serials: serials)
+            recordAction(product.activityService, "Sent \(command.title) to \(Self.deviceCount(sent))", serials: serials)
             return sent
         } catch {
             recordAction(
-                flavor.activityService,
+                product.activityService,
                 "\(command.title) failed — \(error.localizedDescription)",
                 serials: serials,
                 outcome: .failed
@@ -1265,12 +1247,12 @@ final class LookupModel {
     private func routeSchool(
         _ command: MDMCommand,
         school: JamfSchoolClient,
-        targets: [(serial: String, info: JamfInfo)]
+        targets: [(serial: String, info: ManagedDeviceInfo)]
     ) async throws -> Int {
         var failures: [String] = []
         var sent = 0
         for target in targets {
-            let udid = target.info.computerID
+            let udid = target.info.recordID
             do {
                 switch command {
                 case .updateInventory:
@@ -1295,11 +1277,61 @@ final class LookupModel {
         return sent
     }
 
+    /// Routes a command to its Intune action.
+    ///
+    /// One request per device, like Jamf School, because Graph's device
+    /// actions take no device list. Failures are collected per device rather
+    /// than abandoning the rest of the selection.
+    ///
+    /// Every action here answers 204 with no body, so there is no per-device
+    /// outcome hidden inside a success to check for — unlike Jamf School's
+    /// envelope or Jamf Pro's `udidsNotProcessed`. Whether the device then
+    /// acts on it is reported by Intune as a device action result, which
+    /// Checkpoint does not poll.
+    private func routeIntune(
+        _ command: MDMCommand,
+        intune: IntuneClient,
+        targets: [(serial: String, info: ManagedDeviceInfo)]
+    ) async throws -> Int {
+        var failures: [String] = []
+        var sent = 0
+        for target in targets {
+            let id = target.info.recordID
+            do {
+                switch command {
+                case .updateInventory:
+                    try await intune.perform(.sync, deviceID: id)
+                case .restartMobile:
+                    try await intune.perform(.restart, deviceID: id)
+                case .shutDownMobile:
+                    try await intune.perform(.shutDown, deviceID: id)
+                case .lockMobile:
+                    try await intune.perform(.remoteLock, deviceID: id)
+                case .clearPasscode:
+                    try await intune.perform(.resetPasscode, deviceID: id)
+                case .unmanage:
+                    try await intune.perform(.retire, deviceID: id)
+                case .wipeComputer, .wipeMobile:
+                    try await intune.wipe(deviceID: id)
+                default:
+                    // Not offered for Intune, so unreachable through the
+                    // interface; refused here rather than silently skipped.
+                    throw ActionError(message: "\(command.title) is not available in Intune.")
+                }
+                sent += 1
+            } catch {
+                failures.append("\(target.serial): \(error.localizedDescription)")
+            }
+        }
+        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+        return sent
+    }
+
     /// Routes a command to whichever endpoint carries it for these targets.
     private func route(
         _ command: MDMCommand,
         jamf: JamfClient,
-        targets: [(serial: String, info: JamfInfo)],
+        targets: [(serial: String, info: ManagedDeviceInfo)],
         passcode: String?
     ) async throws -> Int {
         if command == .renewProfile {
@@ -1425,13 +1457,13 @@ final class LookupModel {
                 do {
                     switch (command, target.info.kind) {
                     case (.wipeComputer, .computer):
-                        try await jamf.eraseComputer(computerID: target.info.computerID, pin: passcode)
+                        try await jamf.eraseComputer(computerID: target.info.recordID, pin: passcode)
                     case (.wipeMobile, .mobileDevice):
-                        try await jamf.eraseMobileDevice(deviceID: target.info.computerID)
+                        try await jamf.eraseMobileDevice(deviceID: target.info.recordID)
                     case (.unmanage, .computer):
-                        try await jamf.removeMDMProfile(computerID: target.info.computerID)
+                        try await jamf.removeMDMProfile(computerID: target.info.recordID)
                     case (.unmanage, .mobileDevice):
-                        try await jamf.unmanageMobileDevice(deviceID: target.info.computerID)
+                        try await jamf.unmanageMobileDevice(deviceID: target.info.recordID)
                     default:
                         continue
                     }
@@ -1447,7 +1479,7 @@ final class LookupModel {
         if command == .redeployFramework {
             for target in targets where target.info.kind == .computer {
                 do {
-                    try await jamf.redeployFramework(computerID: target.info.computerID)
+                    try await jamf.redeployFramework(computerID: target.info.recordID)
                     sent += 1
                 } catch {
                     failures.append("\(target.serial): \(error.localizedDescription)")
@@ -1459,7 +1491,7 @@ final class LookupModel {
 
         // Modern /v2/mdm/commands endpoint, batched per device kind (the
         // payload differs between computers and mobile devices).
-        for kind in [JamfDeviceKind.computer, .mobileDevice] {
+        for kind in [DeviceKind.computer, .mobileDevice] {
             guard let commandData = command.modernCommandData(for: kind, passcode: command.needsPIN() ? passcode : nil) else { continue }
             let kindTargets = targets.filter { $0.info.kind == kind }
             guard !kindTargets.isEmpty else { continue }
@@ -1480,7 +1512,7 @@ final class LookupModel {
         if command == .updateInventory {
             for target in targets where target.info.kind == .mobileDevice {
                 do {
-                    try await jamf.sendMobileDeviceCommand("UpdateInventory", deviceID: target.info.computerID)
+                    try await jamf.sendMobileDeviceCommand("UpdateInventory", deviceID: target.info.recordID)
                     sent += 1
                 } catch {
                     failures.append("\(target.serial): \(error.localizedDescription)")
@@ -1511,11 +1543,11 @@ final class LookupModel {
     }
 
     /// The Jamf Pro client, or nil when the selected server is not a Jamf Pro
-    /// one. The flavour guard matters: without it a Jamf Pro request would be
+    /// one. The product guard matters: without it a Jamf Pro request would be
     /// sent to a Jamf School host, which answers something unrecognisable
     /// rather than refusing.
     private func makeJamfClient() -> JamfClient? {
-        guard let config = selectedJamfServer, config.flavor == .pro,
+        guard let config = selectedConnection, config.product == .jamfPro,
               let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
         if let cached = jamfClients[key] { return cached }
@@ -1524,8 +1556,18 @@ final class LookupModel {
         return client
     }
 
+    private func makeIntuneClient() -> IntuneClient? {
+        guard let config = selectedConnection, config.product == .intune,
+              let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
+        let key = [config.id.uuidString, config.tenantID, config.account, secret].joined(separator: "|")
+        if let cached = intuneClients[key] { return cached }
+        guard let client = IntuneClient(config: config, secret: secret, log: log) else { return nil }
+        intuneClients[key] = client
+        return client
+    }
+
     private func makeJamfSchoolClient() -> JamfSchoolClient? {
-        guard let config = selectedJamfServer, config.flavor == .school,
+        guard let config = selectedConnection, config.product == .jamfSchool,
               let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.account, secret].joined(separator: "|")
         if let cached = jamfSchoolClients[key] { return cached }
@@ -1536,9 +1578,10 @@ final class LookupModel {
 
     private struct LookupContext: Sendable {
         var abm: ABMClient?
-        var jamf: JamfClient?
-        var school: JamfSchoolClient?
-        var jamfBaseURL: String?
+        var proClient: JamfClient?
+        var schoolClient: JamfSchoolClient?
+        var intuneClient: IntuneClient?
+        var consoleBaseURL: String?
         /// Every device in the Jamf School instance, keyed by serial. Read in
         /// one request whatever the size of the lookup, because Jamf School
         /// serves the whole fleet at once and per-device lookups would only
@@ -1557,14 +1600,19 @@ final class LookupModel {
         var computerPrestageNames: [String: String] = [:]
         var mobilePrestageBySerial: [String: String] = [:]
         var mobilePrestageNames: [String: String] = [:]
+        /// Every managed device in the Intune tenant, keyed by serial. Read in
+        /// pages rather than per device because Graph documents no $filter on
+        /// serialNumber, so there is no per-serial query to make.
+        var intuneFleet: [String: IntuneDevice] = [:]
     }
 
     private func makeContext(deviceCount: Int = 0) async -> LookupContext {
         var context = LookupContext(
             abm: makeABMClient(),
-            jamf: makeJamfClient(),
-            school: makeJamfSchoolClient(),
-            jamfBaseURL: selectedJamfServer?.normalizedBaseURL
+            proClient: makeJamfClient(),
+            schoolClient: makeJamfSchoolClient(),
+            intuneClient: makeIntuneClient(),
+            consoleBaseURL: selectedConnection?.normalizedBaseURL
         )
         // A snapshot already in hand answers instantly and costs nothing, so
         // it is used whatever the size of the lookup. Reading one is only
@@ -1581,7 +1629,7 @@ final class LookupModel {
             }
             context.mdmServerNames = Dictionary(mdmServers.map { ($0.id, $0.name) }) { first, _ in first }
         }
-        if let jamf = context.jamf {
+        if let jamf = context.proClient {
             // Started together rather than one after another. All five are
             // independent, and every one has to finish before the first
             // device is looked up, so serially they were five round trips of
@@ -1605,7 +1653,13 @@ final class LookupModel {
             context.computerPrestageBySerial = await computerScope ?? [:]
             context.mobilePrestageBySerial = await mobileScope ?? [:]
         }
-        if let school = context.school {
+        if let intune = context.intuneClient {
+            // One read for the tenant, however many serials are being looked
+            // up. Graph pages at a thousand, so a few thousand devices cost a
+            // handful of requests against a per-device cost of one each.
+            context.intuneFleet = (try? await intune.fleet()) ?? [:]
+        }
+        if let school = context.schoolClient {
             // The whole fleet in one request. Jamf School offers no
             // pagination and no per-device serial route worth using, and has
             // no request quota, so this is both simpler and cheaper than
@@ -1633,7 +1687,7 @@ final class LookupModel {
         school: JamfSchoolClient,
         fleet: [String: JamfSchoolDevice]
     ) async -> TimeZone? {
-        guard let serverID = selectedJamfServer?.id else { return nil }
+        guard let serverID = selectedConnection?.id else { return nil }
         if let cached = jamfSchoolTimeZones[serverID] { return cached }
         guard let udid = fleet.values.first?.udid,
               let details = try? await school.deviceDetails(udid: udid),
@@ -1680,10 +1734,10 @@ final class LookupModel {
     /// Passcode state is absent, because it is not on the list endpoint. It is
     /// read per device when one is selected, the same way AppleCare coverage
     /// is on the Apple side.
-    private static func fetchJamfSchool(context: LookupContext, serial: String) -> FetchState<JamfInfo> {
+    private static func fetchJamfSchool(context: LookupContext, serial: String) -> FetchState<ManagedDeviceInfo> {
         guard let device = context.schoolFleet[serial.uppercased()] else { return .notFound }
-        return .found(JamfInfo(
-            computerID: device.udid,
+        return .found(ManagedDeviceInfo(
+            recordID: device.udid,
             kind: device.kind,
             udid: device.udid,
             name: device.name,
@@ -1702,7 +1756,7 @@ final class LookupModel {
             // The console addresses a device by its UDID, which is also what
             // its API keys on, so the link needs nothing the lookup does not
             // already have.
-            webURL: context.jamfBaseURL.flatMap { URL(string: "\($0)/devices/details/\(device.udid)") },
+            webURL: context.consoleBaseURL.flatMap { URL(string: "\($0)/devices/details/\(device.udid)") },
             locationID: device.locationID,
             locationName: device.locationID.map { context.schoolLocationNames[$0] ?? "Location \($0)" },
             isManaged: device.isManaged,
@@ -1710,17 +1764,60 @@ final class LookupModel {
         ))
     }
 
-    private static func fetchJamf(context: LookupContext, serial: String) async -> FetchState<JamfInfo> {
-        if context.school != nil {
+    /// Builds the MDM side of a report from the Intune fleet already in hand.
+    /// Nothing is requested here: the tenant was read once when the context
+    /// was made.
+    ///
+    /// No UDID and no management ID: Graph populates `udid` only on a
+    /// single-device request, and every Intune action is addressed by the
+    /// managed device ID instead, so neither is needed.
+    private static func fetchIntune(context: LookupContext, serial: String) -> FetchState<ManagedDeviceInfo> {
+        guard let device = context.intuneFleet[serial.uppercased()] else { return .notFound }
+        return .found(ManagedDeviceInfo(
+            recordID: device.id,
+            kind: device.kind,
+            name: device.deviceName,
+            // A bare boolean, which the encryption state reads as its
+            // fallback when no partition detail accompanies it.
+            encryption: device.isEncrypted.map {
+                DiskEncryptionState(
+                    fileVaultEnabled: $0,
+                    bootPartitionState: nil,
+                    bootPartitionPercent: nil,
+                    recoveryKeyValidity: nil
+                )
+            },
+            osVersion: device.osVersion?.isEmpty == false ? device.osVersion : nil,
+            osName: device.operatingSystem?.isEmpty == false ? device.operatingSystem : nil,
+            lastEnrolledDate: device.enrolledDateTime,
+            // Intune reports one sync time and nothing that separates a
+            // check-in from an inventory report, so it fills the contact
+            // column and the other two are hidden by capability.
+            lastContact: device.lastSyncDateTime,
+            mdmProfileExpiration: device.managementCertificateExpirationDate,
+            // The Intune console addresses a device by the same managed device
+            // ID every action uses, so the link needs nothing extra.
+            webURL: URL(string: "https://intune.microsoft.com/#view/Microsoft_Intune_ManagedDevices/ManagedDeviceMenu.MenuView/~/overview/managedDeviceId/\(device.id)"),
+            isManaged: device.isManaged,
+            isSupervised: device.isSupervised,
+            complianceSummary: device.complianceSummary
+        ))
+    }
+
+    private static func fetchMDM(context: LookupContext, serial: String) async -> FetchState<ManagedDeviceInfo> {
+        if context.schoolClient != nil {
             return fetchJamfSchool(context: context, serial: serial)
         }
-        guard let client = context.jamf else { return .notConfigured }
+        if context.intuneClient != nil {
+            return fetchIntune(context: context, serial: serial)
+        }
+        guard let client = context.proClient else { return .notConfigured }
         do {
             if let record = try await client.computer(serial: serial) {
                 let prestageID = context.computerPrestageBySerial[serial]
-                let webURL = context.jamfBaseURL.flatMap { URL(string: "\($0)/computers.html?id=\(record.id)&o=r") }
-                return .found(JamfInfo(
-                    computerID: record.id,
+                let webURL = context.consoleBaseURL.flatMap { URL(string: "\($0)/computers.html?id=\(record.id)&o=r") }
+                return .found(ManagedDeviceInfo(
+                    recordID: record.id,
                     kind: .computer,
                     udid: record.udid,
                     managementID: record.managementID,
@@ -1742,9 +1839,9 @@ final class LookupModel {
             }
             if let record = try await client.mobileDevice(serial: serial) {
                 let prestageID = context.mobilePrestageBySerial[serial]
-                let webURL = context.jamfBaseURL.flatMap { URL(string: "\($0)/mobileDevices.html?id=\(record.id)&o=r") }
-                return .found(JamfInfo(
-                    computerID: record.id,
+                let webURL = context.consoleBaseURL.flatMap { URL(string: "\($0)/mobileDevices.html?id=\(record.id)&o=r") }
+                return .found(ManagedDeviceInfo(
+                    recordID: record.id,
                     kind: .mobileDevice,
                     udid: record.udid,
                     managementID: record.managementID,

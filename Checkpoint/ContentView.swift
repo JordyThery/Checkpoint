@@ -47,7 +47,7 @@ struct ContentView: View {
     /// Built from every loaded device, not the filtered subset, so choosing a
     /// filter does not remove the other options from the menu.
     private var filterOptions: FilterOptions {
-        FilterOptions(reports: model.reports, capabilities: model.jamfCapabilities)
+        FilterOptions(reports: model.reports, capabilities: model.mdmCapabilities)
     }
 
     /// Rows in the order the table draws them. Sorting is display only: the
@@ -70,7 +70,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 inputBar
-                if (!model.isABMConfigured || settings.jamfServers.isEmpty) && !settings.configurationHintDismissed {
+                if (!model.isABMConfigured || settings.mdmConnections.isEmpty) && !settings.configurationHintDismissed {
                     configurationHint
                 }
                 Divider()
@@ -78,7 +78,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No Devices",
                         systemImage: "laptopcomputer.and.iphone",
-                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.abmKind.label) and \(model.jamfFlavor.label).")
+                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.abmKind.label) and \(model.mdmProduct.label).")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
@@ -116,17 +116,17 @@ struct ContentView: View {
                         .help("\(model.abmKind.label) organization used for lookups and actions")
                     }
                 }
-                if !settings.jamfServers.isEmpty {
+                if !settings.mdmConnections.isEmpty {
                     ToolbarItem {
                         Picker("Jamf server", selection: Binding(
-                            get: { model.selectedJamfServer?.id },
-                            set: { model.selectedJamfServerID = $0 }
+                            get: { model.selectedConnection?.id },
+                            set: { model.selectedConnectionID = $0 }
                         )) {
-                            ForEach(settings.jamfServers) { server in
+                            ForEach(settings.mdmConnections) { server in
                                 Text(server.displayName).tag(Optional(server.id))
                             }
                         }
-                        .help("\(model.jamfFlavor.label) server used for lookups and actions")
+                        .help("\(model.mdmProduct.label) server used for lookups and actions")
                     }
                 }
                 ToolbarItem {
@@ -205,9 +205,11 @@ struct ContentView: View {
             Button("Import…") { showingImporter = true }
                 .help("Import a text or CSV file with one serial number per line")
                 .disabled(model.isLoading)
-            Button("Group…") { showingGroupPicker = true }
-                .help("Look up every device in a \(model.jamfFlavor.label) group")
-                .disabled(model.isLoading || settings.jamfServers.isEmpty)
+            if model.mdmCapabilities.contains(.deviceGroups) {
+                Button("Group…") { showingGroupPicker = true }
+                    .help("Look up every device in a \(model.mdmProduct.label) group")
+                    .disabled(model.isLoading || settings.mdmConnections.isEmpty)
+            }
             Button("Order…") { showingOrderPicker = true }
                 .help("Look up every device on an \(model.abmKind.label) order")
                 .disabled(model.isLoading || !model.isABMConfigured)
@@ -249,12 +251,12 @@ struct ContentView: View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-            if !model.isABMConfigured && settings.jamfServers.isEmpty {
-                Text("\(model.abmKind.label) and \(model.jamfFlavor.label) are not configured yet.")
+            if !model.isABMConfigured && settings.mdmConnections.isEmpty {
+                Text("\(model.abmKind.label) and \(model.mdmProduct.label) are not configured yet.")
             } else if !model.isABMConfigured {
                 Text("\(model.abmKind.label) is not configured, so its columns will be empty.")
             } else {
-                Text("No Jamf server is configured, so its columns will be empty.")
+                Text("No device management server is configured, so its columns will be empty.")
             }
             Button("Open Settings…") { openSettings() }
                 .buttonStyle(.link)
@@ -316,8 +318,8 @@ struct ContentView: View {
                 assignmentPicker("MDM Server", selection: $filters.mdmServer,
                                  options: options.servers, noneCount: options.serverNone)
             }
-            if options.showPrestages {
-                assignmentPicker(model.jamfFlavor.enrollmentProfileLabel, selection: $filters.prestage,
+            if options.showPrestages, model.mdmCapabilities.contains(.enrollmentProfileName) {
+                assignmentPicker(model.mdmProduct.enrollmentProfileLabel, selection: $filters.prestage,
                                  options: options.prestages, noneCount: options.prestageNone)
             }
             if options.showOSVersions {
@@ -326,7 +328,7 @@ struct ContentView: View {
             }
             if options.showSites {
                 assignmentPicker(
-                    model.jamfCapabilities.contains(.locations) ? "Location" : "Site",
+                    model.mdmCapabilities.contains(.locations) ? "Location" : "Site",
                     selection: $filters.site,
                     options: options.sites, noneCount: options.siteNone
                 )
@@ -340,14 +342,14 @@ struct ContentView: View {
                     datePicker("Last Inventory Update", selection: $filters.lastInventory, options: options.lastInventory)
                 }
                 if !options.lastContact.isEmpty {
-                    datePicker(model.jamfFlavor.lastContactLabel, selection: $filters.lastContact, options: options.lastContact)
+                    datePicker(model.mdmProduct.lastContactLabel, selection: $filters.lastContact, options: options.lastContact)
                 }
             }
             if !options.issues.isEmpty {
                 Divider()
                 Section("Only show devices with") {
                     ForEach(options.issues, id: \.issue) { entry in
-                        Toggle("\(entry.issue.label(for: model.jamfFlavor)) (\(entry.count))", isOn: Binding(
+                        Toggle("\(entry.issue.label(for: model.mdmProduct)) (\(entry.count))", isOn: Binding(
                             get: { filters.issues.contains(entry.issue) },
                             set: { on in
                                 if on { filters.issues.insert(entry.issue) } else { filters.issues.remove(entry.issue) }
@@ -426,53 +428,57 @@ struct ContentView: View {
                 TableColumn("Warranty Coverage", value: \.coverageText) { (report: DeviceReport) in
                     FetchText(state: report.abm) { Self.coverageSummary($0) }
                 }
-                TableColumn("\(model.jamfFlavor.label) Device Name", value: \.jamfNameText) { (report: DeviceReport) in
-                    JamfStatusCell(state: report.jamf)
+                TableColumn("\(model.mdmProduct.label) Device Name", value: \.mdmNameText) { (report: DeviceReport) in
+                    MDMStatusCell(state: report.mdm)
                 }
                 TableColumn("OS Version", value: \.osVersionText) { (report: DeviceReport) in
-                    FetchText(state: report.jamf) { $0.osDisplay ?? "—" }
+                    FetchText(state: report.mdm) { $0.osDisplay ?? "—" }
                 }
-                TableColumn(model.jamfFlavor.enrollmentProfileLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
-                    FetchText(state: report.jamf) { $0.prestageName ?? "None" }
+                if model.mdmCapabilities.contains(.enrollmentProfileName) {
+                    TableColumn(model.mdmProduct.enrollmentProfileLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
+                        FetchText(state: report.mdm) { $0.prestageName ?? "None" }
+                    }
                 }
             }
             // Columns the connected product has no source for are left out
             // rather than shown empty: on Jamf School the four dates and the
             // profile expiry would be em-dashes for every row.
             Group {
-                if model.jamfCapabilities.contains(.locations) {
+                if model.mdmCapabilities.contains(.locations) {
                     TableColumn("Location", value: \.locationText) { (report: DeviceReport) in
-                        FetchText(state: report.jamf) { $0.locationName ?? "None" }
+                        FetchText(state: report.mdm) { $0.locationName ?? "None" }
                     }
                 }
-                if model.jamfCapabilities.contains(.enrollmentDates) {
+                if model.mdmCapabilities.contains(.enrollmentDate) {
                     TableColumn("Last Enrollment Date", value: \.lastEnrolledSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.jamf) { DateFormatting.short($0.lastEnrolledDate) }
+                        FetchText(state: report.mdm) { DateFormatting.short($0.lastEnrolledDate) }
                     }
+                }
+                if model.mdmCapabilities.contains(.inventoryDates) {
                     TableColumn("Last Inventory Update", value: \.reportSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.jamf) { DateFormatting.short($0.reportDate) }
+                        FetchText(state: report.mdm) { DateFormatting.short($0.reportDate) }
                     }
                 }
-                TableColumn(model.jamfFlavor.lastContactLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
-                    FetchText(state: report.jamf) { DateFormatting.short($0.lastContact) }
+                TableColumn(model.mdmProduct.lastContactLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
+                    FetchText(state: report.mdm) { DateFormatting.short($0.lastContact) }
                 }
-                if model.jamfCapabilities.contains(.enrollmentDates) {
+                if model.mdmCapabilities.contains(.inventoryDates) {
                     TableColumn("Last check-in", value: \.lastCheckInSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.jamf) { DateFormatting.short($0.lastContactTime) }
+                        FetchText(state: report.mdm) { DateFormatting.short($0.lastContactTime) }
                     }
                 }
-                if model.jamfCapabilities.contains(.mdmProfileExpiry) {
+                if model.mdmCapabilities.contains(.mdmProfileExpiry) {
                     TableColumn("MDM Profile Expiration", value: \.mdmProfileExpirationSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.jamf) { DateFormatting.dateOnly($0.mdmProfileExpiration) }
+                        FetchText(state: report.mdm) { DateFormatting.dateOnly($0.mdmProfileExpiration) }
                     }
                 }
-                if model.jamfCapabilities.contains(.deviceLink) {
+                if model.mdmCapabilities.contains(.deviceLink) {
                     TableColumn("") { (report: DeviceReport) in
-                        if let url = report.jamf.value?.webURL {
+                        if let url = report.mdm.value?.webURL {
                             Link(destination: url) {
                                 Image(systemName: "arrow.up.forward.app")
                             }
-                            .help("Open in \(model.jamfFlavor.label)")
+                            .help("Open in \(model.mdmProduct.label)")
                         }
                     }
                     .width(28)
@@ -481,9 +487,9 @@ struct ContentView: View {
         }
         .focused($focus, equals: .results)
         .contextMenu(forSelectionType: DeviceReport.ID.self) { ids in
-            Button("Open in \(model.jamfFlavor.label)") { openInJamf(ids) }
+            Button("Open in \(model.mdmProduct.label)") { openInConsole(ids) }
         } primaryAction: { ids in
-            openInJamf(ids)
+            openInConsole(ids)
         }
     }
 
@@ -502,9 +508,9 @@ struct ContentView: View {
     private var pendingGroupMessage: String {
         guard let pending = pendingGroup else { return "" }
         if model.needsOrganizationRead(forDeviceCount: pending.serials.count) {
-            return "\(model.abmKind.label) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against \(model.jamfFlavor.label)."
+            return "\(model.abmKind.label) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against \(model.mdmProduct.label)."
         }
-        return "Each device is checked against both \(model.abmKind.label) and \(model.jamfFlavor.label), so a list this size takes a while."
+        return "Each device is checked against both \(model.abmKind.label) and \(model.mdmProduct.label), so a list this size takes a while."
     }
 
     /// Puts a group's or order's serials in the field, then either looks them
@@ -529,9 +535,9 @@ struct ContentView: View {
         model.clearReports()
     }
 
-    private func openInJamf(_ ids: Set<DeviceReport.ID>) {
+    private func openInConsole(_ ids: Set<DeviceReport.ID>) {
         for id in ids {
-            if let url = model.reports.first(where: { $0.id == id })?.jamf.value?.webURL {
+            if let url = model.reports.first(where: { $0.id == id })?.mdm.value?.webURL {
                 openURL(url)
             }
         }
@@ -617,31 +623,31 @@ private extension DeviceReport {
         abm.sortText { ContentView.coverageSummary($0) }
     }
 
-    var jamfNameText: String {
-        jamf.sortText(notConfigured: "Not configured", notFound: "No record") {
-            $0.name ?? "Record #\($0.computerID)"
+    var mdmNameText: String {
+        mdm.sortText(notConfigured: "Not configured", notFound: "No record") {
+            $0.name ?? "Record #\($0.recordID)"
         }
     }
 
     var osVersionText: String {
         // String rather than a parsed version: KeyPathComparator compares
         // strings the way the Finder does, so 26.10 still follows 26.9.
-        jamf.sortText { $0.osDisplay ?? "—" }
+        mdm.sortText { $0.osDisplay ?? "—" }
     }
 
     var enrollmentProfileText: String {
-        jamf.sortText { $0.prestageName ?? "None" }
+        mdm.sortText { $0.prestageName ?? "None" }
     }
 
     var locationText: String {
-        jamf.sortText { $0.locationName ?? "None" }
+        mdm.sortText { $0.locationName ?? "None" }
     }
 
-    var lastEnrolledSortDate: Date { Self.sortDate(jamf.value?.lastEnrolledDate) }
-    var reportSortDate: Date { Self.sortDate(jamf.value?.reportDate) }
-    var lastContactSortDate: Date { Self.sortDate(jamf.value?.lastContact) }
-    var lastCheckInSortDate: Date { Self.sortDate(jamf.value?.lastContactTime) }
-    var mdmProfileExpirationSortDate: Date { Self.sortDate(jamf.value?.mdmProfileExpiration) }
+    var lastEnrolledSortDate: Date { Self.sortDate(mdm.value?.lastEnrolledDate) }
+    var reportSortDate: Date { Self.sortDate(mdm.value?.reportDate) }
+    var lastContactSortDate: Date { Self.sortDate(mdm.value?.lastContact) }
+    var lastCheckInSortDate: Date { Self.sortDate(mdm.value?.lastContactTime) }
+    var mdmProfileExpirationSortDate: Date { Self.sortDate(mdm.value?.mdmProfileExpiration) }
 
     /// Dates sort by value, not by the text shown, since a formatted date
     /// does not sort as a date. A missing one sorts oldest: a device that has
@@ -737,8 +743,8 @@ struct ABMStatusCell: View {
     }
 }
 
-struct JamfStatusCell: View {
-    let state: FetchState<JamfInfo>
+struct MDMStatusCell: View {
+    let state: FetchState<ManagedDeviceInfo>
 
     var body: some View {
         switch state {
@@ -753,7 +759,7 @@ struct JamfStatusCell: View {
                 .foregroundStyle(.orange)
                 .help(message)
         case .found(let info):
-            Text(info.name ?? "Record #\(info.computerID)")
+            Text(info.name ?? "Record #\(info.recordID)")
                 .foregroundStyle(.green)
         }
     }

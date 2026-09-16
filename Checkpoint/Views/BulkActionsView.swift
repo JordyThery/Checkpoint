@@ -46,7 +46,7 @@ struct BulkActionsView: View {
         case applyMobilePrestage
         case applySite
         case applyLocation
-        case deleteJamf
+        case deleteRecord
         case command(MDMCommand)
     }
 
@@ -79,8 +79,8 @@ struct BulkActionsView: View {
     }
 
     /// Devices with a Jamf Pro record (computer or mobile device).
-    private var jamfCount: Int {
-        reports.filter { $0.jamf.value != nil }.count
+    private var managedCount: Int {
+        reports.filter { $0.mdm.value != nil }.count
     }
 
     private var computerCount: Int {
@@ -97,7 +97,7 @@ struct BulkActionsView: View {
 
     private func commandCount(_ command: MDMCommand) -> Int {
         reports.filter { report in
-            report.jamf.value.map { command.applies(to: $0.kind, flavor: model.jamfFlavor) } ?? false
+            report.mdm.value.map { command.applies(to: $0.kind, product: model.mdmProduct) } ?? false
         }.count
     }
 
@@ -118,11 +118,11 @@ struct BulkActionsView: View {
     /// PreStages every selected device of the kind can join: filtered to the
     /// shared device-enrollment (ADE) instance when the selection has exactly
     /// one, the full list otherwise.
-    private func prestageOptions(kind: JamfDeviceKind) -> [JamfPrestage] {
+    private func prestageOptions(kind: DeviceKind) -> [JamfPrestage] {
         let all = kind == .computer ? model.prestages : model.mobilePrestages
         let instances = Set(
             reports
-                .filter { $0.deviceKind == kind && $0.jamf.value != nil }
+                .filter { $0.deviceKind == kind && $0.mdm.value != nil }
                 .compactMap { model.adeInstance(forSerial: $0.serial) }
         )
         guard instances.count == 1, let instance = instances.first else { return all }
@@ -130,10 +130,10 @@ struct BulkActionsView: View {
         return matching.isEmpty ? all : matching
     }
 
-    private func currentPrestageState(kind: JamfDeviceKind) -> BulkChoice {
+    private func currentPrestageState(kind: DeviceKind) -> BulkChoice {
         var values = Set<String?>()
         for report in reports where report.deviceKind == kind {
-            values.insert(report.jamf.value?.prestageID)
+            values.insert(report.mdm.value?.prestageID)
         }
         if values.isEmpty { return .none }
         if values.count == 1 { return values.first!.map(BulkChoice.value) ?? .none }
@@ -143,7 +143,7 @@ struct BulkActionsView: View {
     private var currentSiteState: BulkChoice {
         var values = Set<String>()
         for report in reports {
-            if let info = report.jamf.value {
+            if let info = report.mdm.value {
                 values.insert(info.siteID ?? "-1")
             }
         }
@@ -155,7 +155,7 @@ struct BulkActionsView: View {
     private var currentLocationState: BulkChoice {
         var values = Set<String?>()
         for report in reports {
-            if let info = report.jamf.value {
+            if let info = report.mdm.value {
                 values.insert(info.locationID)
             }
         }
@@ -171,16 +171,16 @@ struct BulkActionsView: View {
     /// site and two PreStage pickers, and neither shows the other's controls
     /// disabled.
     @ViewBuilder
-    private var jamfSection: some View {
-        let capabilities = model.jamfCapabilities
-        if capabilities.contains(.sites), jamfCount > 0, !model.sites.isEmpty {
+    private var mdmSection: some View {
+        let capabilities = model.mdmCapabilities
+        if capabilities.contains(.sites), managedCount > 0, !model.sites.isEmpty {
             bulkPicker("Site", selection: $siteSelection, currentState: currentSiteState, noneLabel: "None", options: model.sites.map { ($0.id, $0.name) })
-            Button("Apply Site to \(count(jamfCount))") { pending = .applySite }
+            Button("Apply Site to \(count(managedCount))") { pending = .applySite }
                 .disabled(siteSelection == .mixed || siteSelection == currentSiteState)
         }
-        if capabilities.contains(.locations), jamfCount > 0, !model.jamfLocations.isEmpty {
+        if capabilities.contains(.locations), managedCount > 0, !model.jamfLocations.isEmpty {
             bulkPicker("Location", selection: $locationSelection, currentState: currentLocationState, noneLabel: "None", options: model.jamfLocations.map { ($0.id, $0.name) })
-            Button("Apply Location to \(count(jamfCount))") { pending = .applyLocation }
+            Button("Apply Location to \(count(managedCount))") { pending = .applyLocation }
                 .disabled(locationSelection.appliedID == nil || locationSelection == .mixed || locationSelection == currentLocationState)
         }
         if capabilities.contains(.prestageScope) {
@@ -196,20 +196,18 @@ struct BulkActionsView: View {
             }
         }
         Button(
-            model.jamfFlavor == .school
-                ? "Move \(count(jamfCount)) to Trash in Jamf School"
-                : "Remove \(count(jamfCount)) from Jamf Pro",
+            "\(model.mdmProduct.removeRecordAction) for \(count(managedCount))",
             role: .destructive
-        ) { pending = .deleteJamf }
-            .disabled(jamfCount == 0)
+        ) { pending = .deleteRecord }
+            .disabled(managedCount == 0)
     }
 
     @ViewBuilder
     private func commandButton(_ command: MDMCommand) -> some View {
-        let flavor = model.jamfFlavor
+        let product = model.mdmProduct
         let unavailable = model.unavailabilityReason(for: command)
         Button("\(command.title) (\(commandCount(command)))", role: command.isDestructive ? .destructive : nil) {
-            if command.needsPIN(flavor: flavor) {
+            if command.needsPIN(product: product) {
                 pin = ""
                 pinCommand = command
             } else {
@@ -217,7 +215,7 @@ struct BulkActionsView: View {
             }
         }
         .disabled(unavailable != nil)
-        .help(unavailable ?? command.message(for: flavor))
+        .help(unavailable ?? command.message(for: product))
     }
 
     var body: some View {
@@ -227,7 +225,7 @@ struct BulkActionsView: View {
                 LabeledContent("Computers", value: "\(computerCount)")
                 LabeledContent("Mobile Devices", value: "\(mobileCount)")
                 LabeledContent("In \(model.abmKind.label)", value: "\(abmCount)")
-                LabeledContent("With \(model.jamfFlavor.label) Record", value: "\(jamfCount)")
+                LabeledContent("With \(model.mdmProduct.label) Record", value: "\(managedCount)")
             }
             Section(model.abmKind.label) {
                 bulkPicker("MDM Server", selection: $mdmSelection, currentState: currentMDMState, noneLabel: "Unassigned", options: model.mdmServers.map { ($0.id, $0.name) })
@@ -252,8 +250,8 @@ struct BulkActionsView: View {
             // One Jamf Pro group, mirroring the device inspector. Each device
             // kind keeps its own PreStage picker, distinguished by row label
             // rather than by section header.
-            if jamfCount > 0 || computerCount > 0 || mobileCount > 0 {
-                Section(model.jamfFlavor.label) { jamfSection }
+            if managedCount > 0 || computerCount > 0 || mobileCount > 0 {
+                Section(model.mdmProduct.label) { mdmSection }
             }
             Section("MDM Commands") {
                 ForEach(MDMCommand.allInDisplayOrder.filter { commandCount($0) > 0 }, id: \.self) { command in
@@ -314,7 +312,7 @@ struct BulkActionsView: View {
                 if let command = pinCommand { executeWithPIN(command) }
             }
         } message: {
-            Text("Enter the 6-digit PIN that will be required to unlock the Macs afterwards. The same PIN is used for every selected computer. \(pinCommand?.message(for: model.jamfFlavor) ?? "")")
+            Text("Enter the 6-digit PIN that will be required to unlock the Macs afterwards. The same PIN is used for every selected computer. \(pinCommand?.message(for: model.mdmProduct) ?? "")")
         }
         .confirmationDialog(
             pendingTitle,
@@ -393,13 +391,11 @@ struct BulkActionsView: View {
                 "Remove \(count(mobileCount)) from their PreStage?"
             }
         case .applySite:
-            "Move \(count(jamfCount)) to site “\(selectedSiteName)”?"
+            "Move \(count(managedCount)) to site “\(selectedSiteName)”?"
         case .applyLocation:
-            "Move \(count(jamfCount)) to location “\(selectedLocationName)”?"
-        case .deleteJamf:
-            model.jamfFlavor == .school
-                ? "Move \(count(jamfCount)) to the trash in Jamf School?"
-                : "Delete \(count(jamfCount)) from Jamf Pro?"
+            "Move \(count(managedCount)) to location “\(selectedLocationName)”?"
+        case .deleteRecord:
+            model.mdmProduct.removeRecordPrompt(count(managedCount))
         case .command(let command):
             "\(command.title) — \(count(commandCount(command)))?"
         case nil:
@@ -435,12 +431,10 @@ struct BulkActionsView: View {
             "Only the Jamf Pro records move to the other site. The PreStages each device can join stay the same, because they follow the ADE token that synced it."
         case .applyLocation:
             "The device records move to the other location. Their groups and the profiles scoped to them are re-evaluated for the new location. Jamf School accepts twenty devices per request, so a larger selection is sent in batches."
-        case .deleteJamf:
-            model.jamfFlavor == .school
-                ? "The records move to the trash in Jamf School. They stop being managed, and can be restored there."
-                : "The computer and mobile device records will be deleted from the selected Jamf Pro server."
+        case .deleteRecord:
+            model.mdmProduct.removeRecordConsequence
         case .command(let command):
-            command.message(for: model.jamfFlavor)
+            command.message(for: model.mdmProduct)
         case nil:
             ""
         }
@@ -500,12 +494,12 @@ struct BulkActionsView: View {
                     try await model.setLocation(reports: reports, to: locationID)
                 }
             }
-        case .deleteJamf:
+        case .deleteRecord:
             Button(
-                model.jamfFlavor == .school ? "Move to Trash" : "Delete Records",
+                model.mdmProduct.removeRecordActionPlural,
                 role: .destructive
             ) {
-                run { try await model.deleteFromJamf(reports: reports) }
+                run { try await model.deleteMDMRecord(reports: reports) }
             }
         case .command(let command):
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
@@ -536,7 +530,7 @@ struct BulkActionsView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued for \(count(commandCount(command))) in \(model.jamfFlavor.label).") {
+        run(successMessage: "\(command.title) was queued for \(count(commandCount(command))) in \(model.mdmProduct.label).") {
             try await model.sendCommand(command, reports: reports, passcode: pin)
         }
     }

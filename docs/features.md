@@ -1,6 +1,6 @@
 # Features
 
-What Checkpoint does beyond reporting, and how each part behaves. For what to grant each service, see [Permissions](permissions.md).
+What Checkpoint does beyond reporting, and how each part behaves. For what to grant each service, see [Permissions](permissions.md), and for an Intune tenant, [Intune](intune.md).
 
 > This page describes the release it ships with. Opening it from a tag shows that version.
 
@@ -13,16 +13,19 @@ Every action works on a single device or in bulk across a multi-selection, and a
 | Apple Business, Apple School Manager | Assign or unassign the MDM server. Schedule a migration to another MDM server with a deadline, then update or cancel it. Release a device from the organization — Apple Business only, as Apple School Manager defines no release activity |
 | Jamf Pro | Change PreStage scope, for computers and mobile devices. Change the site. Delete the device record |
 | Jamf School | Change the location. Move the record to the trash, from where Jamf School can restore it |
+| Intune | Delete the device record, which leaves the device enrolled. See [Intune](intune.md) for why retiring it is a command rather than an action |
 
 Multiple organizations, of either Apple service, and multiple Jamf servers, of either product, can be configured together and switched from the toolbar. Everything Checkpoint sends is recorded in the [activity log](#activity-log).
 
-Double-clicking a row, or the arrow at the end of it, opens the device's record in the Jamf Pro or Jamf School web interface. A Jamf Pro server reached through the [Platform API](platform-api.md) still links to its own URL, since the gateway host serves no web interface.
+Double-clicking a row, or the arrow at the end of it, opens the device's record in the product's web interface. An Intune device opens in the Intune console. A Jamf Pro server reached through the [Platform API](platform-api.md) still links to its own URL, since the gateway host serves no web interface.
 
 ## MDM commands
 
 **Jamf Pro** — computers: Lock, Renew MDM Profile, Redeploy Jamf Framework, Wipe, Send Blank Push, Remove MDM Profile. Mobile devices: Update Inventory, Lock, Clear Passcode, Restart, Shut Down, Wipe, Remove MDM Profile, Send Blank Push, Renew MDM Profile.
 
 **Jamf School** — Update Inventory, Restart, Wipe, Remove MDM Profile. Jamf School draws no distinction between computers and mobile devices, so all four reach Macs as well as iPads. Its API defines no lock, shut down or lost mode, and serves clearing a passcode only through a teacher session rather than an administrative one.
+
+**Intune** — computers: Update Inventory, Restart, Shut Down, Wipe, Remove MDM Profile. Mobile devices: the same, plus Lock and Clear Passcode. Intune keeps one collection for every platform, so the split is inferred from the platform rather than reported. Remove MDM Profile sends Intune's retire, which also removes the record — the one place where the same command means something different from the Jamf products, and the confirmation says so.
 
 ## Looking up a group or an order
 
@@ -41,6 +44,8 @@ Above 15 devices the Apple organization is read in bulk instead of one device at
 **AppleCare coverage** is the one thing not available in bulk, because Apple serves it only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device. **Passcode state on Jamf School** works the same way, for the same reason: it appears only in that product's per-device record, not in its device list.
 
 Jamf School has no request quota and no pagination, and serves the whole instance in one request, so a lookup of any size costs one request there whatever its size.
+
+**Intune is read the same way**, for a different reason: Microsoft Graph documents which properties `$filter` accepts and the serial number is not among them, so there is no per-serial query to make. The tenant is read once per lookup, a thousand devices per page, and matched locally. Graph throttles per application, and a throttled request is retried once its `Retry-After` has passed.
 
 ## Filtering the results
 
@@ -64,7 +69,7 @@ Deadlines cannot be more than 90 days out, and shortening a deadline, or setting
 
 ## Software updates and declarations
 
-Jamf Pro only; Jamf School reports none of this.
+Jamf Pro only. Neither Jamf School nor Intune reports any of this: Intune serves update state only through a tenant-wide report export, not per device.
 
 **Software update state** comes from the device's own declarative status report. `install-state` is what says whether anything is pending: `none` means nothing is, and that the last update succeeded. The version, deadline and failure beside it are kept by the report long after they stop being true — a Mac that updated months ago still carries the version it was offered — so they appear only while an update is outstanding, and a remembered failure is shown as history with its date. Beta enrolment is exempt, since Apple requires that key on every report, so it is stated either way.
 
@@ -76,7 +81,7 @@ Two limits. Jamf Pro will not serve a declaration whose identifier comes from a 
 
 ## Recovery secrets
 
-Jamf Pro only. For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, the **device lock PIN**, and the password for each **managed local administrator account**. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
+Jamf Pro only. Intune holds a FileVault recovery key, but only its beta endpoint serves one, so it is left out until that is not the case. For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, the **device lock PIN**, and the password for each **managed local administrator account**. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
 
 Managed local administrator accounts are listed as Jamf Pro lists them, one row per account with its source, so a Mac carrying both a PreStage account and one created by the Jamf binary shows both under their own usernames. Viewing a password causes Jamf Pro to rotate it after the instance's rotation time, so Checkpoint asks for confirmation first and records the view as a change.
 
@@ -84,7 +89,7 @@ Managed local administrator accounts are listed as Jamf Pro lists them, one row 
 
 Window → Activity Log (⌥⌘L) shows what Checkpoint asked each service to do and how it answered, in two tiers: the action you requested, and each HTTP request made to carry it out. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
 
-The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Jamf School attaches an owner to every device record, so the owner and any notes are withheld too — in a school those are pupils.
+Every service is logged the same way, including Microsoft Graph. The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Jamf School attaches an owner to every device record, so the owner and any notes are withheld too — in a school those are pupils.
 
 ![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
 

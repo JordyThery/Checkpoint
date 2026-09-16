@@ -13,26 +13,26 @@
 
 ## What it does
 
-Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** or **Apple School Manager** and **Jamf Pro** or **Jamf School**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in one table, and the tools to act on what you find.
+Checkpoint is a macOS app for Mac admins that cross-references devices between **Apple Business** or **Apple School Manager** and **Jamf Pro**, **Jamf School** or **Microsoft Intune**. Instead of switching between two consoles to establish where a device actually stands, you get both perspectives side by side in one table, and the tools to act on what you find.
 
 Enter serial numbers — typed, pasted, imported from a text or CSV file, or taken from a Jamf group or an Apple order — and Checkpoint reports, per device:
 
-| Apple Business / Apple School Manager | Jamf Pro | Jamf School |
-| --- | --- | --- |
-| Assignment status and assigned MDM server | Record and device name | Record and device name |
-| Migration status and deadline | PreStage scope and site | Location and Apple ADE profile |
-| Warranty and AppleCare coverage | Enrollment, inventory and contact dates | Last check-in |
-| Model, order number, purchase source | MDM profile expiration | Managed and supervised state |
-| | FileVault and passcode state | Passcode state |
-| | Installed OS version and build | Installed OS version |
-| | Software update state, as the device reports it | |
-| | Declaration status and enforced update target | |
+| Apple Business / Apple School Manager | Jamf Pro | Jamf School | Intune |
+| --- | --- | --- | --- |
+| Assignment status and assigned MDM server | Record and device name | Record and device name | Record and device name |
+| Migration status and deadline | PreStage scope and site | Location and Apple ADE profile | Compliance state |
+| Warranty and AppleCare coverage | Enrollment, inventory and contact dates | Last check-in | Enrollment date and last sync |
+| Model, order number, purchase source | MDM profile expiration | Managed and supervised state | Management certificate expiration |
+| | FileVault and passcode state | Passcode state | Encryption and supervised state |
+| | Installed OS version and build | Installed OS version | Installed OS version |
+| | Software update state, as the device reports it | | |
+| | Declaration status and enforced update target | | |
 
 Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, record deletion, and MDM commands. See [Features](docs/features.md).
 
 ![Checkpoint showing four Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
 
-Apple School Manager with Jamf School. Columns and actions the connected product has no source for are left out rather than shown empty:
+Apple School Manager with Jamf School. Columns and actions the connected product has no source for are left out rather than shown empty — which is also how an Intune tenant shows fewer columns than a Jamf Pro server:
 
 ![The same window connected to Apple School Manager and Jamf School, showing location and ADE profile columns in place of the Jamf Pro ones](docs/screenshot-jamf-school.png)
 
@@ -41,17 +41,18 @@ Apple School Manager with Jamf School. Columns and actions the connected product
 - **[Features](docs/features.md)** — actions, MDM commands, lookups, filtering and sorting, migration, software updates and declarations, recovery secrets, activity log
 - **[Permissions](docs/permissions.md)** — the Apple role, the Jamf Pro privileges and the Jamf School API-key methods each feature needs
 - **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through Jamf's gateway, and the three commands it cannot carry
+- **[Intune](docs/intune.md)** — connecting an Intune tenant, what Microsoft Graph does and does not expose, and the app registration it needs
 
 ## Requirements
 
 - macOS 15 or later
 - An Apple Business API account per organization, with the **Device Enrollment Manager** role or higher; Apple School Manager asks for no role
-- A Jamf Pro server, connected by API client, username and password, or the Platform API gateway; or a Jamf School instance, connected by Network ID and API key
+- One of: a Jamf Pro server, connected by API client, username and password, or the Platform API gateway; a Jamf School instance, connected by Network ID and API key; or a Microsoft Intune tenant, connected by an Entra app registration
 - Jamf Pro 11.30+ for the Last Contact attribute
 
 ## Security
 
-Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to your configured Jamf servers and Apple's API endpoints.
+Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to the services you configure — Apple's API endpoints, your Jamf servers, and Microsoft Graph.
 
 Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 

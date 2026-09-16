@@ -8,8 +8,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             ABMSettingsTab()
                 .tabItem { Label("Apple", systemImage: "apple.logo") }
-            JamfSettingsTab()
-                .tabItem { Label("Jamf", systemImage: "server.rack") }
+            MDMSettingsTab()
+                .tabItem { Label("MDM", systemImage: "server.rack") }
         }
         .frame(width: 580, height: 500)
     }
@@ -33,7 +33,7 @@ struct GeneralSettingsTab: View {
                 get: { !settings.configurationHintDismissed },
                 set: { settings.configurationHintDismissed = !$0 }
             ))
-            .help("Show the message above the table when Apple Business, Apple School Manager or a Jamf server is missing")
+            .help("Show the message above the table when an Apple organization or a device management connection is missing")
         }
         .formStyle(.grouped)
     }
@@ -229,7 +229,7 @@ struct ABMOrgEditor: View {
 
 // MARK: - Jamf Pro
 
-struct JamfSettingsTab: View {
+struct MDMSettingsTab: View {
     @Environment(AppSettings.self) private var settings
     @State private var selectedID: UUID?
 
@@ -237,14 +237,14 @@ struct JamfSettingsTab: View {
         HStack(spacing: 0) {
             VStack(spacing: 0) {
                 List(selection: $selectedID) {
-                    ForEach(settings.jamfServers) { server in
+                    ForEach(settings.mdmConnections) { server in
                         Text(server.displayName).tag(server.id)
                     }
                 }
                 Divider()
                 HStack(spacing: 10) {
                     Button { add() } label: { Image(systemName: "plus") }
-                        .help("Add a Jamf Pro or Jamf School server")
+                        .help("Add a Jamf Pro or Jamf School server, or an Intune tenant")
                     Button { removeSelected() } label: { Image(systemName: "minus") }
                         .disabled(selectedID == nil)
                         .help("Remove the selected server")
@@ -255,68 +255,89 @@ struct JamfSettingsTab: View {
             }
             .frame(width: 180)
             Divider()
-            if let index = settings.jamfServers.firstIndex(where: { $0.id == selectedID }) {
-                JamfServerEditor(config: settings.jamfServers[index])
-                    .id(settings.jamfServers[index].id)
+            if let index = settings.mdmConnections.firstIndex(where: { $0.id == selectedID }) {
+                MDMConnectionEditor(config: settings.mdmConnections[index])
+                    .id(settings.mdmConnections[index].id)
             } else {
                 ContentUnavailableView(
                     "No Server Selected",
                     systemImage: "server.rack",
-                    description: Text("Add a Jamf Pro or Jamf School server with the + button. You can store several, e.g. production and testing.")
+                    description: Text("Add a Jamf Pro or Jamf School server, or an Intune tenant, with the + button. You can store several, e.g. production and testing.")
                 )
                 .frame(maxWidth: .infinity)
             }
         }
-        .onAppear { selectedID = settings.jamfServers.first?.id }
+        .onAppear { selectedID = settings.mdmConnections.first?.id }
     }
 
     private func add() {
-        let server = JamfServerConfig(name: "New Server")
-        settings.jamfServers.append(server)
+        let server = MDMConnection(name: "New Server")
+        settings.mdmConnections.append(server)
         selectedID = server.id
     }
 
     private func removeSelected() {
         guard let selectedID,
-              let index = settings.jamfServers.firstIndex(where: { $0.id == selectedID }) else { return }
-        Keychain.delete(settings.jamfServers[index].secretKeychainKey)
-        settings.jamfServers.remove(at: index)
-        self.selectedID = settings.jamfServers.first?.id
+              let index = settings.mdmConnections.firstIndex(where: { $0.id == selectedID }) else { return }
+        Keychain.delete(settings.mdmConnections[index].secretKeychainKey)
+        settings.mdmConnections.remove(at: index)
+        self.selectedID = settings.mdmConnections.first?.id
     }
 }
 
-struct JamfServerEditor: View {
+struct MDMConnectionEditor: View {
     @Environment(AppSettings.self) private var settings
     @Environment(ActivityLog.self) private var log
-    let config: JamfServerConfig
+    let config: MDMConnection
 
     @State private var name = ""
-    @State private var flavor: JamfFlavor = .pro
+    @State private var product: MDMProduct = .jamfPro
     @State private var baseURL = ""
-    @State private var authMethod: JamfAuthMethod = .apiClient
+    @State private var authMethod: MDMAuthMethod = .apiClient
     @State private var account = ""
     @State private var secret = ""
     @State private var region: JamfRegion = .us
     @State private var environmentID = ""
+    @State private var tenantID = ""
     @State private var hasStoredSecret = false
     @State private var statusMessage: String?
     @State private var isTesting = false
 
     /// Jamf School has no gateway, so the Platform API rows never apply to it
     /// even if a server was switched over from Jamf Pro.
-    private var isGateway: Bool { flavor == .pro && authMethod == .platformGateway }
-    private var isSchool: Bool { flavor == .school }
+    private var isGateway: Bool { product == .jamfPro && authMethod == .platformGateway }
+    private var isSchool: Bool { product == .jamfSchool }
+    private var isIntune: Bool { product == .intune }
 
     var body: some View {
         Form {
-            Section("Server") {
+            Section(isIntune ? "Tenant" : "Server") {
                 TextField("Name", text: $name, prompt: Text("Production"))
-                Picker("Product", selection: $flavor) {
-                    ForEach(JamfFlavor.allCases) { option in
+                Picker("Product", selection: $product) {
+                    ForEach(MDMProduct.allCases) { option in
                         Text(option.label).tag(option)
                     }
                 }
-                TextField("URL", text: $baseURL, prompt: Text("https://yourorg.jamfcloud.com"))
+                // Changing product can leave an authentication method the new
+                // product does not accept, so it is corrected here rather
+                // than left to fail at sign-in.
+                .onChange(of: product) { _, new in
+                    let allowed = MDMAuthMethod.methods(for: new)
+                    if !allowed.contains(authMethod) { authMethod = allowed[0] }
+                }
+                if isIntune {
+                    TextField("Tenant ID", text: $tenantID, prompt: Text("contoso.onmicrosoft.com"))
+                    Text("Requests go to Microsoft Graph, so no URL is needed. The tenant ID can be the GUID or a verified domain name.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("URL", text: $baseURL, prompt: Text("https://yourorg.jamfcloud.com"))
+                }
+                if isIntune {
+                    Text("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, passcode state, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Remove MDM Profile retires it.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if isSchool {
                     Text("Jamf School reports fewer attributes than Jamf Pro, so the columns and actions it has no source for are hidden: FileVault, MDM profile expiry, software update state, PreStage scope and the recovery secrets.")
                         .font(.caption)
@@ -339,9 +360,19 @@ struct JamfServerEditor: View {
                     Text("The Network ID is under Devices → Enroll Device(s). Create the API key under Organization → Settings → API, and grant it the methods you intend to use: each key carries its own list, so a missing one refuses a single feature rather than the whole connection.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                } else if isIntune {
+                    TextField("Client ID", text: $account, prompt: Text("00000000-0000-0000-0000-000000000000"))
+                    SecureField(
+                        "Client Secret",
+                        text: $secret,
+                        prompt: hasStoredSecret ? Text("Stored in keychain, type to replace") : nil
+                    )
+                    Text("Create an app registration in Entra, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, and PrivilegedOperations.All to send commands. Application permissions need admin consent before any of them work.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
                     Picker("Method", selection: $authMethod) {
-                        ForEach(JamfAuthMethod.allCases) { method in
+                        ForEach(MDMAuthMethod.methods(for: product)) { method in
                             Text(method.label).tag(method)
                         }
                     }
@@ -392,25 +423,27 @@ struct JamfServerEditor: View {
         .formStyle(.grouped)
         .onAppear {
             name = config.name
-            flavor = config.flavor
+            product = config.product
             baseURL = config.baseURL
             authMethod = config.authMethod
             account = config.account
             region = config.region
             environmentID = config.environmentID
+            tenantID = config.tenantID
             hasStoredSecret = Keychain.get(config.secretKeychainKey) != nil
         }
     }
 
     private func save() {
-        guard let index = settings.jamfServers.firstIndex(where: { $0.id == config.id }) else { return }
-        settings.jamfServers[index].name = name
-        settings.jamfServers[index].flavor = flavor
-        settings.jamfServers[index].baseURL = baseURL
-        settings.jamfServers[index].authMethod = authMethod
-        settings.jamfServers[index].account = account
-        settings.jamfServers[index].region = region
-        settings.jamfServers[index].environmentID = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let index = settings.mdmConnections.firstIndex(where: { $0.id == config.id }) else { return }
+        settings.mdmConnections[index].name = name
+        settings.mdmConnections[index].product = product
+        settings.mdmConnections[index].baseURL = baseURL
+        settings.mdmConnections[index].authMethod = authMethod
+        settings.mdmConnections[index].account = account
+        settings.mdmConnections[index].region = region
+        settings.mdmConnections[index].environmentID = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
+        settings.mdmConnections[index].tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
         if !secret.isEmpty {
             Keychain.set(secret, for: config.secretKeychainKey)
             hasStoredSecret = true
@@ -427,10 +460,28 @@ struct JamfServerEditor: View {
         }
         var current = config
         current.name = name
-        current.flavor = flavor
+        current.product = product
         current.baseURL = baseURL
         current.authMethod = authMethod
         current.account = account
+        current.tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isIntune {
+            guard let client = IntuneClient(config: current, secret: effectiveSecret, log: log) else {
+                statusMessage = "Enter a tenant ID, client ID and client secret first."
+                return
+            }
+            isTesting = true
+            Task {
+                do {
+                    try await client.verify()
+                    statusMessage = "Connected successfully."
+                } catch {
+                    statusMessage = error.localizedDescription
+                }
+                isTesting = false
+            }
+            return
+        }
         if isSchool {
             guard let client = JamfSchoolClient(config: current, secret: effectiveSecret, log: log) else {
                 statusMessage = "Enter a valid server URL, Network ID and API key first."

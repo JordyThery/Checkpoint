@@ -45,12 +45,12 @@ nonisolated struct DeviceFilters: Equatable {
         kind.matches(report)
             && appleBusiness.matches(report)
             && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
-            && prestage.matches(report.jamf.value?.prestageID, hasRecord: report.jamf.value != nil)
-            && site.matches(report.jamf.value?.groupingID, hasRecord: report.jamf.value != nil)
-            && osVersion.matches(report.jamf.value?.osVersion, hasRecord: report.jamf.value != nil)
-            && lastEnrollment.matches(report.jamf.value?.lastEnrolledDate, hasRecord: report.jamf.value != nil)
-            && lastInventory.matches(report.jamf.value?.reportDate, hasRecord: report.jamf.value != nil)
-            && lastContact.matches(report.jamf.value?.lastContact, hasRecord: report.jamf.value != nil)
+            && prestage.matches(report.mdm.value?.prestageID, hasRecord: report.mdm.value != nil)
+            && site.matches(report.mdm.value?.groupingID, hasRecord: report.mdm.value != nil)
+            && osVersion.matches(report.mdm.value?.osVersion, hasRecord: report.mdm.value != nil)
+            && lastEnrollment.matches(report.mdm.value?.lastEnrolledDate, hasRecord: report.mdm.value != nil)
+            && lastInventory.matches(report.mdm.value?.reportDate, hasRecord: report.mdm.value != nil)
+            && lastContact.matches(report.mdm.value?.lastContact, hasRecord: report.mdm.value != nil)
             && issues.allSatisfy { $0.matches(report) }
     }
 
@@ -173,18 +173,18 @@ nonisolated struct DeviceFilters: Equatable {
     nonisolated enum Issue: String, CaseIterable, Identifiable, Equatable {
         case mdmProfileExpired
         case appleBusinessOnly
-        case jamfProOnly
+        case mdmOnly
         case migrationInProgress
         case fileVaultOff
         case noPasscode
 
         var id: String { rawValue }
 
-        func label(for flavor: JamfFlavor = .pro) -> String {
+        func label(for product: MDMProduct = .jamfPro) -> String {
             switch self {
             case .mdmProfileExpired: "MDM profile expired"
-            case .appleBusinessOnly: "No \(flavor.label) record"
-            case .jamfProOnly: "Not in the Apple organization"
+            case .appleBusinessOnly: "No \(product.label) record"
+            case .mdmOnly: "Not in the Apple organization"
             case .migrationInProgress: "Migration in progress"
             case .fileVaultOff: "FileVault not enabled"
             case .noPasscode: "No passcode set"
@@ -194,25 +194,25 @@ nonisolated struct DeviceFilters: Equatable {
         func matches(_ report: DeviceReport) -> Bool {
             switch self {
             case .mdmProfileExpired:
-                guard let expiry = report.jamf.value?.mdmProfileExpiration,
+                guard let expiry = report.mdm.value?.mdmProfileExpiration,
                       let date = DateFormatting.parseISO(expiry) else { return false }
                 return date < Date()
             case .appleBusinessOnly:
                 // Both sides must have answered: a lookup still running, or one
                 // that failed, says nothing about whether the device is missing.
                 guard report.abm.value != nil else { return false }
-                if case .notFound = report.jamf { return true }
+                if case .notFound = report.mdm { return true }
                 return false
-            case .jamfProOnly:
-                guard report.jamf.value != nil else { return false }
+            case .mdmOnly:
+                guard report.mdm.value != nil else { return false }
                 if case .notFound = report.abm { return true }
                 return false
             case .migrationInProgress:
                 return report.abm.value?.device.hasActiveMigration == true
             case .fileVaultOff:
-                return report.jamf.value?.encryption?.isEncrypted == false
+                return report.mdm.value?.encryption?.isEncrypted == false
             case .noPasscode:
-                return report.jamf.value?.security?.passcodePresent == false
+                return report.mdm.value?.security?.passcodePresent == false
             }
         }
     }
@@ -272,7 +272,7 @@ nonisolated struct FilterOptions {
     var showOSVersions: Bool { !osVersions.isEmpty || osVersionNone > 0 }
     var showDates: Bool { !lastEnrollment.isEmpty || !lastInventory.isEmpty || !lastContact.isEmpty }
 
-    init(reports: [DeviceReport], capabilities: JamfCapabilities = JamfFlavor.pro.capabilities) {
+    init(reports: [DeviceReport], capabilities: MDMCapabilities = MDMProduct.jamfPro.capabilities) {
         var serverCounts: [String: (name: String, count: Int)] = [:]
         var prestageCounts: [String: (name: String, count: Int)] = [:]
         var siteCounts: [String: (name: String, count: Int)] = [:]
@@ -302,29 +302,29 @@ nonisolated struct FilterOptions {
                     serverNone += 1
                 }
             }
-            if let jamf = report.jamf.value {
-                if let id = jamf.prestageID {
-                    let name = jamf.prestageName ?? id
+            if let mdm = report.mdm.value {
+                if let id = mdm.prestageID {
+                    let name = mdm.prestageName ?? id
                     prestageCounts[id] = (name, (prestageCounts[id]?.count ?? 0) + 1)
                 } else {
                     prestageNone += 1
                 }
-                if let id = jamf.groupingID {
-                    let name = jamf.locationName ?? jamf.siteName ?? id
+                if let id = mdm.groupingID {
+                    let name = mdm.locationName ?? mdm.siteName ?? id
                     siteCounts[id] = (name, (siteCounts[id]?.count ?? 0) + 1)
                 } else {
                     siteNone += 1
                 }
                 // Grouped by version rather than by the displayed string, so
                 // a Mac and an iPad on the same release fall together.
-                if let version = jamf.osVersion, !version.isEmpty {
+                if let version = mdm.osVersion, !version.isEmpty {
                     osCounts[version] = (version, (osCounts[version]?.count ?? 0) + 1)
                 } else {
                     osVersionNone += 1
                 }
-                let enrollment = jamf.lastEnrolledDate.flatMap(DateFormatting.parseISO)
-                let inventory = jamf.reportDate.flatMap(DateFormatting.parseISO)
-                let contact = jamf.lastContact.flatMap(DateFormatting.parseISO)
+                let enrollment = mdm.lastEnrolledDate.flatMap(DateFormatting.parseISO)
+                let inventory = mdm.reportDate.flatMap(DateFormatting.parseISO)
+                let contact = mdm.lastContact.flatMap(DateFormatting.parseISO)
                 hasEnrollment = hasEnrollment || enrollment != nil
                 hasInventory = hasInventory || inventory != nil
                 hasContact = hasContact || contact != nil
@@ -371,12 +371,13 @@ nonisolated struct FilterOptions {
         // for an expired MDM profile would hide every device, having read no
         // expiry for any of them. Passcode state is excluded for the same
         // reason the coverage and update columns are: Jamf School reports it
-        // per device, so a lookup has it for none of them yet.
+        // per device, so a lookup has it for none of them yet, and Intune
+        // does not report it at all.
         issues = DeviceFilters.Issue.allCases
             .filter { issue in
                 switch issue {
                 case .fileVaultOff: hasComputers && capabilities.contains(.fileVault)
-                case .noPasscode: hasMobileDevices && !capabilities.contains(.passcodeOnDemand)
+                case .noPasscode: hasMobileDevices && capabilities.contains(.passcodeState)
                 case .mdmProfileExpired: capabilities.contains(.mdmProfileExpiry)
                 default: true
                 }
@@ -385,7 +386,7 @@ nonisolated struct FilterOptions {
     }
 }
 
-extension JamfInfo {
+extension ManagedDeviceInfo {
     /// The installed OS as the connected product reports it: a version and
     /// build from Jamf Pro, or a named OS and version from Jamf School, which
     /// reports no build. Each keeps what its product knows rather than being

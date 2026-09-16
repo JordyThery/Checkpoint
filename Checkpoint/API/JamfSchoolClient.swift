@@ -38,7 +38,7 @@ struct JamfSchoolDevice: Sendable {
     /// endpoint and an object on the per-device one, and is empty on some
     /// records. The iPad/iPhone distinction is unreliable too, but Checkpoint
     /// only needs to tell a Mac from everything else.
-    var kind: JamfDeviceKind {
+    var kind: DeviceKind {
         if deviceClass?.lowercased() == "mac" { return .computer }
         if osPrefix?.lowercased() == "macos" { return .computer }
         return .mobileDevice
@@ -151,7 +151,7 @@ actor JamfSchoolClient {
     /// connections says which one it went to.
     private let connectionName: String
 
-    init?(config: JamfServerConfig, secret: String, log: ActivityLog? = nil) {
+    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil) {
         guard let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         let networkID = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = secret.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -2,7 +2,7 @@
 
 What to grant Apple Business or Apple School Manager, and Jamf Pro or Jamf School, so Checkpoint can do its work. Grant only what you intend to use: every feature degrades on its own, so a missing privilege disables one thing rather than breaking the app.
 
-For a Platform API connection, permissions work differently — see [Platform API](platform-api.md) instead. The Platform API is Jamf Pro only.
+For a Platform API connection, permissions work differently — see [Platform API](platform-api.md) instead. The Platform API is Jamf Pro only. For an Intune tenant, see [Intune](intune.md): its three Graph permissions are listed there, next to everything else that differs about that product.
 
 For what each feature actually does, see [Features](features.md).
 

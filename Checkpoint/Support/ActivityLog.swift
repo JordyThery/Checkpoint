@@ -9,28 +9,31 @@ nonisolated enum ActivityService: String, Sendable, CaseIterable, Identifiable {
     case appleSchool = "Apple School Manager"
     case jamfPro = "Jamf Pro"
     case jamfSchool = "Jamf School"
+    case intune = "Intune"
 
     var id: String { rawValue }
 
-    /// Both Apple services, as opposed to the two Jamf ones. Enumerated
-    /// rather than tested against one case, because it decides which
-    /// connection name an entry is attributed to: treating Jamf School as an
-    /// Apple service would label its requests with the Apple organization.
+    /// Both Apple services, as opposed to the device management ones.
+    /// Enumerated rather than tested against one case, because it decides
+    /// which connection name an entry is attributed to: treating Jamf School
+    /// as an Apple service would label its requests with the Apple
+    /// organization.
     var isAppleOrganization: Bool {
         switch self {
         case .appleBusiness, .appleSchool: true
-        case .jamfPro, .jamfSchool: false
+        case .jamfPro, .jamfSchool, .intune: false
         }
     }
 }
 
-extension JamfFlavor {
+extension MDMProduct {
     /// How traffic to this product is labelled in the log. Separate entries
     /// so a log cannot attribute a request to the wrong one.
     var activityService: ActivityService {
         switch self {
-        case .pro: .jamfPro
-        case .school: .jamfSchool
+        case .jamfPro: .jamfPro
+        case .jamfSchool: .jamfSchool
+        case .intune: .intune
         }
     }
 }

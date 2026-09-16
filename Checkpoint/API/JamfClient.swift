@@ -2,11 +2,6 @@ import Foundation
 
 // MARK: - Models
 
-nonisolated enum JamfDeviceKind: String, Sendable {
-    case computer
-    case mobileDevice
-}
-
 struct JamfComputerRecord: Sendable {
     let id: String
     let udid: String?
@@ -26,98 +21,13 @@ struct JamfComputerRecord: Sendable {
     /// FileVault state from the inventory record. This is the DISK_ENCRYPTION
     /// section, which reports encryption without carrying the recovery key,
     /// so it needs no privilege beyond Read Computers.
-    let encryption: JamfDiskEncryption?
+    let encryption: DiskEncryptionState?
     /// The installed OS, from inventory rather than the declarative report,
     /// which keeps whatever it last saw.
     let osVersion: String?
     let osBuild: String?
 }
 
-/// A Mac's FileVault state, as reported by inventory.
-struct JamfDiskEncryption: Sendable {
-    /// Jamf Pro's `fileVault2Enabled` flag. Not trustworthy on its own: it
-    /// reports false for Macs encrypted by the user rather than through Jamf
-    /// Pro, even with the boot partition fully encrypted and a valid key
-    /// escrowed. Kept only as a fallback for when the partition state is
-    /// missing or unknown.
-    let fileVaultEnabled: Bool?
-    /// Boot partition state, e.g. ENCRYPTED, ENCRYPTING or RESTART_NEEDED.
-    /// This is the authoritative signal.
-    let bootPartitionState: String?
-    let bootPartitionPercent: Int?
-    /// Jamf Pro's assessment of the escrowed personal key, e.g. VALID.
-    let recoveryKeyValidity: String?
-
-    nonisolated enum Status: Sendable {
-        case enabled
-        case notEnabled
-        /// Encrypting, decrypting, or waiting for a restart.
-        case inProgress
-        case ineligible
-        case unknown
-    }
-
-    var status: Status {
-        switch bootPartitionState {
-        case "ENCRYPTED": .enabled
-        case "UNENCRYPTED", "DECRYPTED": .notEnabled
-        case "INELIGIBLE": .ineligible
-        case "ENCRYPTING", "DECRYPTING", "OPTIMIZING", "RESTART_NEEDED",
-             "ENCRYPTING_PAUSED", "DECRYPTING_PAUSED": .inProgress
-        default:
-            // UNKNOWN or absent: the flag is all there is.
-            switch fileVaultEnabled {
-            case true: .enabled
-            case false: .notEnabled
-            default: .unknown
-            }
-        }
-    }
-
-    /// Whether FileVault is on, so far as can be told. Nil while in progress
-    /// or unknown, which callers should treat as "do not disable anything".
-    var isEncrypted: Bool? {
-        switch status {
-        case .enabled: true
-        case .notEnabled, .ineligible: false
-        case .inProgress, .unknown: nil
-        }
-    }
-
-    var displaySummary: String {
-        switch status {
-        case .enabled: return "Enabled"
-        case .notEnabled: return "Not enabled"
-        case .ineligible: return "Ineligible"
-        case .unknown: return "—"
-        case .inProgress:
-            // The state is the whole story here, e.g. Encrypting 42%.
-            guard let state = bootPartitionState.map(JamfDisplay.sentenceCase) else { return "In progress" }
-            guard let percent = bootPartitionPercent,
-                  state.hasSuffix("ing") || state.hasSuffix("paused") else { return state }
-            return "\(state) \(percent)%"
-        }
-    }
-
-    /// Key validity only means something once the disk is encrypted: an
-    /// unencrypted Mac reports UNKNOWN, which would read as a problem.
-    var keyValidityWarning: String? {
-        guard status == .enabled,
-              let validity = recoveryKeyValidity,
-              !["VALID", "NOT_APPLICABLE"].contains(validity) else { return nil }
-        return "Recovery key \(validity.lowercased())"
-    }
-}
-
-/// A mobile device's passcode and encryption state.
-struct JamfMobileSecurity: Sendable {
-    let passcodePresent: Bool?
-    /// Compliant with Jamf Pro's own requirements.
-    let passcodeCompliant: Bool?
-    /// Compliant with the passcode profile scoped to the device.
-    let passcodeCompliantWithProfile: Bool?
-    let hardwareEncryption: Int?
-}
 
 struct JamfMobileDeviceRecord: Sendable {
     let id: String
@@ -134,7 +44,7 @@ struct JamfMobileDeviceRecord: Sendable {
     let siteName: String?
     /// Escrowed unlock token, required by the ClearPasscode MDM command.
     let unlockToken: String?
-    let security: JamfMobileSecurity?
+    let security: MobileSecurityState?
     let osVersion: String?
     let osBuild: String?
 }
@@ -261,7 +171,7 @@ struct JamfSoftwareUpdateStatus: Sendable {
         case "prepared": "Ready to install"
         case "installing": "Installing"
         case "failed": "Update failed"
-        default: JamfDisplay.sentenceCase(state)
+        default: DisplayText.sentenceCase(state)
         }
     }
 
@@ -596,7 +506,7 @@ struct JamfDDMStatus: Sendable {
     }
 }
 
-nonisolated enum JamfDisplay {
+nonisolated enum DisplayText {
     /// Jamf Pro reports states as UPPER_SNAKE_CASE. Shown as sentence case so
     /// they read as prose: RESTART_NEEDED becomes Restart needed.
     static func sentenceCase(_ value: String) -> String {
@@ -712,7 +622,7 @@ actor JamfClient {
     }
 
     private let baseURL: URL
-    private let authMethod: JamfAuthMethod
+    private let authMethod: MDMAuthMethod
     private let account: String
     private let secret: String
     /// Platform API only: sent as `X-Environment-Id` on every request.
@@ -723,7 +633,7 @@ actor JamfClient {
     /// connections says which one it went to.
     private let connectionName: String
 
-    init?(config: JamfServerConfig, secret: String, log: ActivityLog? = nil) {
+    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil) {
         guard let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         self.baseURL = url
         self.authMethod = config.authMethod
@@ -846,7 +756,7 @@ actor JamfClient {
             siteID: item.general?.site?.id,
             siteName: item.general?.site?.name,
             encryption: item.diskEncryption.map {
-                JamfDiskEncryption(
+                DiskEncryptionState(
                     fileVaultEnabled: $0.fileVault2Enabled,
                     bootPartitionState: $0.bootPartitionEncryptionDetails?.partitionFileVault2State,
                     bootPartitionPercent: $0.bootPartitionEncryptionDetails?.partitionFileVault2Percent,
@@ -942,7 +852,7 @@ actor JamfClient {
             siteName: detail?.site?.name,
             unlockToken: detail?.unlockToken,
             security: detail?.security.map {
-                JamfMobileSecurity(
+                MobileSecurityState(
                     passcodePresent: $0.passcodePresent,
                     passcodeCompliant: $0.passcodeCompliant,
                     passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
@@ -1862,6 +1772,10 @@ actor JamfClient {
             return try await fetchBasicAuthToken()
         case .platformGateway:
             return try await fetchGatewayToken()
+        case .entraApp:
+            // Not reachable: this client is only built for a Jamf Pro
+            // connection, and the editor offers Entra only for Intune.
+            throw APIError(message: "An Entra app registration cannot sign in to Jamf Pro.")
         }
     }
 

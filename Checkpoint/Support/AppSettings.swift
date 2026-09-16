@@ -1,31 +1,60 @@
 import Foundation
 import Observation
 
-/// Which Jamf product a server is.
+/// Which device management product a connection talks to.
 ///
-/// Jamf School is a different product with a much smaller API, not a variant
-/// of Jamf Pro: no computer/mobile split, locations instead of sites, and no
-/// source at all for FileVault, MDM profile expiry, software update state or
-/// the recovery secrets. What it cannot report is hidden rather than shown
-/// empty, which is what `capabilities` drives.
-nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendable {
-    case pro
-    case school
+/// Products differ in what they can report, not only in how they are asked.
+/// Jamf School is not a variant of Jamf Pro: no computer/mobile split,
+/// locations instead of sites, and no source at all for FileVault, MDM
+/// profile expiry, software update state or the recovery secrets. What a
+/// product cannot report is hidden rather than shown empty, which is what
+/// `capabilities` drives.
+///
+/// A further product is added as a case here, a capability set below, and a
+/// client of its own. Nothing outside this file should ask which product it
+/// is talking to in order to decide what to show — that is what the
+/// capabilities are for.
+nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendable {
+    // Raw values are persisted in every saved connection, so they keep the
+    // spellings from when Jamf was the only kind of product there was.
+    case jamfPro = "pro"
+    case jamfSchool = "school"
+    case intune = "intune"
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .pro: "Jamf Pro"
-        case .school: "Jamf School"
+        case .jamfPro: "Jamf Pro"
+        case .jamfSchool: "Jamf School"
+        case .intune: "Intune"
         }
     }
 
-    var capabilities: JamfCapabilities {
+    /// What one configured connection to this product is called, which is a
+    /// server for Jamf and a tenant for Intune.
+    var connectionNoun: String {
         switch self {
-        case .pro: [.sites, .prestageScope, .enrollmentDates, .mdmProfileExpiry,
-                    .fileVault, .softwareUpdate, .declarations, .recoverySecrets, .deviceLink]
-        case .school: [.locations, .passcodeOnDemand, .deviceLink]
+        case .jamfPro, .jamfSchool: "server"
+        case .intune: "tenant"
+        }
+    }
+
+    var capabilities: MDMCapabilities {
+        switch self {
+        case .jamfPro: [.sites, .prestageScope, .enrollmentDate, .inventoryDates,
+                        .mdmProfileExpiry, .fileVault, .passcodeState, .softwareUpdate,
+                        .declarations, .recoverySecrets, .deviceLink, .deviceGroups,
+                        .enrollmentProfileName]
+        case .jamfSchool: [.locations, .passcodeOnDemand, .deviceLink, .deviceGroups,
+                           .enrollmentProfileName]
+        // Intune reports one sync time rather than Jamf's four dates, so it
+        // gets the enrollment date and the contact column and nothing else in
+        // that family. `isEncrypted` is a bare boolean, which the encryption
+        // state already handles as its fallback. No sites, no PreStage scope,
+        // no declarative update reporting, and no recovery secrets: the
+        // FileVault key is beta-only, so it is left out until it is not.
+        case .intune: [.enrollmentDate, .mdmProfileExpiry, .fileVault, .compliance, .deviceLink]
         }
     }
 
@@ -34,8 +63,10 @@ nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendab
     /// are named for what they actually are.
     var enrollmentProfileLabel: String {
         switch self {
-        case .pro: "PreStage"
-        case .school: "ADE Profile"
+        case .jamfPro: "PreStage"
+        case .jamfSchool: "ADE Profile"
+        // Not shown: see `MDMCapabilities.enrollmentProfileName`.
+        case .intune: "Enrollment Profile"
         }
     }
 
@@ -44,8 +75,75 @@ nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendab
     /// keeps the column from implying the two are the same measurement.
     var lastContactLabel: String {
         switch self {
-        case .pro: "Last Contact"
-        case .school: "Last Check-in"
+        case .jamfPro: "Last Contact"
+        case .jamfSchool: "Last Check-in"
+        case .intune: "Last Sync"
+        }
+    }
+
+    /// Wording for removing a record, which differs by product in kind and
+    /// not only in name: Jamf Pro and Intune delete it, Jamf School moves it
+    /// to a trash it can be restored from. Kept together here so a new
+    /// product cannot be added with half its wording missing.
+    ///
+    /// The button label, singular and plural.
+    var removeRecordAction: String {
+        switch self {
+        case .jamfPro, .intune: "Delete Record"
+        case .jamfSchool: "Move to Trash"
+        }
+    }
+
+    var removeRecordActionPlural: String {
+        switch self {
+        case .jamfPro, .intune: "Delete Records"
+        case .jamfSchool: "Move to Trash"
+        }
+    }
+
+    /// Past tense, for the activity log.
+    var removeRecordPastTense: String {
+        switch self {
+        case .jamfPro, .intune: "Deleted"
+        case .jamfSchool: "Trashed"
+        }
+    }
+
+    /// Confirmation title for one device and for several.
+    func removeRecordPrompt(_ subject: String) -> String {
+        switch self {
+        case .jamfPro: "Delete the Jamf Pro record for \(subject)?"
+        case .jamfSchool: "Move the Jamf School record for \(subject) to the trash?"
+        case .intune: "Delete the Intune record for \(subject)?"
+        }
+    }
+
+    /// What removing the record actually does, which is the part worth
+    /// spelling out: only Jamf School's is reversible, and only Intune's
+    /// leaves a device that will come back by itself.
+    var removeRecordConsequence: String {
+        switch self {
+        case .jamfPro: "The record will be deleted from the selected Jamf Pro server."
+        case .jamfSchool: "The record moves to the trash in Jamf School. It stops being managed, and can be restored there."
+        case .intune: "The record will be deleted from Intune. The device itself stays enrolled and will reappear at its next check-in; Remove MDM Profile is what unmanages it."
+        }
+    }
+
+    /// Shown in the inspector when no connection to this product exists.
+    var missingConnectionHint: String {
+        switch self {
+        case .jamfPro: "Add a Jamf Pro server in Settings to see enrollment details and PreStage scope."
+        case .jamfSchool: "Add a Jamf School server in Settings to see enrollment details and locations."
+        case .intune: "Add an Intune tenant in Settings to see enrollment details and compliance."
+        }
+    }
+
+    /// Shown when the product has no record for a serial.
+    var noRecordHint: String {
+        switch self {
+        case .jamfPro: "No computer or mobile device record was found on the selected Jamf Pro server."
+        case .jamfSchool: "No device record was found on the selected Jamf School server."
+        case .intune: "No managed device record was found in the selected Intune tenant."
         }
     }
 
@@ -53,46 +151,77 @@ nonisolated enum JamfFlavor: String, Codable, CaseIterable, Identifiable, Sendab
     /// device can be restored, so the wording differs from Jamf Pro's delete.
     var removeRecordLabel: String {
         switch self {
-        case .pro: "Remove from Jamf Pro"
-        case .school: "Move to Trash in Jamf School"
+        case .jamfPro: "Remove from Jamf Pro"
+        case .jamfSchool: "Move to Trash in Jamf School"
+        case .intune: "Delete from Intune"
         }
     }
 }
 
-/// What a Jamf connection can report and do. Every capability is a gate on a
-/// column, a row or an action, so a flavour that lacks one shows nothing in
+/// What a connection can report and do. Every capability is a gate on a
+/// column, a row or an action, so a product that lacks one shows nothing in
 /// its place rather than an empty value.
-nonisolated struct JamfCapabilities: OptionSet, Sendable {
+///
+/// Capabilities are deliberately finer-grained than products: some are
+/// granted by the connection rather than the product, and a capability a
+/// vendor withdraws should cost one line here rather than a hunt through the
+/// views.
+nonisolated struct MDMCapabilities: OptionSet, Sendable {
     let rawValue: Int
 
-    static let sites = JamfCapabilities(rawValue: 1 << 0)
-    static let locations = JamfCapabilities(rawValue: 1 << 1)
-    static let prestageScope = JamfCapabilities(rawValue: 1 << 2)
-    /// Last enrollment date, last inventory update and Last Contact.
-    static let enrollmentDates = JamfCapabilities(rawValue: 1 << 3)
-    static let mdmProfileExpiry = JamfCapabilities(rawValue: 1 << 4)
-    static let fileVault = JamfCapabilities(rawValue: 1 << 5)
-    static let softwareUpdate = JamfCapabilities(rawValue: 1 << 6)
-    static let recoverySecrets = JamfCapabilities(rawValue: 1 << 7)
+    static let sites = MDMCapabilities(rawValue: 1 << 0)
+    static let locations = MDMCapabilities(rawValue: 1 << 1)
+    static let prestageScope = MDMCapabilities(rawValue: 1 << 2)
+    /// The date the device enrolled.
+    static let enrollmentDate = MDMCapabilities(rawValue: 1 << 3)
+    static let mdmProfileExpiry = MDMCapabilities(rawValue: 1 << 4)
+    static let fileVault = MDMCapabilities(rawValue: 1 << 5)
+    static let softwareUpdate = MDMCapabilities(rawValue: 1 << 6)
+    static let recoverySecrets = MDMCapabilities(rawValue: 1 << 7)
     /// Passcode state is not in the bulk device list, only in the per-device
     /// record, so it is read when a device is selected.
-    static let passcodeOnDemand = JamfCapabilities(rawValue: 1 << 9)
+    static let passcodeOnDemand = MDMCapabilities(rawValue: 1 << 9)
+    /// The enrollment profile a device is assigned. Jamf Pro reports its
+    /// PreStage scope and Jamf School the Apple ADE profile; Intune's v1.0 API
+    /// reports only what a device enrolled with, which is not the same
+    /// question and reads as "None" for a device whose assignment the console
+    /// shows. The assignment itself is beta-only, so nothing is shown there.
+    static let enrollmentProfileName = MDMCapabilities(rawValue: 1 << 17)
+    /// Passcode state arrives with the lookup, so it can be filtered on.
+    /// Distinct from reading it on demand, and from not reporting it at all:
+    /// Intune exposes no passcode state through Graph.
+    static let passcodeState = MDMCapabilities(rawValue: 1 << 16)
     /// Links from a device to its record in the web interface. Built from
-    /// the server URL rather than published by either API, so it is a
-    /// capability of the product's console rather than of its API.
-    static let deviceLink = JamfCapabilities(rawValue: 1 << 10)
+    /// the server URL, or from Intune's fixed console host, rather than
+    /// published by any of the APIs — so it is a capability of the product's
+    /// console rather than of its API.
+    static let deviceLink = MDMCapabilities(rawValue: 1 << 10)
     /// Declarative management status: which declarations a device has
     /// processed, and whether it accepted them. Jamf School has no DDM.
-    static let declarations = JamfCapabilities(rawValue: 1 << 11)
+    static let declarations = MDMCapabilities(rawValue: 1 << 11)
     /// Blueprint names. A platform feature with no endpoint on a Jamf Pro
     /// instance, so only the gateway can resolve an identifier to a name.
-    static let blueprintNames = JamfCapabilities(rawValue: 1 << 12)
+    static let blueprintNames = MDMCapabilities(rawValue: 1 << 12)
+    /// Last inventory report and the Jamf binary check-in, as measurements
+    /// separate from last contact. Split from the enrollment date because
+    /// Intune reports one sync time and nothing that corresponds to either.
+    static let inventoryDates = MDMCapabilities(rawValue: 1 << 13)
+    /// Device compliance, which only Intune evaluates.
+    static let compliance = MDMCapabilities(rawValue: 1 << 14)
+    /// Looking a device group up and loading its members. Both Jamf products
+    /// serve one; Intune's equivalent is an Entra group, which is not a
+    /// device group and is not read.
+    static let deviceGroups = MDMCapabilities(rawValue: 1 << 15)
 }
 
-nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {
+/// How a connection authenticates. The three cases are Jamf's; another
+/// product's method is added here, and the editor shows only the ones its
+/// product accepts. Raw values are persisted.
+nonisolated enum MDMAuthMethod: String, Codable, CaseIterable, Identifiable {
     case apiClient
     case usernamePassword
     case platformGateway
+    case entraApp
 
     var id: String { rawValue }
 
@@ -101,6 +230,17 @@ nonisolated enum JamfAuthMethod: String, Codable, CaseIterable, Identifiable {
         case .apiClient: "API Client (ID + Secret)"
         case .usernamePassword: "Username + Password"
         case .platformGateway: "Platform API (Jamf Account)"
+        case .entraApp: "Entra App Registration (Client Secret)"
+        }
+    }
+
+    /// The methods a product accepts, so the editor cannot offer a Jamf
+    /// method for an Intune tenant or the other way round.
+    static func methods(for product: MDMProduct) -> [MDMAuthMethod] {
+        switch product {
+        case .jamfPro: [.apiClient, .usernamePassword, .platformGateway]
+        case .jamfSchool: [.apiClient]
+        case .intune: [.entraApp]
         }
     }
 }
@@ -126,12 +266,18 @@ nonisolated enum JamfRegion: String, Codable, CaseIterable, Identifiable {
     var gatewayHost: String { "https://\(rawValue).api.jamfcloud.com" }
 }
 
-nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
+/// One configured device management connection.
+///
+/// Fields only one product uses are kept rather than split into per-product
+/// types: a connection is edited as a single form, and a stored type that
+/// changes shape by product would have to be versioned to stay decodable.
+/// Each such field says which product it belongs to.
+nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
     var id = UUID()
     var name = ""
-    /// Which Jamf product this is. Absent from servers saved before Jamf
-    /// School was supported, which were all Jamf Pro.
-    var flavor: JamfFlavor = .pro
+    /// Which product this connection talks to. Absent from connections saved
+    /// before Jamf School was supported, which were all Jamf Pro.
+    var product: MDMProduct = .jamfPro
     /// The Jamf Pro server URL. API requests go here directly, except in
     /// Platform API mode where the regional gateway takes them. Links into the
     /// Jamf Pro web interface are always built from this, since the gateway
@@ -139,7 +285,7 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     var baseURL = ""
     /// Jamf Pro only. Jamf School authenticates with HTTP Basic, using the
     /// Network ID as the user and the API key as the password.
-    var authMethod: JamfAuthMethod = .apiClient
+    var authMethod: MDMAuthMethod = .apiClient
     /// Client ID or username depending on `authMethod`. The matching secret
     /// (client secret or password) lives in the keychain under `secretKeychainKey`.
     var account = ""
@@ -149,11 +295,19 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     /// Environment scope is required rather than tenant scope, because the
     /// platform device actions accept no other.
     var environmentID = ""
+    /// Intune only: the Entra tenant the app registration lives in, which is
+    /// part of the token URL rather than a header. A GUID or a verified
+    /// domain name; Microsoft accepts either.
+    var tenantID = ""
 
+    /// Keychain account for this connection's secret. The prefix is part of
+    /// the stored item's name, so it stays as it was written: changing it
+    /// would leave every saved secret unreadable and unfindable.
     var secretKeychainKey: String { "jamf.\(id.uuidString)" }
 
     var displayName: String {
         if !name.isEmpty { return name }
+        if product == .intune { return tenantID.isEmpty ? "Unnamed tenant" : tenantID }
         return normalizedBaseURL.isEmpty ? "Unnamed server" : normalizedBaseURL
     }
 
@@ -164,19 +318,20 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
         return url
     }
 
-    /// Host that API requests are sent to.
+    /// Host that API requests are sent to. Empty for Intune, whose client
+    /// addresses Microsoft Graph directly and needs no URL configured.
     var apiBaseURL: String {
         // Jamf School has no gateway, so the server URL is always the host,
         // whatever an authentication method left over from Jamf Pro says.
-        guard flavor == .pro else { return normalizedBaseURL }
+        guard product == .jamfPro else { return normalizedBaseURL }
         return authMethod == .platformGateway ? region.gatewayHost : normalizedBaseURL
     }
 
     /// What this connection can do, which is the product's capabilities plus
     /// anything only the gateway reaches. Blueprints are a platform feature,
     /// so a direct Jamf Pro connection cannot name one.
-    var capabilities: JamfCapabilities {
-        var result = flavor.capabilities
+    var capabilities: MDMCapabilities {
+        var result = product.capabilities
         if isUsingPlatformGateway { result.insert(.blueprintNames) }
         return result
     }
@@ -184,23 +339,41 @@ nonisolated struct JamfServerConfig: Identifiable, Codable, Hashable {
     /// True only for a Jamf Pro server on the Platform API gateway. Jamf
     /// School can never be on it, whatever `authMethod` holds.
     var isUsingPlatformGateway: Bool {
-        flavor == .pro && authMethod == .platformGateway
+        product == .jamfPro && authMethod == .platformGateway
+    }
+}
+
+extension MDMConnection {
+    /// Spelled out so that `product` keeps the key it was first saved under.
+    /// The synthesised keys follow the property names, so renaming the
+    /// property alone would write a key nothing reads and read one nothing
+    /// writes — every Jamf School connection would come back as Jamf Pro.
+    enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case product = "product"
+        case baseURL
+        case authMethod
+        case account
+        case region
+        case environmentID
+        case tenantID
     }
 }
 
 // Declared in an extension so the memberwise initialiser is still synthesised.
-extension JamfServerConfig {
+extension MDMConnection {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         baseURL = try container.decode(String.self, forKey: .baseURL)
-        authMethod = try container.decode(JamfAuthMethod.self, forKey: .authMethod)
+        authMethod = try container.decode(MDMAuthMethod.self, forKey: .authMethod)
         account = try container.decode(String.self, forKey: .account)
         // Added with Jamf School support, so absent from servers saved by
         // earlier versions. Those were all Jamf Pro; without a default the
         // whole list fails to decode and every configured server disappears.
-        flavor = try container.decodeIfPresent(JamfFlavor.self, forKey: .flavor) ?? .pro
+        product = try container.decodeIfPresent(MDMProduct.self, forKey: .product) ?? .jamfPro
         // Added with Platform API support, so absent from servers saved by
         // earlier versions. Without defaults the whole list fails to decode
         // and silently disappears.
@@ -209,6 +382,9 @@ extension JamfServerConfig {
         // instead. It is a different identifier, so it is not carried over and
         // the environment ID has to be entered again.
         environmentID = try container.decodeIfPresent(String.self, forKey: .environmentID) ?? ""
+        // Added with Intune support, so absent from every connection saved
+        // before it. Jamf connections never carry one.
+        tenantID = try container.decodeIfPresent(String.self, forKey: .tenantID) ?? ""
     }
 }
 
@@ -321,7 +497,7 @@ private struct LegacyABMConfig: Codable {
 final class AppSettings {
     static let shared = AppSettings()
 
-    var jamfServers: [JamfServerConfig] { didSet { save() } }
+    var mdmConnections: [MDMConnection] { didSet { save() } }
     var abmOrgs: [ABMConfig] { didSet { save() } }
     var appearance: AppAppearance { didSet { save() } }
     /// Whether the hint about an unconfigured service has been dismissed.
@@ -331,8 +507,10 @@ final class AppSettings {
 
     private init() {
         let defaults = UserDefaults.standard
-        jamfServers = defaults.data(forKey: "jamfServers")
-            .flatMap { try? JSONDecoder().decode([JamfServerConfig].self, from: $0) } ?? []
+        // Stored under its original key. Renaming it would orphan every
+        // connection already configured, and the app would come up empty.
+        mdmConnections = defaults.data(forKey: "jamfServers")
+            .flatMap { try? JSONDecoder().decode([MDMConnection].self, from: $0) } ?? []
         abmOrgs = defaults.data(forKey: "abmOrgs")
             .flatMap { try? JSONDecoder().decode([ABMConfig].self, from: $0) } ?? []
         appearance = defaults.string(forKey: "appearance")
@@ -369,7 +547,7 @@ final class AppSettings {
 
     private func save() {
         let defaults = UserDefaults.standard
-        if let data = try? JSONEncoder().encode(jamfServers) { defaults.set(data, forKey: "jamfServers") }
+        if let data = try? JSONEncoder().encode(mdmConnections) { defaults.set(data, forKey: "jamfServers") }
         if let data = try? JSONEncoder().encode(abmOrgs) { defaults.set(data, forKey: "abmOrgs") }
         defaults.set(appearance.rawValue, forKey: "appearance")
         defaults.set(configurationHintDismissed, forKey: "configurationHintDismissed")

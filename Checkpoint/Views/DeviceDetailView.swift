@@ -57,7 +57,7 @@ struct DeviceDetailView: View {
         case applyPrestage
         case applySite
         case applyLocation
-        case deleteJamf
+        case deleteRecord
         case command(MDMCommand)
         case viewLocalAdminPassword(JamfLocalAdminAccount)
     }
@@ -80,8 +80,8 @@ struct DeviceDetailView: View {
                 LabeledContent("Serial Number") {
                     Text(report.serial).monospaced().textSelection(.enabled)
                 }
-                if let url = report.jamf.value?.webURL {
-                    Link("Open in \(model.jamfFlavor.label)", destination: url)
+                if let url = report.mdm.value?.webURL {
+                    Link("Open in \(model.mdmProduct.label)", destination: url)
                 }
             }
             // Read-only detail and the actions that act on it are kept in
@@ -90,9 +90,9 @@ struct DeviceDetailView: View {
             if let info = report.abm.value, !info.isReleased {
                 Section { abmActions(info) }
             }
-            Section(model.jamfFlavor.label) { jamfContent }
-            if let info = report.jamf.value {
-                Section { jamfActions(info) }
+            Section(model.mdmProduct.label) { mdmContent }
+            if let info = report.mdm.value {
+                Section { mdmActions(info) }
                 if !localAdmins.isEmpty {
                     Section("Managed Local Administrator Accounts") { localAdminRows }
                 }
@@ -112,7 +112,7 @@ struct DeviceDetailView: View {
         // Keyed on resolution as well as the serial: a row selected while its
         // lookup is still running resolves without changing serial, and the
         // fetch must re-run once there is a record to fetch detail for.
-        .task(id: "\(report.serial)|\(report.abm.value != nil)|\(report.jamf.value?.computerID ?? "")") {
+        .task(id: "\(report.serial)|\(report.abm.value != nil)|\(report.mdm.value?.recordID ?? "")") {
             await loadDeviceDetail()
         }
         // Kept out of loadDeviceDetail: it is server-wide, cached for the
@@ -120,9 +120,9 @@ struct DeviceDetailView: View {
         .task { await model.loadADEInstances() }
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
-        .onChange(of: report.jamf.value?.prestageID) { syncSelections() }
-        .onChange(of: report.jamf.value?.siteID) { syncSelections() }
-        .onChange(of: report.jamf.value?.locationID) { syncSelections() }
+        .onChange(of: report.mdm.value?.prestageID) { syncSelections() }
+        .onChange(of: report.mdm.value?.siteID) { syncSelections() }
+        .onChange(of: report.mdm.value?.locationID) { syncSelections() }
         .sheet(item: $revealedSecret) { secret in
             VStack(alignment: .leading, spacing: 16) {
                 Text(secret.title).font(.headline)
@@ -175,7 +175,7 @@ struct DeviceDetailView: View {
                 if let command = pinCommand { executeWithPIN(command) }
             }
         } message: {
-            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message(for: model.jamfFlavor) ?? "")")
+            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message(for: model.mdmProduct) ?? "")")
         }
         .confirmationDialog(
             pendingTitle,
@@ -198,7 +198,7 @@ struct DeviceDetailView: View {
     /// device-enrollment (ADE) instance that synced this serial. Falls back
     /// to the full list when the instance is unknown.
     private var prestageChoices: [JamfPrestage] {
-        let all = report.jamf.value?.kind == .mobileDevice ? model.mobilePrestages : model.prestages
+        let all = report.mdm.value?.kind == .mobileDevice ? model.mobilePrestages : model.prestages
         guard let instance = model.adeInstance(forSerial: report.serial) else { return all }
         let matching = all.filter { $0.enrollmentInstanceID == instance }
         return matching.isEmpty ? all : matching
@@ -246,10 +246,8 @@ struct DeviceDetailView: View {
             "Move \(report.serial) to site “\(selectedSiteName)”?"
         case .applyLocation:
             "Move \(report.serial) to location “\(selectedLocationName)”?"
-        case .deleteJamf:
-            model.jamfFlavor == .school
-                ? "Move the Jamf School record for \(report.serial) to the trash?"
-                : "Delete the Jamf Pro record for \(report.serial)?"
+        case .deleteRecord:
+            model.mdmProduct.removeRecordPrompt(report.serial)
         case .command(let command):
             "\(command.title) — \(report.serial)?"
         case .viewLocalAdminPassword:
@@ -279,12 +277,10 @@ struct DeviceDetailView: View {
             "Only the Jamf Pro record moves to the other site. The PreStages the device can join stay the same, because they follow the ADE token that synced it."
         case .applyLocation:
             "The device record moves to the other location. Its groups and the profiles scoped to it are re-evaluated for the new location."
-        case .deleteJamf:
-            model.jamfFlavor == .school
-                ? "The record moves to the trash in Jamf School. It stops being managed, and can be restored there."
-                : "The record will be deleted from the selected Jamf Pro server."
+        case .deleteRecord:
+            model.mdmProduct.removeRecordConsequence
         case .command(let command):
-            command.message(for: model.jamfFlavor)
+            command.message(for: model.mdmProduct)
         case .viewLocalAdminPassword(let account):
             "Viewing the password for \(account.username) will cause Jamf Pro to rotate it \(rotationDescription)."
         case nil:
@@ -327,7 +323,7 @@ struct DeviceDetailView: View {
             }
         case .applyPrestage:
             Button("Change PreStage") {
-                let kind = report.jamf.value?.kind ?? .computer
+                let kind = report.mdm.value?.kind ?? .computer
                 run { try await model.setPrestage(reports: [report], to: prestageSelection, kind: kind) }
             }
         case .applySite:
@@ -343,12 +339,12 @@ struct DeviceDetailView: View {
                     try await model.setLocation(reports: [report], to: locationID)
                 }
             }
-        case .deleteJamf:
+        case .deleteRecord:
             Button(
-                model.jamfFlavor == .school ? "Move to Trash" : "Delete Record",
+                model.mdmProduct.removeRecordAction,
                 role: .destructive
             ) {
-                run { try await model.deleteFromJamf(reports: [report]) }
+                run { try await model.deleteMDMRecord(reports: [report]) }
             }
         case .command(let command):
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
@@ -490,24 +486,20 @@ struct DeviceDetailView: View {
     // MARK: Jamf
 
     @ViewBuilder
-    private var jamfContent: some View {
-        switch report.jamf {
+    private var mdmContent: some View {
+        switch report.mdm {
         case .pending:
             ProgressView().controlSize(.small)
         case .notConfigured:
-            Text(model.jamfFlavor == .school
-                 ? "Add a Jamf School server in Settings to see enrollment details and locations."
-                 : "Add a Jamf Pro server in Settings to see enrollment details and PreStage scope.")
+            Text(model.mdmProduct.missingConnectionHint)
                 .foregroundStyle(.secondary)
         case .notFound:
-            Text(model.jamfFlavor == .school
-                 ? "No device record was found on the selected Jamf School server."
-                 : "No computer or mobile device record was found on the selected Jamf Pro server.")
+            Text(model.mdmProduct.noRecordHint)
                 .foregroundStyle(.secondary)
         case .failed(let message):
             Text(message).foregroundStyle(.red)
         case .found(let info):
-            jamfDetails(info)
+            mdmDetails(info)
         }
     }
 
@@ -519,8 +511,8 @@ struct DeviceDetailView: View {
     /// expiry, software update state or any enrollment date, so on a Jamf
     /// School server those five rows do not exist.
     @ViewBuilder
-    private func jamfDetails(_ info: JamfInfo) -> some View {
-        let capabilities = model.jamfCapabilities
+    private func mdmDetails(_ info: ManagedDeviceInfo) -> some View {
+        let capabilities = model.mdmCapabilities
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
         if let os = info.osDisplay {
             LabeledContent("OS Version", value: os)
@@ -531,14 +523,19 @@ struct DeviceDetailView: View {
         if capabilities.contains(.locations), model.jamfLocations.isEmpty {
             LabeledContent("Location", value: info.locationName ?? "None")
         }
-        if capabilities.contains(.enrollmentDates) {
+        if capabilities.contains(.enrollmentDate) {
             LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
+        }
+        if capabilities.contains(.inventoryDates) {
             LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
         }
-        if info.kind == .mobileDevice || info.lastContact != nil {
-            LabeledContent(model.jamfFlavor.lastContactLabel, value: DateFormatting.short(info.lastContact))
+        if capabilities.contains(.compliance), let compliance = info.complianceSummary {
+            LabeledContent("Compliance", value: compliance)
         }
-        if capabilities.contains(.enrollmentDates), info.kind == .computer {
+        if info.kind == .mobileDevice || info.lastContact != nil {
+            LabeledContent(model.mdmProduct.lastContactLabel, value: DateFormatting.short(info.lastContact))
+        }
+        if capabilities.contains(.inventoryDates), info.kind == .computer {
             LabeledContent("Last check-in", value: DateFormatting.short(info.lastContactTime))
         }
         if capabilities.contains(.mdmProfileExpiry) {
@@ -611,7 +608,7 @@ struct DeviceDetailView: View {
     /// FileVault state from inventory. Shown for every Mac, unlike the
     /// recovery key, which is fetched only on request.
     @ViewBuilder
-    private func fileVaultRow(_ encryption: JamfDiskEncryption) -> some View {
+    private func fileVaultRow(_ encryption: DiskEncryptionState) -> some View {
         LabeledContent("FileVault") {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(encryption.displaySummary)
@@ -625,7 +622,7 @@ struct DeviceDetailView: View {
         }
     }
 
-    private func encryptionTint(_ status: JamfDiskEncryption.Status) -> AnyShapeStyle {
+    private func encryptionTint(_ status: DiskEncryptionState.Status) -> AnyShapeStyle {
         switch status {
         case .enabled: AnyShapeStyle(.green)
         case .notEnabled, .inProgress: AnyShapeStyle(.orange)
@@ -637,7 +634,7 @@ struct DeviceDetailView: View {
     /// together: a device with no passcode can still be compliant when no
     /// profile requires one, so either alone would mislead.
     @ViewBuilder
-    private func passcodeRow(_ security: JamfMobileSecurity) -> some View {
+    private func passcodeRow(_ security: MobileSecurityState) -> some View {
         if security.passcodePresent != nil || security.passcodeCompliant != nil {
             LabeledContent("Passcode") {
                 VStack(alignment: .trailing, spacing: 2) {
@@ -764,10 +761,10 @@ struct DeviceDetailView: View {
             let rejected = ddm.invalidDeclarations.first { $0.identifier == enforcement?.declarationID }
                 ?? ddm.rejectedUpdateEnforcement
             if rejected != nil || enforcement != nil {
-                let installed = report.jamf.value?.osVersion
+                let installed = report.mdm.value?.osVersion
                 let satisfied = enforcement?.isSatisfied(
                     byOSVersion: installed,
-                    build: report.jamf.value?.osBuild
+                    build: report.mdm.value?.osBuild
                 ) ?? false
                 LabeledContent("Update Enforcement") {
                     VStack(alignment: .trailing, spacing: 2) {
@@ -870,7 +867,7 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func blueprintLink(for declaration: JamfDeclaration) -> some View {
         if let blueprint = declaration.blueprintID,
-           let base = model.selectedJamfServer?.normalizedBaseURL,
+           let base = model.selectedConnection?.normalizedBaseURL,
            let url = URL(string: "\(base)/view/mfe/blueprints/\(blueprint)") {
             Link(blueprintName ?? "Open blueprint", destination: url)
                 .font(.caption)
@@ -879,8 +876,8 @@ struct DeviceDetailView: View {
     }
 
     @ViewBuilder
-    private func jamfActions(_ info: JamfInfo) -> some View {
-        let capabilities = model.jamfCapabilities
+    private func mdmActions(_ info: ManagedDeviceInfo) -> some View {
+        let capabilities = model.mdmCapabilities
         if capabilities.contains(.sites), !model.sites.isEmpty {
             Picker("Site", selection: $siteSelection) {
                 Text("None").tag("-1")
@@ -938,7 +935,7 @@ struct DeviceDetailView: View {
             }
         }
         // Destructive action last, matching Release in the Apple Business block.
-        Button(model.jamfFlavor.removeRecordLabel, role: .destructive) { pending = .deleteJamf }
+        Button(model.mdmProduct.removeRecordLabel, role: .destructive) { pending = .deleteRecord }
     }
 
     /// One row per managed local administrator account Jamf Pro holds, in the
@@ -974,14 +971,18 @@ struct DeviceDetailView: View {
         loadedCoverage = nil
         schoolDetails = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
-        guard report.jamf.value != nil else { return }
+        guard report.mdm.value != nil else { return }
         // Only ask each product for what it actually serves: a Jamf School
         // server has none of the endpoints below, and a Jamf Pro one carries
         // passcode state in the lookup already.
-        if model.jamfCapabilities.contains(.passcodeOnDemand) {
+        if model.mdmCapabilities.contains(.passcodeOnDemand) {
             schoolDetails = await model.jamfSchoolDetails(for: report)
             return
         }
+        // Gated rather than left to the client factory to refuse: a product
+        // with no declarative reporting should not be asked in the first
+        // place, and the same goes for the recovery secrets below.
+        guard model.mdmCapabilities.contains(.declarations) else { return }
         ddm = await model.ddmStatus(for: report)
         // Both need the status first, and neither is worth a request for a
         // device with nothing declarative to say.
@@ -992,7 +993,8 @@ struct DeviceDetailView: View {
                 blueprintName = await model.blueprintName(for: blueprint)
             }
         }
-        guard report.jamf.value?.kind == .computer else { return }
+        guard report.mdm.value?.kind == .computer,
+              model.mdmCapabilities.contains(.recoverySecrets) else { return }
         localAdmins = await model.localAdminAccounts(for: report)
         if !localAdmins.isEmpty {
             rotationTime = await model.localAdminRotationTime()
@@ -1017,13 +1019,13 @@ struct DeviceDetailView: View {
     // MARK: MDM commands
 
     @ViewBuilder
-    private func commandButtons(_ info: JamfInfo) -> some View {
-        let flavor = model.jamfFlavor
-        ForEach(MDMCommand.commands(for: info.kind, flavor: flavor), id: \.self) { command in
+    private func commandButtons(_ info: ManagedDeviceInfo) -> some View {
+        let product = model.mdmProduct
+        ForEach(MDMCommand.commands(for: info.kind, product: product), id: \.self) { command in
             let unavailable = model.unavailabilityReason(for: command)
                 ?? command.inapplicabilityReason(for: info)
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
-                if command.needsPIN(flavor: flavor) {
+                if command.needsPIN(product: product) {
                     pin = ""
                     pinCommand = command
                 } else {
@@ -1031,9 +1033,9 @@ struct DeviceDetailView: View {
                 }
             }
             .disabled(unavailable != nil)
-            .help(unavailable ?? command.message(for: flavor))
+            .help(unavailable ?? command.message(for: product))
         }
-        let blocked = MDMCommand.commands(for: info.kind, flavor: flavor)
+        let blocked = MDMCommand.commands(for: info.kind, product: product)
             .filter { model.unavailabilityReason(for: $0) != nil }
             .map(\.title)
         if !blocked.isEmpty {
@@ -1053,7 +1055,7 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued in \(model.jamfFlavor.label).") {
+        run(successMessage: "\(command.title) was queued in \(model.mdmProduct.label).") {
             try await model.sendCommand(command, reports: [report], passcode: pin)
         }
     }
@@ -1067,9 +1069,9 @@ struct DeviceDetailView: View {
     private func syncSelections() {
         let current = model.reports.first { $0.serial == report.serial } ?? report
         mdmSelection = current.abm.value?.mdmServerID
-        prestageSelection = current.jamf.value?.prestageID
-        siteSelection = current.jamf.value?.siteID ?? "-1"
-        locationSelection = current.jamf.value?.locationID
+        prestageSelection = current.mdm.value?.prestageID
+        siteSelection = current.mdm.value?.siteID ?? "-1"
+        locationSelection = current.mdm.value?.locationID
     }
 
     private func run(successMessage: String? = nil, _ operation: @escaping () async throws -> Void) {

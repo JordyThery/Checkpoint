@@ -30,7 +30,7 @@ struct GroupPickerView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Look Up a \(model.jamfFlavor.label) Group")
+                Text("Look Up a \(model.mdmProduct.label) Group")
                     .font(.headline)
                 Spacer()
             }
@@ -76,9 +76,10 @@ struct GroupPickerView: View {
             ContentUnavailableView(
                 "No Groups",
                 systemImage: "rectangle.3.group",
-                description: Text(model.jamfFlavor == .school
+                description: Text(model.mdmProduct == .jamfSchool
                                   ? "The selected Jamf School server has no device groups, or the API key cannot read them."
                                   : "The selected Jamf Pro server has no computer or mobile device groups, or the connection cannot read them.")
+
             )
         } else {
             List(visible, selection: $selection) { group in
