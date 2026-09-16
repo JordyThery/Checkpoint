@@ -1,7 +1,7 @@
 import Foundation
 
 /// Percent-encodes key/value pairs as an `application/x-www-form-urlencoded`
-/// request body, used by the OAuth token endpoints of both API clients.
+/// request body, used by the API clients' OAuth token endpoints.
 nonisolated enum FormURLEncoding {
     static func body(_ params: [(String, String)]) -> Data {
         var allowed = CharacterSet.alphanumerics

@@ -73,17 +73,33 @@ Jamf Pro only. Neither Jamf School nor Intune reports any of this: Intune serves
 
 **Software update state** comes from the device's own declarative status report. `install-state` is what says whether anything is pending: `none` means nothing is, and that the last update succeeded. The version, deadline and failure beside it are kept by the report long after they stop being true — a Mac that updated months ago still carries the version it was offered — so they appear only while an update is outstanding, and a remembered failure is shown as history with its date. Beta enrolment is exempt, since Apple requires that key on every report, so it is stated either way.
 
-**Declaration status** is the device's verdict rather than the server's intent, and the two can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A rejected software update declaration means nothing is enforcing updates, however healthy the blueprint looks, and the device's reason is shown as written because it names the version at fault. Declarations are counted by outcome — active, invalid, and held but not applied — since a device can carry two dozen with one in effect.
+**Declaration status** is read from the platform's own declaration reporting when the connection is a [Platform API](platform-api.md) one, and otherwise parsed out of the status report, where Jamf Pro flattens it into one unquoted string. Same rows either way; the platform serves it as typed JSON, so it is preferred where it is available.
+
+Declaration status is the device's verdict rather than the server's intent, and the two can disagree entirely: Jamf Pro reports a blueprint as deployed once it has handed the declaration over, while the device decides whether it can be applied. A rejected software update declaration means nothing is enforcing updates, however healthy the blueprint looks, and the device's reason is shown as written because it names the version at fault. Declarations are counted by outcome — active, invalid, and held but not applied — since a device can carry two dozen with one in effect.
 
 **The enforced target** is read back from the declaration, which the status report identifies without saying what it contains, then compared against the installed OS. An enforcement the device has already met reads as satisfied rather than as a missed deadline; one still owed keeps its deadline and names what is installed instead. A target in another major release is marked as an upgrade.
 
 Two limits. Jamf Pro will not serve a declaration whose identifier comes from a blueprint, so the target cannot be read when a blueprint is what enforces the update — the deadline still appears under Software Update, and a rejected declaration is still reported, both coming from the status report. And blueprints have no endpoint on a Jamf Pro instance, so only a [Platform API](platform-api.md) connection can name one; a direct connection shows its identifier.
+
+## Device compliance
+
+Reported for Jamf Pro and Intune, which reach it differently.
+
+**Intune** evaluates compliance itself and reports it with every device, so it arrives with the lookup.
+
+**Jamf Pro** does not evaluate compliance — it relays a verdict from the vendor its Device Compliance integration points at, one device at a time. Both a direct connection and a [Platform API](platform-api.md) one can read it. Checkpoint therefore reads it when a device is selected, and names the vendor alongside the verdict, because that is who to ask when the verdict is not what you expect. It checks once per server whether the integration is switched on at all, so a fleet without it never pays a request per device. A device outside the integration's scope reports nothing rather than reporting as non-compliant.
+
+Neither is filterable. Jamf Pro's is not present until a device is selected, for the same reason warranty coverage is not filterable, and a filter that worked on one product and not the other would be worse than none.
 
 ## Recovery secrets
 
 Jamf Pro only. Intune holds a FileVault recovery key, but only its beta endpoint serves one, so it is left out until that is not the case. For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, the **device lock PIN**, and the password for each **managed local administrator account**. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
 
 Managed local administrator accounts are listed as Jamf Pro lists them, one row per account with its source, so a Mac carrying both a PreStage account and one created by the Jamf binary shows both under their own usernames. Viewing a password causes Jamf Pro to rotate it after the instance's rotation time, so Checkpoint asks for confirmation first and records the view as a change.
+
+## Updates
+
+Checkpoint checks GitHub once a day for a newer release, and Checkpoint → Check for Updates… asks on demand. When one exists, a sheet shows its release notes; Download fetches the zip and saves it where you choose, and installing remains replacing the app in Applications — the sandbox does not permit an app to replace itself. The check is one request to GitHub's release API, sends nothing but the request itself, and can be turned off in Settings → General.
 
 ## Activity log
 

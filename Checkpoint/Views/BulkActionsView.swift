@@ -164,7 +164,7 @@ struct BulkActionsView: View {
         return .mixed
     }
 
-    /// The Jamf side of the bulk inspector.
+    /// The device management side of the bulk inspector.
     ///
     /// Each control is gated on what the connected product can do, so a Jamf
     /// School server offers a location change where a Jamf Pro one offers a

@@ -30,11 +30,15 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 
 Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, record deletion, and MDM commands. See [Features](docs/features.md).
 
-![Checkpoint showing four Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
+![Checkpoint showing twenty-two Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
 
-Apple School Manager with Jamf School. Columns and actions the connected product has no source for are left out rather than shown empty — which is also how an Intune tenant shows fewer columns than a Jamf Pro server:
+Columns and actions the connected product has no source for are left out rather than shown empty. Apple School Manager with Jamf School, showing location and ADE profile in place of site and PreStage:
 
 ![The same window connected to Apple School Manager and Jamf School, showing location and ADE profile columns in place of the Jamf Pro ones](docs/screenshot-jamf-school.png)
+
+An Intune tenant, showing compliance and a single sync time in place of Jamf's four dates:
+
+![The same window connected to Apple Business and Intune, showing compliance state in the inspector and the commands Intune can carry](docs/screenshot-intune.png)
 
 ## Documentation
 
@@ -52,7 +56,7 @@ Apple School Manager with Jamf School. Columns and actions the connected product
 
 ## Security
 
-Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to the services you configure — Apple's API endpoints, your Jamf servers, and Microsoft Graph.
+Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to the services you configure — Apple's API endpoints, your Jamf servers, and Microsoft Graph — plus one daily request to GitHub asking whether a newer release exists, which sends nothing else and can be turned off in Settings.
 
 Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 

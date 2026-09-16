@@ -25,9 +25,10 @@ struct ManagedDeviceInfo: Sendable {
     var siteName: String?
     /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
     var unlockToken: String?
-    /// FileVault state (computers), from the inventory record rather than the
-    /// recovery-key endpoint, so an ordinary lookup can show it. Intune fills
-    /// only the flag, which the state reads as its fallback.
+    /// Encryption state, from the inventory record rather than the
+    /// recovery-key endpoint, so an ordinary lookup can show it. FileVault on
+    /// the computers Jamf Pro reports it for; Intune fills only the flag, for
+    /// every device kind, which the state reads as its fallback.
     var encryption: DiskEncryptionState?
     /// Passcode and encryption state (mobile devices).
     var security: MobileSecurityState?
@@ -36,7 +37,7 @@ struct ManagedDeviceInfo: Sendable {
     var osVersion: String?
     /// Jamf Pro only; Jamf School reports no build.
     var osBuild: String?
-    /// Jamf School only, which names the OS instead of reporting a build.
+    /// Jamf School and Intune, which name the OS instead of reporting a build.
     var osName: String?
     var lastEnrolledDate: String?
     var reportDate: String?

@@ -352,6 +352,10 @@ final class LookupModel {
     /// The last organization snapshot, per Apple Business organization.
     /// Discarded whenever Checkpoint changes anything in Apple Business.
     private var abmSnapshots: [UUID: ABMSnapshot] = [:]
+    /// Whether the Device Compliance integration is on, per Jamf Pro server.
+    /// Instance-wide, so read once and kept. Nil means it has not been
+    /// determined, which is not the same as off.
+    private var deviceComplianceEnabled: [UUID: Bool] = [:]
     /// Serial → device-enrollment (ADE) instance, per Jamf Pro server.
     private var adeInstances: [UUID: [String: String]] = [:]
     /// One read in flight per server, so a device selection and a bulk
@@ -798,6 +802,30 @@ final class LookupModel {
         }
     }
 
+    /// Compliance for one device, or nil when the connection has no source
+    /// for it, the integration is off, or the device is out of its scope.
+    ///
+    /// Read on selection rather than during a lookup: Jamf Pro serves it one
+    /// device at a time, so a bulk lookup would cost a request per device for
+    /// a value most rows never show. Intune reports compliance in its tenant
+    /// read instead, which is why that one arrives with the lookup.
+    func deviceCompliance(for report: DeviceReport) async -> JamfDeviceCompliance? {
+        guard mdmCapabilities.contains(.complianceOnDemand),
+              let info = report.mdm.value,
+              let server = selectedConnection,
+              let jamf = makeJamfClient() else { return nil }
+        // The instance-wide toggle first, so a fleet with the integration off
+        // never pays a request per device. A toggle that cannot be read is
+        // left undetermined and the per-device call decides.
+        if deviceComplianceEnabled[server.id] == false { return nil }
+        if deviceComplianceEnabled[server.id] == nil,
+           let enabled = try? await jamf.deviceComplianceEnabled() {
+            deviceComplianceEnabled[server.id] = enabled
+            if !enabled { return nil }
+        }
+        return try? await jamf.deviceCompliance(kind: info.kind, deviceID: info.recordID)
+    }
+
     /// Which ADE token synced a serial, for filtering the PreStage pickers.
     /// Nil until the map has been read, which leaves the pickers offering
     /// every PreStage.
@@ -938,7 +966,21 @@ final class LookupModel {
     func ddmStatus(for report: DeviceReport) async -> JamfDDMStatus? {
         guard let info = report.mdm.value, let jamf = makeJamfClient(),
               let managementID = info.managementID, !managementID.isEmpty else { return nil }
-        return try? await jamf.ddmStatus(managementID: managementID)
+        guard let status = try? await jamf.ddmStatus(managementID: managementID) else { return nil }
+        // The status report is still the only source for the software update
+        // half, so it is always read. On a gateway connection the platform
+        // will also report the declarations as typed JSON, which is worth
+        // preferring over parsing them out of a flattened status item — but
+        // only if it answers, since losing the row would be worse than a
+        // fragile parse.
+        guard let typed = try? await jamf.platformDeclarations(serial: report.serial), !typed.isEmpty else {
+            return status
+        }
+        return JamfDDMStatus(
+            softwareUpdate: status.softwareUpdate,
+            declarations: typed,
+            reportedAt: status.reportedAt
+        )
     }
 
     /// The software update target the device is being held to.
@@ -1777,9 +1819,14 @@ final class LookupModel {
             recordID: device.id,
             kind: device.kind,
             name: device.deviceName,
-            // A bare boolean, which the encryption state reads as its
-            // fallback when no partition detail accompanies it.
-            encryption: device.isEncrypted.map {
+            // One flag, three meanings, so it is routed to the row that
+            // says what it actually measures. On a computer it is FileVault
+            // (or BitLocker), as a bare boolean the encryption state reads as
+            // its fallback. On an iPhone or iPad it is data protection, which
+            // iOS enables exactly when a passcode is set, so it fills the
+            // same Passcode row the Jamf products fill. On any other mobile
+            // platform it is storage encryption and is shown as that.
+            encryption: device.kind == .mobileDevice && device.isApplePlatform ? nil : device.isEncrypted.map {
                 DiskEncryptionState(
                     fileVaultEnabled: $0,
                     bootPartitionState: nil,
@@ -1787,6 +1834,14 @@ final class LookupModel {
                     recoveryKeyValidity: nil
                 )
             },
+            security: device.kind == .mobileDevice && device.isApplePlatform ? device.isEncrypted.map {
+                MobileSecurityState(
+                    passcodePresent: $0,
+                    passcodeCompliant: nil,
+                    passcodeCompliantWithProfile: nil,
+                    hardwareEncryption: nil
+                )
+            } : nil,
             osVersion: device.osVersion?.isEmpty == false ? device.osVersion : nil,
             osName: device.operatingSystem?.isEmpty == false ? device.operatingSystem : nil,
             lastEnrolledDate: device.enrolledDateTime,

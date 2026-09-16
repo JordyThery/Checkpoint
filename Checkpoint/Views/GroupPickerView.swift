@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Picks a Jamf Pro group and hands back its serial numbers, so a group can
-/// be used as the input to a lookup. Smart and static groups of both device
-/// kinds are listed together.
+/// Picks a Jamf group and hands back its serial numbers, so a group can be
+/// used as the input to a lookup. On Jamf Pro, smart and static groups of
+/// both device kinds are listed together; Jamf School keeps one list.
 struct GroupPickerView: View {
     @Environment(LookupModel.self) private var model
     @Environment(\.dismiss) private var dismiss

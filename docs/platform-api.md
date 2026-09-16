@@ -27,6 +27,12 @@ Environment scope is required rather than tenant scope. The Jamf Pro passthrough
 
 Most Jamf Account instances already have an environment grouping their tenants, and you can create one if not.
 
+## What the gateway does better
+
+Declaration status is the one thing a gateway connection reports more reliably than a direct one. Jamf Pro's API returns the device's declarations flattened into a single unquoted string, which has to be parsed; the platform's declaration reporting serves the same information as typed JSON, with each failure reason structured rather than embedded in free text. Checkpoint uses it whenever the connection is a gateway one and falls back to parsing when it is not, so the rows are the same either way.
+
+It costs one extra request: the platform keys devices by its own UUID rather than by the management ID the status report uses, so the serial has to be resolved first — the same lookup Restart and Shut Down already do.
+
 ## Scopes
 
 Permissions are granted per capability on the integration, rather than per privilege as on a [Jamf Pro API role](permissions.md). The scope names below are the ones the API declares; the Jamf Account interface groups them under capability toggles, so a label there may read a little differently.
@@ -48,6 +54,10 @@ Permissions are granted per capability on the integration, rather than per privi
 | Device lock PIN | `computer-device-lock-pin:read` |
 | Managed local administrator accounts and passwords | `local-admin-passwords:read` |
 | Blueprint names on declarations | `blueprints:read` |
+| Declaration status, read from the platform rather than parsed | `declarations:read`, plus `devices:read` to resolve the device |
+| Device compliance | `device-compliance-information:read`, and `conditional-access:read` to check whether the integration is on |
+
+Device compliance takes two scopes because Checkpoint asks two questions: whether the Device Compliance integration is switched on at all, and what it says about a given device. Without `conditional-access:read` the first answer is simply unknown, and the per-device read decides on its own.
 
 The four secrets take four separate scopes, so granting one does not grant the others. Deleting a device record and changing a site declare no scope in the specification; the corresponding [Jamf Pro privileges](permissions.md) are the guide there.
 

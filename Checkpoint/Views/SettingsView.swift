@@ -34,6 +34,8 @@ struct GeneralSettingsTab: View {
                 set: { settings.configurationHintDismissed = !$0 }
             ))
             .help("Show the message above the table when an Apple organization or a device management connection is missing")
+            Toggle("Check for updates automatically", isOn: $settings.checksForUpdates)
+                .help("Ask GitHub once a day whether a newer release exists. Nothing but the request itself is sent.")
         }
         .formStyle(.grouped)
     }
@@ -43,6 +45,7 @@ struct GeneralSettingsTab: View {
 
 struct ABMSettingsTab: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(LookupModel.self) private var model
     @State private var selectedID: UUID?
 
     var body: some View {
@@ -87,7 +90,8 @@ struct ABMSettingsTab: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .onAppear { selectedID = settings.abmOrgs.first?.id }
+        // The organization in use, for the same reason as the connections.
+        .onAppear { selectedID = model.selectedABMOrg?.id ?? settings.abmOrgs.first?.id }
     }
 
     private func add() {
@@ -227,10 +231,11 @@ struct ABMOrgEditor: View {
     }
 }
 
-// MARK: - Jamf Pro
+// MARK: - MDM connections
 
 struct MDMSettingsTab: View {
     @Environment(AppSettings.self) private var settings
+    @Environment(LookupModel.self) private var model
     @State private var selectedID: UUID?
 
     var body: some View {
@@ -247,7 +252,7 @@ struct MDMSettingsTab: View {
                         .help("Add a Jamf Pro or Jamf School server, or an Intune tenant")
                     Button { removeSelected() } label: { Image(systemName: "minus") }
                         .disabled(selectedID == nil)
-                        .help("Remove the selected server")
+                        .help("Remove the selected connection")
                     Spacer()
                 }
                 .buttonStyle(.borderless)
@@ -260,14 +265,18 @@ struct MDMSettingsTab: View {
                     .id(settings.mdmConnections[index].id)
             } else {
                 ContentUnavailableView(
-                    "No Server Selected",
+                    "No Connection Selected",
                     systemImage: "server.rack",
                     description: Text("Add a Jamf Pro or Jamf School server, or an Intune tenant, with the + button. You can store several, e.g. production and testing.")
                 )
                 .frame(maxWidth: .infinity)
             }
         }
-        .onAppear { selectedID = settings.mdmConnections.first?.id }
+        // Opens on the connection the app is using, not the first in the
+        // list. Opening on the first made a connection look as though it were
+        // configured for the wrong product, and editing it then changed a
+        // connection nobody meant to touch.
+        .onAppear { selectedID = model.selectedConnection?.id ?? settings.mdmConnections.first?.id }
     }
 
     private func add() {
@@ -312,6 +321,10 @@ struct MDMConnectionEditor: View {
     var body: some View {
         Form {
             Section(isIntune ? "Tenant" : "Server") {
+                // Named explicitly: with several connections configured, a
+                // form that shows only its fields gives no way to tell which
+                // one is about to be saved.
+                LabeledContent("Editing", value: config.displayName)
                 TextField("Name", text: $name, prompt: Text("Production"))
                 Picker("Product", selection: $product) {
                     ForEach(MDMProduct.allCases) { option in
@@ -324,6 +337,15 @@ struct MDMConnectionEditor: View {
                 .onChange(of: product) { _, new in
                     let allowed = MDMAuthMethod.methods(for: new)
                     if !allowed.contains(authMethod) { authMethod = allowed[0] }
+                }
+                if product != config.product {
+                    Label {
+                        Text("This connection is saved as \(config.product.label). Changing the product keeps the URL, account and stored secret, which the new product is unlikely to accept — check them before saving.")
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                    }
+                    .font(.caption)
                 }
                 if isIntune {
                     TextField("Tenant ID", text: $tenantID, prompt: Text("contoso.onmicrosoft.com"))
@@ -464,6 +486,8 @@ struct MDMConnectionEditor: View {
         current.baseURL = baseURL
         current.authMethod = authMethod
         current.account = account
+        current.region = region
+        current.environmentID = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
         current.tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
         if isIntune {
             guard let client = IntuneClient(config: current, secret: effectiveSecret, log: log) else {

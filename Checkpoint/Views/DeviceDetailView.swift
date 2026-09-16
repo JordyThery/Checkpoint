@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// Inspector pane for a single device: full ABM and Jamf Pro details plus
-/// the actions (assign/unassign MDM, release, change PreStage, delete record)
-/// and Jamf Pro MDM remote commands. Every action asks for confirmation
-/// before executing.
+/// Inspector pane for a single device: the Apple organization and device
+/// management detail, the actions on both, and the MDM remote commands the
+/// connected product offers. Every action asks for confirmation first.
 struct DeviceDetailView: View {
     @Environment(LookupModel.self) private var model
     let report: DeviceReport
@@ -42,6 +41,9 @@ struct DeviceDetailView: View {
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
     @State private var loadedCoverage: [AppleCareCoverage]?
+    /// Compliance fetched on selection, for the connection that serves it
+    /// per device rather than with the lookup.
+    @State private var compliance: JamfDeviceCompliance?
     /// Jamf School's per-device record, which carries the passcode state its
     /// device list leaves out. Fetched on selection for the same reason
     /// AppleCare coverage is.
@@ -503,7 +505,7 @@ struct DeviceDetailView: View {
         }
     }
 
-    /// The Jamf side of the inspector.
+    /// The device management side of the inspector.
     ///
     /// Rows are gated on what the connected product reports, and a product
     /// that reports nothing for one gets no row at all rather than a row
@@ -529,14 +531,29 @@ struct DeviceDetailView: View {
         if capabilities.contains(.inventoryDates) {
             LabeledContent("Last Inventory Update", value: DateFormatting.short(info.reportDate))
         }
-        if capabilities.contains(.compliance), let compliance = info.complianceSummary {
-            LabeledContent("Compliance", value: compliance)
+        if capabilities.contains(.compliance), let summary = info.complianceSummary {
+            LabeledContent("Compliance", value: summary)
+        }
+        if capabilities.contains(.complianceOnDemand), let summary = compliance?.summary {
+            LabeledContent("Compliance") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(summary)
+                        .foregroundStyle(compliance?.state == "NON_COMPLIANT" ? Color.orange : Color.primary)
+                    // Named because Jamf Pro relays the verdict rather than
+                    // reaching it, so the vendor is who to ask about it.
+                    if let vendor = compliance?.vendor, !vendor.isEmpty {
+                        Text("Reported by \(DisplayText.sentenceCase(vendor))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         if info.kind == .mobileDevice || info.lastContact != nil {
             LabeledContent(model.mdmProduct.lastContactLabel, value: DateFormatting.short(info.lastContact))
         }
         if capabilities.contains(.inventoryDates), info.kind == .computer {
-            LabeledContent("Last check-in", value: DateFormatting.short(info.lastContactTime))
+            LabeledContent("Last Check-in", value: DateFormatting.short(info.lastContactTime))
         }
         if capabilities.contains(.mdmProfileExpiry) {
             LabeledContent("MDM Profile Expiration") {
@@ -559,10 +576,13 @@ struct DeviceDetailView: View {
             LabeledContent("Supervised", value: supervised ? "Yes" : "No")
         }
         if let encryption = info.encryption {
-            fileVaultRow(encryption)
+            encryptionRow(encryption, kind: info.kind)
         }
         if let security = info.security {
             passcodeRow(security)
+                .help(model.mdmProduct == .intune
+                      ? "Derived from data protection, which iPhone and iPad enable exactly when a passcode is set."
+                      : "")
         }
         if capabilities.contains(.passcodeOnDemand), info.kind == .mobileDevice {
             schoolPasscodeRow
@@ -605,11 +625,15 @@ struct DeviceDetailView: View {
         }
     }
 
-    /// FileVault state from inventory. Shown for every Mac, unlike the
-    /// recovery key, which is fetched only on request.
+    /// Encryption state from inventory, labelled by device kind: FileVault on
+    /// a computer, plain encryption on a mobile device. The mobile case is
+    /// only ever an Intune device on a non-Apple platform — on iPhone and
+    /// iPad the same flag reports data protection and fills the Passcode row
+    /// instead. Distinct from the recovery key, which is fetched only on
+    /// request.
     @ViewBuilder
-    private func fileVaultRow(_ encryption: DiskEncryptionState) -> some View {
-        LabeledContent("FileVault") {
+    private func encryptionRow(_ encryption: DiskEncryptionState, kind: DeviceKind) -> some View {
+        LabeledContent(kind == .computer ? "FileVault" : "Encryption") {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(encryption.displaySummary)
                     .foregroundStyle(encryptionTint(encryption.status))
@@ -620,6 +644,7 @@ struct DeviceDetailView: View {
                 }
             }
         }
+        .help(kind == .mobileDevice ? "Storage encryption, as Intune reports it." : "")
     }
 
     private func encryptionTint(_ status: DiskEncryptionState.Status) -> AnyShapeStyle {
@@ -970,6 +995,7 @@ struct DeviceDetailView: View {
         blueprintName = nil
         loadedCoverage = nil
         schoolDetails = nil
+        compliance = nil
         loadedCoverage = await model.appleCareCoverage(for: report)
         guard report.mdm.value != nil else { return }
         // Only ask each product for what it actually serves: a Jamf School
@@ -979,6 +1005,7 @@ struct DeviceDetailView: View {
             schoolDetails = await model.jamfSchoolDetails(for: report)
             return
         }
+        compliance = await model.deviceCompliance(for: report)
         // Gated rather than left to the client factory to refuse: a product
         // with no declarative reporting should not be asked in the first
         // place, and the same goes for the recovery secrets below.

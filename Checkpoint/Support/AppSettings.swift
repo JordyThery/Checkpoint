@@ -45,7 +45,7 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         case .jamfPro: [.sites, .prestageScope, .enrollmentDate, .inventoryDates,
                         .mdmProfileExpiry, .fileVault, .passcodeState, .softwareUpdate,
                         .declarations, .recoverySecrets, .deviceLink, .deviceGroups,
-                        .enrollmentProfileName]
+                        .enrollmentProfileName, .complianceOnDemand]
         case .jamfSchool: [.locations, .passcodeOnDemand, .deviceLink, .deviceGroups,
                            .enrollmentProfileName]
         // Intune reports one sync time rather than Jamf's four dates, so it
@@ -54,7 +54,7 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         // state already handles as its fallback. No sites, no PreStage scope,
         // no declarative update reporting, and no recovery secrets: the
         // FileVault key is beta-only, so it is left out until it is not.
-        case .intune: [.enrollmentDate, .mdmProfileExpiry, .fileVault, .compliance, .deviceLink]
+        case .intune: [.enrollmentDate, .mdmProfileExpiry, .fileVault, .passcodeState, .compliance, .deviceLink]
         }
     }
 
@@ -188,8 +188,9 @@ nonisolated struct MDMCapabilities: OptionSet, Sendable {
     /// shows. The assignment itself is beta-only, so nothing is shown there.
     static let enrollmentProfileName = MDMCapabilities(rawValue: 1 << 17)
     /// Passcode state arrives with the lookup, so it can be filtered on.
-    /// Distinct from reading it on demand, and from not reporting it at all:
-    /// Intune exposes no passcode state through Graph.
+    /// Distinct from reading it on demand, as Jamf School does. Intune's is
+    /// derived: iPhone and iPad enable data protection exactly when a
+    /// passcode is set, and that flag comes with the tenant read.
     static let passcodeState = MDMCapabilities(rawValue: 1 << 16)
     /// Links from a device to its record in the web interface. Built from
     /// the server URL, or from Intune's fixed console host, rather than
@@ -206,8 +207,14 @@ nonisolated struct MDMCapabilities: OptionSet, Sendable {
     /// separate from last contact. Split from the enrollment date because
     /// Intune reports one sync time and nothing that corresponds to either.
     static let inventoryDates = MDMCapabilities(rawValue: 1 << 13)
-    /// Device compliance, which only Intune evaluates.
+    /// Device compliance reported with the lookup. Intune only: it comes in
+    /// the tenant read, so every row has it.
     static let compliance = MDMCapabilities(rawValue: 1 << 14)
+    /// Device compliance served per device, so it is read when one is
+    /// selected. Jamf Pro only, and only through its Device Compliance
+    /// integration — Jamf Pro relays a vendor's verdict rather than
+    /// evaluating one.
+    static let complianceOnDemand = MDMCapabilities(rawValue: 1 << 18)
     /// Looking a device group up and loading its members. Both Jamf products
     /// serve one; Intune's equivalent is an Entra group, which is not a
     /// device group and is not read.
@@ -504,6 +511,10 @@ final class AppSettings {
     /// Kept, rather than shown again each launch, because running against one
     /// service is a deliberate setup for some people.
     var configurationHintDismissed: Bool { didSet { save() } }
+    /// Whether Checkpoint asks GitHub for a newer release once a day. The one
+    /// request the app makes to anything other than a configured service,
+    /// which is why it has an off switch.
+    var checksForUpdates: Bool { didSet { save() } }
 
     private init() {
         let defaults = UserDefaults.standard
@@ -516,6 +527,9 @@ final class AppSettings {
         appearance = defaults.string(forKey: "appearance")
             .flatMap(AppAppearance.init(rawValue:)) ?? .system
         configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")
+        // Defaults to on; `bool(forKey:)` alone would read absent as off.
+        checksForUpdates = defaults.object(forKey: "checksForUpdates") == nil
+            || defaults.bool(forKey: "checksForUpdates")
         if abmOrgs.isEmpty { migrateLegacyABMOrg() }
     }
 
@@ -551,5 +565,6 @@ final class AppSettings {
         if let data = try? JSONEncoder().encode(abmOrgs) { defaults.set(data, forKey: "abmOrgs") }
         defaults.set(appearance.rawValue, forKey: "appearance")
         defaults.set(configurationHintDismissed, forKey: "configurationHintDismissed")
+        defaults.set(checksForUpdates, forKey: "checksForUpdates")
     }
 }

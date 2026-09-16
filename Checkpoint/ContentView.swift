@@ -4,6 +4,7 @@ import UniformTypeIdentifiers
 struct ContentView: View {
     @Environment(LookupModel.self) private var model
     @Environment(AppSettings.self) private var settings
+    @Environment(UpdateChecker.self) private var updates
     @Environment(\.openSettings) private var openSettings
     @Environment(\.openURL) private var openURL
     @State private var serialsText = ""
@@ -126,7 +127,7 @@ struct ContentView: View {
                                 Text(server.displayName).tag(Optional(server.id))
                             }
                         }
-                        .help("\(model.mdmProduct.label) server used for lookups and actions")
+                        .help("\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions")
                     }
                 }
                 ToolbarItem {
@@ -135,7 +136,7 @@ struct ContentView: View {
                     } label: {
                         Label("Settings", systemImage: "gearshape")
                     }
-                    .help("Configure Apple and Jamf credentials")
+                    .help("Configure the Apple and device management connections")
                 }
             }
         }
@@ -156,6 +157,13 @@ struct ContentView: View {
         }
         .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item]) { result in
             handleImport(result)
+        }
+        .sheet(isPresented: Binding(
+            get: { updates.isPresented },
+            set: { updates.isPresented = $0 }
+        )) {
+            UpdateView()
+                .environment(updates)
         }
         .sheet(isPresented: $showingGroupPicker) {
             GroupPickerView { group, serials in
@@ -267,7 +275,7 @@ struct ContentView: View {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.borderless)
-            .help("Hide this message. It can be brought back in Settings")
+            .help("Hide this message. It can be brought back in Settings.")
         }
         .font(.callout)
         .padding(.horizontal, 12)
@@ -463,7 +471,7 @@ struct ContentView: View {
                     FetchText(state: report.mdm) { DateFormatting.short($0.lastContact) }
                 }
                 if model.mdmCapabilities.contains(.inventoryDates) {
-                    TableColumn("Last check-in", value: \.lastCheckInSortDate) { (report: DeviceReport) in
+                    TableColumn("Last Check-in", value: \.lastCheckInSortDate) { (report: DeviceReport) in
                         FetchText(state: report.mdm) { DateFormatting.short($0.lastContactTime) }
                     }
                 }

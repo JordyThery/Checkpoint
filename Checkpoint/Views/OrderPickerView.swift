@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Picks an Apple Business order and hands back the serial numbers on it.
+/// Picks an Apple order and hands back the serial numbers on it. Both Apple
+/// services report order numbers the same way.
 ///
 /// Apple cannot filter devices by order, so the orders come from the same
 /// organization snapshot a large lookup already reads. Once that has been

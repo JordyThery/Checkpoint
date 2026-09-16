@@ -561,6 +561,31 @@ struct JamfGroup: Sendable, Identifiable, Hashable {
     var typeLabel: String { isSmart ? "Smart" : "Static" }
 }
 
+/// Device compliance as the Device Compliance integration reports it.
+///
+/// Jamf Pro's own term. The vendor is carried because Jamf Pro does not
+/// evaluate compliance itself — it relays a verdict, and knowing whose it is
+/// matters when that verdict is not what an administrator expects.
+nonisolated struct JamfDeviceCompliance: Sendable {
+    /// False when the device is outside the integration's scope, which is not
+    /// the same as being non-compliant.
+    let applicable: Bool
+    /// `COMPLIANT`, `NON_COMPLIANT` or `UNKNOWN`.
+    let state: String?
+    let vendor: String?
+
+    /// The verdict worded for display, or nil when there is nothing to show.
+    var summary: String? {
+        guard applicable else { return nil }
+        switch state {
+        case "COMPLIANT": return "Compliant"
+        case "NON_COMPLIANT": return "Not compliant"
+        case "UNKNOWN", nil: return "Unknown"
+        default: return DisplayText.sentenceCase(state ?? "")
+        }
+    }
+}
+
 struct JamfSite: Sendable, Identifiable, Hashable {
     let id: String
     let name: String
@@ -613,8 +638,9 @@ struct JamfPrestage: Sendable, Identifiable, Hashable {
 
 // MARK: - Client
 
-/// Client for the Jamf Pro API. Supports both API client (OAuth client
-/// credentials) and username/password (bearer token) authentication.
+/// Client for the Jamf Pro API, connected directly or through the Platform
+/// API gateway. Authenticates with an API client (OAuth client credentials),
+/// a username and password (bearer token), or a gateway integration.
 actor JamfClient {
     struct APIError: LocalizedError {
         let message: String
@@ -986,6 +1012,131 @@ actor JamfClient {
             page += 1
         }
         return all
+    }
+
+    // MARK: Platform declaration reporting
+
+    /// Declarations from the platform's own reporting API, which serves them
+    /// as typed JSON instead of the flattened status item the Jamf Pro API
+    /// gives.
+    ///
+    /// Gateway connections only: both endpoints are platform-native, under
+    /// their own product prefixes. Returns nil when the platform cannot
+    /// answer, so the caller keeps the declarations parsed out of the status
+    /// report rather than losing the row.
+    ///
+    /// Two requests, because the platform keys devices by its own UUID rather
+    /// than by the management ID the status report uses, and the only way to
+    /// reach it from a serial number is to ask. The resolver is the one the
+    /// platform restart and shut down actions already use, including its
+    /// refusal to accept a row whose serial does not match.
+    func platformDeclarations(serial: String) async throws -> [JamfDeclaration]? {
+        guard authMethod == .platformGateway,
+              let deviceID = try await platformDeviceID(serial: serial) else { return nil }
+        struct Response: Decodable {
+            let results: [Item]?
+            struct Item: Decodable {
+                let declarationIdentifier: String?
+                let active: Bool?
+                let validityState: String?
+                let reasons: [Reason]?
+            }
+            struct Reason: Decodable {
+                let code: String?
+                let description: String?
+                let details: [Detail]?
+            }
+            struct Detail: Decodable {
+                let key: String?
+                let description: String?
+            }
+        }
+        let (data, status) = try await send(
+            path: "/ddm/report/v1/devices/\(deviceID)/declarations",
+            queryItems: [
+                // Required by the endpoint. Configurations only, matching what
+                // the status report's own configurations item carries. The
+                // filter field is declarationType — the response property is
+                // named type, but that is not a filterable field.
+                URLQueryItem(name: "filter", value: "declarationType==CONFIGURATION"),
+                // No paging: a device carries a few dozen declarations at
+                // most, so one page holds them all.
+                URLQueryItem(name: "size", value: "200"),
+            ]
+        )
+        if status == 403 || status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        guard let results = try? JSONDecoder().decode(Response.self, from: data).results else { return nil }
+        return results.compactMap { item in
+            guard let identifier = item.declarationIdentifier, !identifier.isEmpty else { return nil }
+            // The same precedence the status-item parser uses — the Error
+            // detail, else the summary, else the code — so a gateway
+            // connection shows the identical text a direct one does. The
+            // Error detail is Apple's own wording and names the offending
+            // version.
+            let reasons: [String] = (item.reasons ?? []).compactMap { reason in
+                reason.details?.first { $0.key == "Error" }?.description
+                    ?? reason.description
+                    ?? reason.code
+            }
+            return JamfDeclaration(
+                identifier: identifier,
+                active: item.active ?? false,
+                validity: JamfDeclarationValidity(rawValue: (item.validityState ?? "unknown").lowercased()) ?? .unknown,
+                reasons: reasons.filter { !$0.isEmpty }
+            )
+        }
+    }
+
+    // MARK: Device compliance
+
+    /// Whether the Device Compliance integration is switched on for the
+    /// instance.
+    ///
+    /// Read once before asking per device: with the feature off, every
+    /// per-device call answers with an inapplicable record, and the row is
+    /// better left out than shown as unknown. It needs its own privilege, so
+    /// a failure here is not read as "off" — the caller falls through to the
+    /// per-device read and lets that decide.
+    func deviceComplianceEnabled() async throws -> Bool {
+        struct Response: Decodable { let sharedDeviceFeatureEnabled: Bool? }
+        let (data, status) = try await send(path: "/api/v1/conditional-access/device-compliance/feature-toggle")
+        try throwIfError(status: status, data: data)
+        return try JSONDecoder().decode(Response.self, from: data).sharedDeviceFeatureEnabled ?? false
+    }
+
+    /// Compliance for one device, as the compliance vendor last reported it.
+    ///
+    /// The response is documented as an array, and a device outside the
+    /// integration's scope comes back with `applicable: false` rather than as
+    /// an error.
+    func deviceCompliance(kind: DeviceKind, deviceID: String) async throws -> JamfDeviceCompliance? {
+        struct Item: Decodable {
+            let applicable: Bool?
+            let complianceState: String?
+            let complianceVendor: String?
+        }
+        let family = kind == .computer ? "computer" : "mobile"
+        let (data, status) = try await send(
+            path: "/api/v1/conditional-access/device-compliance-information/\(family)/\(deviceID)"
+        )
+        try throwIfError(status: status, data: data)
+        // An array by contract; a single object is accepted too, in case the
+        // shape is ever tightened.
+        let items: [Item]
+        if let decoded = try? JSONDecoder().decode([Item].self, from: data) {
+            items = decoded
+        } else if let one = try? JSONDecoder().decode(Item.self, from: data) {
+            items = [one]
+        } else {
+            return nil
+        }
+        guard let item = items.first(where: { $0.applicable == true }) ?? items.first else { return nil }
+        return JamfDeviceCompliance(
+            applicable: item.applicable ?? false,
+            state: item.complianceState,
+            vendor: item.complianceVendor
+        )
     }
 
     /// Maps serial number → device-enrollment (ADE) instance ID for every

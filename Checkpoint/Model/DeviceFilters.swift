@@ -210,7 +210,10 @@ nonisolated struct DeviceFilters: Equatable {
             case .migrationInProgress:
                 return report.abm.value?.device.hasActiveMigration == true
             case .fileVaultOff:
-                return report.mdm.value?.encryption?.isEncrypted == false
+                // Computers only: Intune reports an encryption flag for
+                // mobile devices too, and those are not FileVault.
+                return report.deviceKind == .computer
+                    && report.mdm.value?.encryption?.isEncrypted == false
             case .noPasscode:
                 return report.mdm.value?.security?.passcodePresent == false
             }

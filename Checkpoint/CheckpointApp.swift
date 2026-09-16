@@ -3,6 +3,7 @@ import SwiftUI
 @main struct CheckpointApp: App {
     private let settings = AppSettings.shared
     @State private var model = LookupModel(settings: AppSettings.shared)
+    @State private var updates = UpdateChecker()
 
     private var colorScheme: ColorScheme? {
         switch settings.appearance {
@@ -17,12 +18,20 @@ import SwiftUI
             ContentView()
                 .environment(settings)
                 .environment(model)
+                .environment(updates)
                 .frame(minWidth: 900, minHeight: 420)
                 .preferredColorScheme(colorScheme)
+                .task { await updates.checkAutomatically() }
+        }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") { updates.checkManually() }
+            }
         }
         Settings {
             SettingsView()
                 .environment(settings)
+                .environment(model)
                 .environment(model.log)
                 .preferredColorScheme(colorScheme)
         }

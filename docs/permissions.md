@@ -61,6 +61,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Looking up a group | Read Smart Computer Groups, Read Static Computer Groups, Read Smart Mobile Device Groups, Read Static Mobile Device Groups |
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
+| Device compliance, shown when a device is selected | Read Device Compliance Information, and Read Conditional Access to check whether the integration is on. Also available over the [Platform API](platform-api.md) |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | FileVault recovery key | View Disk Encryption Recovery Key |
 | Recovery Lock password | View Recovery Lock |

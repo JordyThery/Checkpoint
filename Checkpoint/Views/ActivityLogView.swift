@@ -1,7 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Shows what Checkpoint asked the two services to do and how they answered.
+/// Shows what Checkpoint asked each configured service to do and how it
+/// answered.
 /// Held in memory only: closing the app discards it.
 struct ActivityLogView: View {
     @Environment(ActivityLog.self) private var log

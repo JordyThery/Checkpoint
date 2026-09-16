@@ -29,6 +29,16 @@ nonisolated struct IntuneDevice: Sendable {
     let managementAgent: String?
     let complianceState: String?
 
+    /// Whether the platform is one of Apple's mobile ones, where Intune's
+    /// encryption flag reports data protection — enabled exactly when a
+    /// passcode is set — rather than storage encryption.
+    var isApplePlatform: Bool {
+        switch operatingSystem?.lowercased() {
+        case "ios", "ipados": true
+        default: false
+        }
+    }
+
     /// Computer or mobile device, from the platform.
     ///
     /// Intune draws no such distinction, so it is inferred. Windows lands with

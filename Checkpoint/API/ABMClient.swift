@@ -109,6 +109,8 @@ nonisolated struct ABMSnapshot: Sendable {
         }
         return counts
             .map { (number: $0.key, count: $0.value) }
+            // Count descending, then number ascending: the swapped members in
+            // the right-hand tuple are what flip the second comparison.
             .sorted { ($0.count, $1.number) > ($1.count, $0.number) }
     }
 

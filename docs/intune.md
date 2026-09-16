@@ -47,11 +47,12 @@ Graph throttles per application per tenant. A throttled request is retried after
 | Installed OS version | With the platform name, as Jamf School reports it. Intune publishes no build number |
 | Enrollment date, last sync | One sync time replaces Jamf's four dates, so the inventory and check-in columns are hidden rather than shown empty |
 | Management certificate expiration | Fills the MDM profile expiration column, and the expired-profile filter works on it |
-| Encryption state | `isEncrypted` is a bare boolean — FileVault on a Mac, BitLocker on Windows. There is no partition state or key validity to qualify it with |
+| Encryption state | `isEncrypted` is a bare boolean with no partition state or key validity to qualify it. On a computer it fills the FileVault row; on any non-Apple mobile platform it is shown as Encryption |
+| Passcode state | Derived: iPhone and iPad enable data protection exactly when a passcode is set, and `isEncrypted` reports data protection there, so it fills the same Passcode row and filter the Jamf products fill |
 | Supervised and managed state | Managed is derived from the management channel, which clears when a device is retired |
-| Compliance state | Intune only; no other product evaluates compliance |
+| Compliance state | Evaluated by Intune and reported with every device. Jamf Pro can also report compliance, but only by relaying a vendor's verdict one device at a time — see [Features](features.md#device-compliance) |
 
-**Not reported.** Sites, PreStage scope, passcode state, software update state and declarations, and the recovery secrets. Software update state exists only as a tenant-wide report export rather than per device. A FileVault recovery key is available, but only from Graph's beta endpoint, so it is left out until it is not.
+**Not reported.** Sites, PreStage scope, software update state and declarations, and the recovery secrets. Software update state exists only as a tenant-wide report export rather than per device. A FileVault recovery key is available, but only from Graph's beta endpoint, so it is left out until it is not.
 
 **The enrollment profile is not shown either**, and that one is worth explaining. Graph's `enrollmentProfileName` reports the profile a device *enrolled with*, which is not the profile the console shows as *assigned* to it: a Mac that enrolled before its ADE profile existed reports nothing while the console names one. Showing that as "None" would contradict the console, and the assignment itself lives on the ADE token, which Graph serves only in beta. So the column is hidden for an Intune connection rather than filled with the wrong answer.
 

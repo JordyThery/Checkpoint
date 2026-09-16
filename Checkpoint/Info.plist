@@ -4,5 +4,7 @@
 <dict>
 	<key>CFBundleIconFile</key>
 	<string>Checkpoint</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Jordy Thery</string>
 </dict>
 </plist>
