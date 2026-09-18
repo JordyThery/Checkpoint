@@ -20,6 +20,7 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | Apple Business / Apple School Manager | Jamf Pro | Jamf School | Intune |
 | --- | --- | --- | --- |
 | Assignment status and assigned MDM server | Record and device name | Record and device name | Record and device name |
+| Activation Lock state, and whether it is an MDM or a user lock | | | |
 | Migration status and deadline | PreStage scope and site | Location and Apple ADE profile | Compliance state |
 | Warranty and AppleCare coverage | Enrollment, inventory and contact dates | Last check-in | Enrollment date and last sync |
 | Model, order number, purchase source | MDM profile expiration | Managed and supervised state | Management certificate expiration |
@@ -27,6 +28,8 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | | Installed OS version and build | Installed OS version | Installed OS version |
 | | Software update state, as the device reports it | | |
 | | Declaration status and enforced update target | | |
+
+With several Apple organizations configured, one lookup can search all of them at once and report which organization each device belongs to.
 
 Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, record deletion, and MDM commands. See [Features](docs/features.md).
 

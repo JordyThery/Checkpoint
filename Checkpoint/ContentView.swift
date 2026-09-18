@@ -79,7 +79,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No Devices",
                         systemImage: "laptopcomputer.and.iphone",
-                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.abmKind.label) and \(model.mdmProduct.label).")
+                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.appleScopeLabel) and \(model.mdmProduct.label).")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
@@ -104,17 +104,23 @@ struct ContentView: View {
                 // unexplained chrome, and the hint below already points at Settings.
                 if !settings.abmOrgs.isEmpty {
                     ToolbarItem {
-                        // Reads through selectedABMOrg so the popup shows the
-                        // organization in use, including the implicit first one.
                         Picker("Apple organization", selection: Binding(
-                            get: { model.selectedABMOrg?.id },
-                            set: { model.selectedABMOrgID = $0 }
+                            get: { model.abmScope },
+                            set: { model.abmScope = $0 }
                         )) {
                             ForEach(settings.abmOrgs) { org in
-                                Text(org.displayName).tag(Optional(org.id))
+                                Text(org.displayName).tag(LookupModel.ABMScope.organization(org.id))
+                            }
+                            // Only worth offering when there is more than one
+                            // to search.
+                            if settings.abmOrgs.count > 1 {
+                                Divider()
+                                Text("All Organizations").tag(LookupModel.ABMScope.allOrganizations)
                             }
                         }
-                        .help("\(model.abmKind.label) organization used for lookups and actions")
+                        .help(model.readsAllABMOrgs
+                              ? "Every configured Apple organization is searched. Apple actions need one organization, so they apply to a selection within a single one."
+                              : "\(model.abmKind.label) organization used for lookups and actions")
                     }
                 }
                 if !settings.mdmConnections.isEmpty {
@@ -219,7 +225,7 @@ struct ContentView: View {
                     .disabled(model.isLoading || settings.mdmConnections.isEmpty)
             }
             Button("Order…") { showingOrderPicker = true }
-                .help("Look up every device on an \(model.abmKind.label) order")
+                .help("Look up every device on an \(model.appleScopeLabel) order")
                 .disabled(model.isLoading || !model.isABMConfigured)
             Button("Clear") { clear() }
                 .help("Remove every device from the list")
@@ -238,7 +244,7 @@ struct ContentView: View {
                     // takes long enough to be worth counting down. Reading
                     // the organization comes first and has no known total.
                     if model.isBuildingSnapshot {
-                        Text(model.snapshotStatus ?? "Reading \(model.abmKind.label)…")
+                        Text(model.snapshotStatus ?? "Reading \(model.appleScopeLabel)…")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
@@ -260,9 +266,9 @@ struct ContentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             if !model.isABMConfigured && settings.mdmConnections.isEmpty {
-                Text("\(model.abmKind.label) and \(model.mdmProduct.label) are not configured yet.")
+                Text("\(model.appleScopeLabel) and \(model.mdmProduct.label) are not configured yet.")
             } else if !model.isABMConfigured {
-                Text("\(model.abmKind.label) is not configured, so its columns will be empty.")
+                Text("\(model.appleScopeLabel) is not configured, so its columns will be empty.")
             } else {
                 Text("No device management server is configured, so its columns will be empty.")
             }
@@ -315,7 +321,7 @@ struct ContentView: View {
             // each render would cost a pass per device during a lookup.
             let options = filterOptions
             if options.showAppleBusiness {
-                Picker(model.abmKind.label, selection: $filters.appleBusiness) {
+                Picker(model.appleScopeLabel, selection: $filters.appleBusiness) {
                     Text("Any").tag(DeviceFilters.ABMStatus.any)
                     ForEach(options.statuses, id: \.status) { entry in
                         Text("\(entry.status.rawValue) (\(entry.count))").tag(entry.status)
@@ -424,8 +430,13 @@ struct ContentView: View {
                 TableColumn("Serial Number", value: \.serial) { (report: DeviceReport) in
                     Text(report.serial).monospaced()
                 }
-                TableColumn(model.abmKind.label, value: \.abmStatusText) { (report: DeviceReport) in
+                TableColumn(model.appleScopeLabel, value: \.abmStatusText) { (report: DeviceReport) in
                     ABMStatusCell(state: report.abm)
+                }
+                if model.readsAllABMOrgs {
+                    TableColumn("Organization", value: \.appleOrgText) { (report: DeviceReport) in
+                        FetchText(state: report.abm) { $0.orgName ?? "—" }
+                    }
                 }
                 TableColumn("MDM Server Assignment", value: \.mdmServerText) { (report: DeviceReport) in
                     FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
@@ -516,9 +527,11 @@ struct ContentView: View {
     private var pendingGroupMessage: String {
         guard let pending = pendingGroup else { return "" }
         if model.needsOrganizationRead(forDeviceCount: pending.serials.count) {
-            return "\(model.abmKind.label) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against \(model.mdmProduct.label)."
+            return model.readsAllABMOrgs
+                ? "Every configured Apple organization is read in full first, which takes about a minute each. Later lookups reuse them. Each device is then checked against \(model.mdmProduct.label)."
+                : "\(model.appleScopeLabel) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against \(model.mdmProduct.label)."
         }
-        return "Each device is checked against both \(model.abmKind.label) and \(model.mdmProduct.label), so a list this size takes a while."
+        return "Each device is checked against both \(model.appleScopeLabel) and \(model.mdmProduct.label), so a list this size takes a while."
     }
 
     /// Puts a group's or order's serials in the field, then either looks them
@@ -610,6 +623,10 @@ private extension DeviceReport {
             if info.isReleased { return "Released" }
             return info.device.status == "ASSIGNED" ? "Assigned" : "Unassigned"
         }
+    }
+
+    var appleOrgText: String {
+        abm.sortText { $0.orgName ?? "—" }
     }
 
     var mdmServerText: String {

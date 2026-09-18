@@ -16,6 +16,8 @@ They differ in one respect. **Apple Business** asks for a role — set it to **D
 
 Choose the service when adding the organization in Checkpoint: it selects the host and the OAuth scope. Credentials for one will not work against the other — the token request is refused with `invalid_scope`.
 
+Activation Lock state and AppleCare coverage need no privilege beyond the API account itself.
+
 **Apple School Manager cannot release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
 
 Each organization needs its own API account. You need the Client ID, the Key ID, and the downloaded `.pem` private key.

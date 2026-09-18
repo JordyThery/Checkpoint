@@ -18,6 +18,9 @@ enum FetchState<Value: Sendable>: Sendable {
 
 struct ABMInfo: Sendable {
     var device: ABMDevice
+    /// The organization the device was found in. Every lookup path sets it.
+    var orgID: UUID?
+    var orgName: String?
     var mdmServerID: String?
     var mdmServerName: String?
     var coverage: [AppleCareCoverage]
@@ -324,9 +327,22 @@ final class LookupModel {
     /// one too small to be worth reporting on.
     private(set) var completedLookups = 0
     private(set) var totalLookups = 0
-    var selectedABMOrgID: UUID?
+    /// Which Apple organizations a lookup reads.
+    ///
+    /// Reading all of them answers a different question — which organization
+    /// owns a device — and is effectively read-only, since an Apple action
+    /// needs one organization to act in. See `appleActionOrg(for:)`.
+    nonisolated enum ABMScope: Hashable, Sendable {
+        case organization(UUID)
+        case allOrganizations
+    }
+
+    var abmScope: ABMScope = .allOrganizations
     var selectedConnectionID: UUID?
-    var mdmServers: [MDMServer] = []
+    /// Device management services per Apple organization. A service ID means
+    /// nothing outside the organization that issued it, so they are never
+    /// pooled for an action — only for resolving a name.
+    private(set) var mdmServersByOrg: [UUID: [MDMServer]] = [:]
     var prestages: [JamfPrestage] = []
     var mobilePrestages: [JamfPrestage] = []
     var sites: [JamfSite] = []
@@ -376,22 +392,32 @@ final class LookupModel {
     init(settings: AppSettings, log: ActivityLog? = nil) {
         self.settings = settings
         self.log = log ?? ActivityLog()
-        selectedABMOrgID = settings.abmOrgs.first?.id
+        // A single organization unless there are several, where reading them
+        // all is the more useful default and costs nothing extra to offer.
+        abmScope = settings.abmOrgs.count > 1
+            ? .allOrganizations
+            : settings.abmOrgs.first.map { ABMScope.organization($0.id) } ?? .allOrganizations
         selectedConnectionID = settings.mdmConnections.first?.id
     }
 
     /// Records the outcome of a user-requested action, alongside the individual
     /// requests the clients log. This tier is what makes the log readable:
     /// it says what was asked for and what came of it, in the app's own words.
+    /// `orgName` names the Apple organization an entry belongs to. With
+    /// several in scope there is no selected one to fall back on, and an
+    /// entry naming none would not say which organization it changed.
     private func recordAction(
         _ service: ActivityService,
         _ summary: String,
         serials: [String],
-        outcome: ActivityOutcome = .succeeded
+        outcome: ActivityOutcome = .succeeded,
+        orgName: String? = nil
     ) {
         log.recordAction(
             service: service,
-            connection: service.isAppleOrganization ? selectedABMOrg?.displayName : selectedConnection?.displayName,
+            connection: service.isAppleOrganization
+                ? (orgName ?? selectedABMOrg?.displayName)
+                : selectedConnection?.displayName,
             summary: summary,
             outcome: outcome,
             serials: serials
@@ -404,20 +430,68 @@ final class LookupModel {
         _ service: ActivityService,
         _ summary: String,
         serials: [String],
+        orgName: String? = nil,
         operation: () async throws -> T
     ) async throws -> T {
         do {
             let result = try await operation()
-            recordAction(service, summary, serials: serials)
+            recordAction(service, summary, serials: serials, orgName: orgName)
             return result
         } catch {
-            recordAction(service, "\(summary) — \(error.localizedDescription)", serials: serials, outcome: .failed)
+            recordAction(
+                service,
+                "\(summary) — \(error.localizedDescription)",
+                serials: serials,
+                outcome: .failed,
+                orgName: orgName
+            )
             throw error
         }
     }
 
+    /// The one organization in scope, or nil when every organization is.
     var selectedABMOrg: ABMConfig? {
-        settings.abmOrgs.first { $0.id == selectedABMOrgID } ?? settings.abmOrgs.first
+        guard case .organization(let id) = abmScope else { return nil }
+        return settings.abmOrgs.first { $0.id == id } ?? settings.abmOrgs.first
+    }
+
+    /// The organizations a lookup will read, in configured order.
+    var abmOrgsInScope: [ABMConfig] {
+        switch abmScope {
+        case .allOrganizations: settings.abmOrgs.filter(\.isConfigured)
+        case .organization: selectedABMOrg.map { [$0] } ?? []
+        }
+    }
+
+    /// The device management services of one organization, for its pickers.
+    /// Empty for an organization that has not been read yet.
+    func mdmServers(for org: ABMConfig?) -> [MDMServer] {
+        org.flatMap { mdmServersByOrg[$0.id] } ?? []
+    }
+
+    /// The reference organization's services, for the single-organization
+    /// case and for resolving a name when no organization is in hand.
+    var mdmServers: [MDMServer] {
+        mdmServers(for: referenceABMOrg)
+    }
+
+    /// Every service across the organizations in scope, for turning an ID
+    /// into a name. Never for a picker: an ID belongs to one organization.
+    private var allMDMServers: [MDMServer] {
+        abmOrgsInScope.flatMap { mdmServersByOrg[$0.id] ?? [] }
+    }
+
+    /// The organization the interface takes its labels from. With every
+    /// organization in scope the first configured one stands in, since every
+    /// label it drives is either neutral or resolved per device.
+    var referenceABMOrg: ABMConfig? {
+        selectedABMOrg ?? settings.abmOrgs.first
+    }
+
+    /// True when a lookup is reading more than one organization, which adds
+    /// the Organization column and restricts the Apple actions.
+    var readsAllABMOrgs: Bool {
+        abmScope == .allOrganizations && settings.abmOrgs.count > 1
     }
 
     var selectedConnection: MDMConnection? {
@@ -425,8 +499,7 @@ final class LookupModel {
     }
 
     var isABMConfigured: Bool {
-        guard let org = selectedABMOrg else { return false }
-        return org.isConfigured && Keychain.get(org.privateKeyKeychainKey) != nil
+        abmOrgsInScope.contains { Keychain.get($0.privateKeyKeychainKey) != nil }
     }
 
     /// Empties the results table. Cached clients are deliberately kept so their
@@ -583,21 +656,88 @@ final class LookupModel {
 
     /// Which Apple service the selected organization belongs to, for wording
     /// and for the actions it supports.
-    var abmKind: AppleOrgKind { selectedABMOrg?.kind ?? .business }
+    /// Which Apple service to word things for. The interface shows
+    /// `appleScopeLabel`, which stays neutral when the organizations in scope
+    /// are of both kinds; this is for action wording, where one organization
+    /// has always been resolved first.
+    var abmKind: AppleOrgKind { referenceABMOrg?.kind ?? .business }
 
-    /// Why devices cannot be released from the selected organization, or nil.
+    /// What to call the Apple side in a column header or a sentence: the one
+    /// service when every organization in scope is the same kind, and plainly
+    /// "Apple" when they are not.
+    var appleScopeLabel: String {
+        let kinds = Set(abmOrgsInScope.map(\.kind))
+        guard kinds.count == 1, let kind = kinds.first else {
+            return abmOrgsInScope.isEmpty ? abmKind.label : "Apple"
+        }
+        return kind.label
+    }
+
+    /// The one Apple organization an action can be carried out in, or nil
+    /// when the selection gives no single answer.
+    ///
+    /// Every Apple action names a device management service, and a service ID
+    /// means nothing outside the organization that issued it — so an action
+    /// spanning two organizations has no valid request to make. A single
+    /// device always resolves, which is why the inspector keeps working with
+    /// every organization in scope and only bulk actions are restricted.
+    func appleActionOrg(for reports: [DeviceReport]) -> ABMConfig? {
+        let ids = Set(reports.compactMap { $0.abm.value?.orgID })
+        if ids.count == 1, let id = ids.first {
+            return settings.abmOrgs.first { $0.id == id }
+        }
+        // Nothing looked up yet, or nothing in an organization: fall back to
+        // the one in scope, which is the single-organization case.
+        return ids.isEmpty ? selectedABMOrg : nil
+    }
+
+    /// Why the Apple actions are unavailable for this selection, or nil.
+    func appleActionUnavailableReason(for reports: [DeviceReport]) -> String? {
+        guard appleActionOrg(for: reports) == nil else { return nil }
+        let names = Set(reports.compactMap { $0.abm.value?.orgName }).sorted()
+        return "The selected devices are in \(names.formatted(.list(type: .and))). "
+            + "Apple actions work in one organization at a time, so narrow the selection to one of them."
+    }
+
+    /// Why devices cannot be released from this organization, or nil.
+    func releaseUnavailabilityReason(for reports: [DeviceReport]) -> String? {
+        if let reason = appleActionUnavailableReason(for: reports) { return reason }
+        let kind = appleActionOrg(for: reports)?.kind ?? abmKind
+        guard !kind.supportsRelease else { return nil }
+        return "\(kind.label) provides no way to release devices from the organization."
+    }
+
+    /// The scope-wide answer, for wording that precedes a selection.
     var releaseUnavailabilityReason: String? {
         guard !abmKind.supportsRelease else { return nil }
         return "\(abmKind.label) provides no way to release devices from the organization."
     }
 
+    /// Resolves the organization an action will run in, or throws the reason
+    /// it cannot. Every Apple action starts here.
+    private func actingOrg(for reports: [DeviceReport]) throws -> (config: ABMConfig, client: ABMClient) {
+        if let reason = appleActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
+        guard let org = appleActionOrg(for: reports) else {
+            throw ActionError(message: "\(abmKind.label) is not configured.")
+        }
+        guard let client = makeABMClient(for: org) else {
+            throw ActionError(message: "\(org.displayName) is not configured.")
+        }
+        return (org, client)
+    }
+
     /// Permanently releases the devices from the organization.
     func releaseFromABM(reports: [DeviceReport]) async throws {
-        if let reason = releaseUnavailabilityReason { throw ActionError(message: reason) }
-        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
+        if let reason = releaseUnavailabilityReason(for: reports) { throw ActionError(message: reason) }
+        let (org, abm) = try actingOrg(for: reports)
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
-        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in \(abmKind.label).") }
-        try await recording(abmKind.activityService, "Released \(Self.deviceCount(serials)) from \(abmKind.label)", serials: serials) {
+        guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in \(org.displayName).") }
+        try await recording(
+            org.kind.activityService,
+            "Released \(Self.deviceCount(serials)) from \(org.displayName)",
+            serials: serials,
+            orgName: org.displayName
+        ) {
             let activityID = try await abm.submitActivity(.release, serials: serials)
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
@@ -607,9 +747,9 @@ final class LookupModel {
 
     /// Assigns the devices to an MDM server, or unassigns them when `serverID` is nil.
     func setMDMServer(reports: [DeviceReport], to serverID: String?) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
+        let (org, abm) = try actingOrg(for: reports)
         let inOrg = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }
-        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in \(abmKind.label).") }
+        guard !inOrg.isEmpty else { throw ActionError(message: "None of the selected devices are in \(org.displayName).") }
 
         // Unassigning requires naming the current server, so batch per server.
         // Devices with no current assignment have nothing to unassign, and if
@@ -625,11 +765,11 @@ final class LookupModel {
         }
 
         let serials = serverID == nil ? unassignByServer.values.flatMap { $0 } : inOrg.map(\.serial)
-        let serverName = serverID.flatMap { id in mdmServers.first { $0.id == id }?.name } ?? serverID
+        let serverName = serverID.flatMap { id in allMDMServers.first { $0.id == id }?.name } ?? serverID
         let summary = serverName.map { "Assigned \(Self.deviceCount(serials)) to \($0)" }
             ?? "Unassigned \(Self.deviceCount(serials)) from device management"
 
-        try await recording(abmKind.activityService, summary, serials: serials) {
+        try await recording(org.kind.activityService, summary, serials: serials, orgName: org.displayName) {
             var activityIDs: [String] = []
             if let serverID {
                 if let id = try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID) {
@@ -688,14 +828,14 @@ final class LookupModel {
         deadline: Date? = nil,
         emptyMessage: String
     ) async throws {
-        guard let abm = makeABMClient() else { throw ActionError(message: "\(abmKind.label) is not configured.") }
+        let (org, abm) = try actingOrg(for: reports)
         let serials = reports.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: emptyMessage) }
 
         var summary: String
         switch type {
         case .assignWithMigrationDeadline:
-            let name = mdmServerID.flatMap { id in mdmServers.first { $0.id == id }?.name } ?? "another service"
+            let name = mdmServerID.flatMap { id in allMDMServers.first { $0.id == id }?.name } ?? "another service"
             summary = "Scheduled migration of \(Self.deviceCount(serials)) to \(name)"
         case .updateMigrationDeadline:
             summary = "Moved the migration deadline for \(Self.deviceCount(serials))"
@@ -708,7 +848,7 @@ final class LookupModel {
             summary += ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
         }
 
-        try await recording(abmKind.activityService, summary, serials: serials) {
+        try await recording(org.kind.activityService, summary, serials: serials, orgName: org.displayName) {
             let activityID = try await abm.submitActivity(
                 type,
                 serials: serials,
@@ -775,28 +915,41 @@ final class LookupModel {
     /// asking per device.
     @discardableResult
     func organizationSnapshot(forceRefresh: Bool = false) async -> ABMSnapshot? {
-        guard let org = selectedABMOrg, let abm = makeABMClient() else { return nil }
+        guard let org = referenceABMOrg else { return nil }
+        return await organizationSnapshot(for: org, forceRefresh: forceRefresh)
+    }
+
+    /// Reads one organization, or returns the snapshot already held for it.
+    ///
+    /// The progress text names the organization when several are being read,
+    /// so a minute of "Reading devices…" says which one it is waiting on.
+    @discardableResult
+    func organizationSnapshot(for org: ABMConfig, forceRefresh: Bool = false) async -> ABMSnapshot? {
+        guard let abm = makeABMClient(for: org) else { return nil }
         if !forceRefresh, let cached = abmSnapshots[org.id] { return cached }
         isBuildingSnapshot = true
         snapshotStatus = nil
         defer { isBuildingSnapshot = false; snapshotStatus = nil }
+        let prefix = readsAllABMOrgs ? "\(org.displayName): " : ""
         do {
             let snapshot = try await abm.organizationSnapshot { progress in
-                Task { @MainActor in self.snapshotStatus = progress.description }
+                Task { @MainActor in self.snapshotStatus = prefix + progress.description }
             }
             abmSnapshots[org.id] = snapshot
             recordAction(
-                abmKind.activityService,
+                org.kind.activityService,
                 "Read the organization: \(Self.deviceCount(snapshot.devices.count))",
-                serials: []
+                serials: [],
+                orgName: org.displayName
             )
             return snapshot
         } catch {
             recordAction(
-                abmKind.activityService,
+                org.kind.activityService,
                 "Could not read the organization — \(error.localizedDescription)",
                 serials: [],
-                outcome: .failed
+                outcome: .failed,
+                orgName: org.displayName
             )
             return nil
         }
@@ -864,33 +1017,71 @@ final class LookupModel {
 
     /// Order numbers in the organization, with how many devices each covers.
     /// Reads the organization if it has not been read already.
+    /// Reads every organization in scope again, for the order picker's
+    /// refresh: an order added since the last read appears in none of the
+    /// snapshots until they are rebuilt.
+    func refreshOrganizationsInScope() async {
+        for org in abmOrgsInScope {
+            await organizationSnapshot(for: org, forceRefresh: true)
+        }
+    }
+
+    /// Order numbers across every organization in scope, most devices first.
+    ///
+    /// An order belongs to the organization that bought under it, so the same
+    /// number appearing in two organizations would be two different orders —
+    /// possible in principle, and the counts are summed rather than one
+    /// hiding the other.
     func abmOrders() async -> [(number: String, count: Int)] {
-        await organizationSnapshot()?.orders ?? []
+        var counts: [String: Int] = [:]
+        for org in abmOrgsInScope {
+            guard let snapshot = await organizationSnapshot(for: org) else { continue }
+            for order in snapshot.orders { counts[order.number, default: 0] += order.count }
+        }
+        return counts
+            .map { (number: $0.key, count: $0.value) }
+            .sorted { ($0.count, $1.number) > ($1.count, $0.number) }
     }
 
     /// The serial numbers on an order.
+    /// Every serial on that order across the organizations in scope.
     func serials(inOrder order: String) async -> [String] {
-        await organizationSnapshot()?.serials(inOrder: order) ?? []
+        var serials: [String] = []
+        for org in abmOrgsInScope {
+            guard let snapshot = await organizationSnapshot(for: org) else { continue }
+            serials += snapshot.serials(inOrder: order)
+        }
+        return serials.sorted()
     }
 
     /// The snapshot already held for the selected organization, without
     /// reading one.
-    private func cachedSnapshot() -> ABMSnapshot? {
-        selectedABMOrg.flatMap { abmSnapshots[$0.id] }
+    private func cachedSnapshot(for org: ABMConfig) -> ABMSnapshot? {
+        abmSnapshots[org.id]
     }
 
     /// Whether a lookup of this many devices would have to read the whole
     /// Apple Business organization first, which takes about a minute. False
     /// once a snapshot has been read, since it is reused.
+    /// Whether a lookup of this size has to read an organization first, which
+    /// is what makes a lookup take a minute. True while any organization in
+    /// scope still needs reading.
     func needsOrganizationRead(forDeviceCount count: Int) -> Bool {
-        isABMConfigured && count >= Self.snapshotThreshold && cachedSnapshot() == nil
+        guard isABMConfigured else { return false }
+        // Several organizations are always read in bulk: asking per device
+        // would mean asking each organization in turn until one had the
+        // device, at several times the request cost.
+        guard count >= Self.snapshotThreshold || readsAllABMOrgs else { return false }
+        return abmOrgsInScope.contains { cachedSnapshot(for: $0) == nil }
     }
 
     /// Discards the cached snapshot for the selected organization. Called
     /// after anything that changes Apple Business, so the next bulk lookup
     /// does not report the state from before the change.
+    /// Discards the snapshots of every organization in scope, after a change
+    /// that could have altered any of them.
     private func invalidateSnapshot() {
-        if let id = selectedABMOrg?.id { abmSnapshots[id] = nil }
+        for org in abmOrgsInScope { abmSnapshots[org.id] = nil }
     }
 
     // MARK: Groups
@@ -942,10 +1133,31 @@ final class LookupModel {
     /// inspector fetches it for whichever device is selected.
     func appleCareCoverage(for report: DeviceReport) async -> [AppleCareCoverage]? {
         guard let info = report.abm.value, !info.coverageLoaded, !info.isReleased,
-              let abm = makeABMClient() else { return nil }
+              let abm = clientForOrg(of: info) else { return nil }
         // Empty rather than nil on failure: nil keeps the inspector's
         // progress indicator up, and it would never resolve.
         return (try? await abm.appleCareCoverage(serial: report.serial)) ?? []
+    }
+
+    /// Whether the device is Activation Locked, and by whom.
+    ///
+    /// Read for the selected device only: Apple serves it one device at a
+    /// time, the same as AppleCare coverage. It comes from the Apple
+    /// organization deliberately — the organization knows the live state and
+    /// distinguishes an MDM lock from a user's, which no MDM inventory does.
+    func activationLock(for report: DeviceReport) async -> ABMActivationLock? {
+        guard let info = report.abm.value, !info.isReleased,
+              let abm = clientForOrg(of: info) else { return nil }
+        return try? await abm.activationLock(serial: report.serial)
+    }
+
+    /// The client for the organization a device was found in, falling back to
+    /// the one in scope for a record from before organizations were recorded.
+    private func clientForOrg(of info: ABMInfo) -> ABMClient? {
+        guard let id = info.orgID, let org = settings.abmOrgs.first(where: { $0.id == id }) else {
+            return makeABMClient()
+        }
+        return makeABMClient(for: org)
     }
 
     /// Passcode state for one device on Jamf School.
@@ -1568,7 +1780,11 @@ final class LookupModel {
     // MARK: Clients & shared context
 
     private func makeABMClient() -> ABMClient? {
-        guard let config = selectedABMOrg, config.isConfigured,
+        referenceABMOrg.flatMap { makeABMClient(for: $0) }
+    }
+
+    private func makeABMClient(for config: ABMConfig) -> ABMClient? {
+        guard config.isConfigured,
               let pem = Keychain.get(config.privateKeyKeychainKey), !pem.isEmpty else { return nil }
         let key = [config.id.uuidString, config.clientID, config.keyID, pem].joined(separator: "|")
         if let cached = abmClients[key] { return cached }
@@ -1618,8 +1834,23 @@ final class LookupModel {
         return client
     }
 
+    /// One Apple organization as a lookup sees it: its client, its snapshot
+    /// if one was read, and the names its device management services go by.
+    private struct ABMOrgContext: Sendable {
+        let id: UUID
+        let name: String
+        let kind: AppleOrgKind
+        let client: ABMClient
+        var snapshot: ABMSnapshot?
+        var mdmServerNames: [String: String] = [:]
+    }
+
     private struct LookupContext: Sendable {
-        var abm: ABMClient?
+        /// Every organization in scope, in configured order. A device belongs
+        /// to at most one, so the first that reports it wins — except that a
+        /// device released from one and re-added to another appears in both,
+        /// which is why an active record is preferred over a released one.
+        var abmOrgs: [ABMOrgContext] = []
         var proClient: JamfClient?
         var schoolClient: JamfSchoolClient?
         var intuneClient: IntuneClient?
@@ -1634,10 +1865,6 @@ final class LookupModel {
         /// carry no offset, so without this they would be read in whatever
         /// zone the Mac happens to be in.
         var schoolTimeZone: TimeZone?
-        /// When present, Apple Business answers come from here instead of one
-        /// request per device.
-        var abmSnapshot: ABMSnapshot?
-        var mdmServerNames: [String: String] = [:]
         var computerPrestageBySerial: [String: String] = [:]
         var computerPrestageNames: [String: String] = [:]
         var mobilePrestageBySerial: [String: String] = [:]
@@ -1650,26 +1877,34 @@ final class LookupModel {
 
     private func makeContext(deviceCount: Int = 0) async -> LookupContext {
         var context = LookupContext(
-            abm: makeABMClient(),
             proClient: makeJamfClient(),
             schoolClient: makeJamfSchoolClient(),
             intuneClient: makeIntuneClient(),
             consoleBaseURL: selectedConnection?.normalizedBaseURL
         )
-        // A snapshot already in hand answers instantly and costs nothing, so
-        // it is used whatever the size of the lookup. Reading one is only
-        // worth it when asking per device would be slower, which is why the
-        // threshold applies to building rather than to using.
-        if let cached = cachedSnapshot() {
-            context.abmSnapshot = cached
-        } else if deviceCount >= Self.snapshotThreshold {
-            context.abmSnapshot = await organizationSnapshot()
-        }
-        if let abm = context.abm {
-            if let servers = try? await abm.mdmServers() {
-                mdmServers = servers
+        // One entry per organization in scope. A snapshot already in hand
+        // answers instantly and costs nothing, so it is used whatever the
+        // size of the lookup. Reading one is only worth it when asking per
+        // device would be slower — or when there are several organizations,
+        // where asking per device would mean asking each of them in turn.
+        let readInBulk = deviceCount >= Self.snapshotThreshold || readsAllABMOrgs
+        for org in abmOrgsInScope {
+            guard let client = makeABMClient(for: org) else { continue }
+            var entry = ABMOrgContext(id: org.id, name: org.displayName, kind: org.kind, client: client)
+            if let cached = cachedSnapshot(for: org) {
+                entry.snapshot = cached
+            } else if readInBulk {
+                entry.snapshot = await organizationSnapshot(for: org)
             }
-            context.mdmServerNames = Dictionary(mdmServers.map { ($0.id, $0.name) }) { first, _ in first }
+            if let servers = try? await client.mdmServers() {
+                mdmServersByOrg[org.id] = servers
+                entry.mdmServerNames = Dictionary(servers.map { ($0.id, $0.name) }) { first, _ in first }
+            } else {
+                entry.mdmServerNames = Dictionary(
+                    (mdmServersByOrg[org.id] ?? []).map { ($0.id, $0.name) }
+                ) { first, _ in first }
+            }
+            context.abmOrgs.append(entry)
         }
         if let jamf = context.proClient {
             // Started together rather than one after another. All five are
@@ -1738,30 +1973,64 @@ final class LookupModel {
         return zone
     }
 
+    /// Finds the device in whichever organization in scope holds it.
+    ///
+    /// A device belongs to one organization at a time, so the search stops at
+    /// the first that reports it — with one exception: a device released from
+    /// one organization and re-added to another is reported by both, so an
+    /// active record is preferred over a released one. A failure is only
+    /// reported when no organization found the device, since one unreachable
+    /// organization should not hide a device another one holds.
     private static func fetchABM(context: LookupContext, serial: String) async -> FetchState<ABMInfo> {
-        guard let client = context.abm else { return .notConfigured }
+        guard !context.abmOrgs.isEmpty else { return .notConfigured }
+        var released: ABMInfo?
+        var failure: String?
+        for org in context.abmOrgs {
+            switch await fetchABM(org: org, serial: serial) {
+            case .found(let info) where info.isReleased:
+                // Kept in case no organization has it as an active device.
+                if released == nil { released = info }
+            case .found(let info):
+                return .found(info)
+            case .failed(let message):
+                if failure == nil { failure = message }
+            case .notFound, .pending, .notConfigured:
+                continue
+            }
+        }
+        if let released { return .found(released) }
+        if let failure { return .failed(failure) }
+        return .notFound
+    }
+
+    /// Reads one organization for one serial.
+    private static func fetchABM(org: ABMOrgContext, serial: String) async -> FetchState<ABMInfo> {
         // With a snapshot in hand there is nothing to ask Apple: everything
         // except AppleCare coverage is already known, and that is read on
         // demand from the inspector.
-        if let snapshot = context.abmSnapshot {
+        if let snapshot = org.snapshot {
             guard let device = snapshot.devices[serial.uppercased()] else { return .notFound }
             let serverID = snapshot.serverIDBySerial[serial.uppercased()]
             return .found(ABMInfo(
                 device: device,
+                orgID: org.id,
+                orgName: org.name,
                 mdmServerID: serverID,
-                mdmServerName: serverID.map { context.mdmServerNames[$0] ?? $0 },
+                mdmServerName: serverID.map { org.mdmServerNames[$0] ?? $0 },
                 coverage: [],
                 coverageLoaded: false
             ))
         }
         do {
-            guard let device = try await client.device(serial: serial) else { return .notFound }
-            let coverage = (try? await client.appleCareCoverage(serial: serial)) ?? []
-            let serverID = try? await client.assignedServerID(serial: serial)
+            guard let device = try await org.client.device(serial: serial) else { return .notFound }
+            let coverage = (try? await org.client.appleCareCoverage(serial: serial)) ?? []
+            let serverID = try? await org.client.assignedServerID(serial: serial)
             return .found(ABMInfo(
                 device: device,
+                orgID: org.id,
+                orgName: org.name,
                 mdmServerID: serverID ?? nil,
-                mdmServerName: (serverID ?? nil).map { context.mdmServerNames[$0] ?? $0 },
+                mdmServerName: (serverID ?? nil).map { org.mdmServerNames[$0] ?? $0 },
                 coverage: coverage
             ))
         } catch {

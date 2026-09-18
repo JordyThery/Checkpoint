@@ -91,6 +91,8 @@ struct ABMSettingsTab: View {
             }
         }
         // The organization in use, for the same reason as the connections.
+        // With every organization in scope there is no single one, so the
+        // first configured one opens.
         .onAppear { selectedID = model.selectedABMOrg?.id ?? settings.abmOrgs.first?.id }
     }
 

@@ -37,6 +37,16 @@ Both fill the serial field, and both confirm before starting when the list is la
 
 ![The order picker listing Apple School Manager order numbers with the number of devices on each](screenshot-order.png)
 
+## Several Apple organizations at once
+
+The organization popup offers **All Organizations** when more than one is configured. A lookup then searches every one of them and the table gains an Organization column naming the one each device was found in — which answers a question a single-organization lookup cannot: *which of our Apple tenants owns this device?*
+
+A device belongs to one organization at a time, so there is no ambiguity to resolve. The one exception is a device released from one organization and re-added to another, which both report: Checkpoint prefers the organization where it is not released. An organization that cannot be reached does not hide a device another one holds — the lookup only reports a failure when no organization found it.
+
+**Apple actions work in one organization at a time.** Every one of them names a device management service, and a service ID means nothing outside the organization that issued it. A single device always resolves to one organization, so the inspector keeps working as usual; a bulk selection spanning two organizations disables the Apple actions and says which organizations are involved. The Jamf and Intune side is unaffected — it has one connection either way.
+
+Reading several organizations costs one full read each, but Apple's request quota is per organization, so they do not compete with each other. Snapshots are cached per organization for the session, so the cost is paid once.
+
 ## Reading in bulk
 
 Above 15 devices the Apple organization is read in bulk instead of one device at a time. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device does not scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
@@ -60,6 +70,18 @@ Filtering only reads what the lookup already fetched, so it costs nothing. Warra
 Hiding a device also deselects it, so an action can never reach a device you can no longer see.
 
 **Sort** by clicking a column header, and reverse it by clicking again. Rows stay in the order the serials were entered until you do. Columns sort by the text they show, so statuses group as they read and version numbers order numerically; the date columns sort by the date itself, treating a device that has never reported one as the least recently seen. Sorting is display only — it changes neither the filter nor the selection.
+
+## Activation Lock
+
+Reported from **Apple Business or Apple School Manager**, not from the MDM, and shown for whichever device is selected. Apple added this to both services in September 2026.
+
+The row reads **Enabled**, **Disabled** or **Unknown**, and when it is enabled it says *which kind* of lock is in place — an **MDM** lock, which can be cleared with the escrowed bypass code, or a **user** lock, which needs the owner's Apple Account. That is the part that decides what to do next.
+
+The organization is the right source for three reasons: it knows the live state rather than what an inventory last collected, it covers Macs as well as iPhones and iPads, and it is the only one that distinguishes the two kinds of lock. Jamf Pro does report a lock boolean for mobile devices in its inventory, and Checkpoint deliberately does not show it: two rows that could disagree are worse than one that is authoritative.
+
+Apple serves this one device at a time, so it is read on selection like warranty coverage rather than in a lookup. A device whose lock state Apple will not report reads as Unknown rather than as disabled — Apple fails that read for a device reporting an internal-only lock state, and "Disabled" would be the wrong conclusion from a failure.
+
+Clearing a lock is not offered: neither Apple service exposes a way to do it.
 
 ## MDM server migration
 

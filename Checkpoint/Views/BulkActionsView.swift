@@ -164,6 +164,56 @@ struct BulkActionsView: View {
         return .mixed
     }
 
+    /// The Apple side of the bulk inspector.
+    ///
+    /// Every Apple action names a device management service, and a service
+    /// belongs to one organization, so a selection spanning two has nothing
+    /// valid to send. The reason is stated once at the top rather than on
+    /// every button, and each action is disabled with it.
+    @ViewBuilder
+    private var appleSection: some View {
+        let crossOrg = model.appleActionUnavailableReason(for: reports)
+        if let crossOrg {
+            Label {
+                Text(crossOrg)
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            .font(.callout)
+        }
+        let appleServers = model.mdmServers(for: model.appleActionOrg(for: reports))
+        bulkPicker(
+            "MDM Server",
+            selection: $mdmSelection,
+            currentState: currentMDMState,
+            noneLabel: "Unassigned",
+            options: appleServers.map { ($0.id, $0.name) }
+        )
+        Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
+            .disabled(crossOrg != nil || abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
+        Button("Unassign \(count(assignedCount)) from MDM Server") { pending = .unassignMDM }
+            .disabled(crossOrg != nil || assignedCount == 0)
+        if migratableCount > 0 {
+            DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
+            Button("Assign with Migration Deadline to \(count(migratableCount))") { pending = .scheduleMigration }
+                .disabled(crossOrg != nil || mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
+        }
+        if migratingCount > 0 {
+            Button("Update Deadline for \(count(migratingCount))") { pending = .updateDeadline }
+                .disabled(crossOrg != nil)
+            Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { pending = .cancelMigration }
+                .disabled(crossOrg != nil)
+        }
+        let releaseUnavailable = model.releaseUnavailabilityReason(for: reports)
+        // Named after the organization being released from, as the
+        // single-device button is, rather than after the service.
+        let releaseFrom = model.appleActionOrg(for: reports)?.displayName ?? model.appleScopeLabel
+        Button("Release \(count(abmCount)) from \(releaseFrom)", role: .destructive) { pending = .release }
+            .disabled(abmCount == 0 || releaseUnavailable != nil)
+            .help(releaseUnavailable ?? "")
+    }
+
     /// The device management side of the bulk inspector.
     ///
     /// Each control is gated on what the connected product can do, so a Jamf
@@ -224,29 +274,10 @@ struct BulkActionsView: View {
                 LabeledContent("Selected Devices", value: "\(reports.count)")
                 LabeledContent("Computers", value: "\(computerCount)")
                 LabeledContent("Mobile Devices", value: "\(mobileCount)")
-                LabeledContent("In \(model.abmKind.label)", value: "\(abmCount)")
+                LabeledContent("In \(model.appleScopeLabel)", value: "\(abmCount)")
                 LabeledContent("With \(model.mdmProduct.label) Record", value: "\(managedCount)")
             }
-            Section(model.abmKind.label) {
-                bulkPicker("MDM Server", selection: $mdmSelection, currentState: currentMDMState, noneLabel: "Unassigned", options: model.mdmServers.map { ($0.id, $0.name) })
-                Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
-                    .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
-                Button("Unassign \(count(assignedCount)) from MDM Server") { pending = .unassignMDM }
-                    .disabled(assignedCount == 0)
-                if migratableCount > 0 {
-                    DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
-                    Button("Assign with Migration Deadline to \(count(migratableCount))") { pending = .scheduleMigration }
-                        .disabled(mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
-                }
-                if migratingCount > 0 {
-                    Button("Update Deadline for \(count(migratingCount))") { pending = .updateDeadline }
-                    Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { pending = .cancelMigration }
-                }
-                let releaseUnavailable = model.releaseUnavailabilityReason
-                Button("Release \(count(abmCount)) from \(model.abmKind.label)", role: .destructive) { pending = .release }
-                    .disabled(abmCount == 0 || releaseUnavailable != nil)
-                    .help(releaseUnavailable ?? "")
-            }
+            Section(model.appleScopeLabel) { appleSection }
             // One Jamf Pro group, mirroring the device inspector. Each device
             // kind keeps its own PreStage picker, distinguished by row label
             // rather than by section header.
@@ -353,7 +384,8 @@ struct BulkActionsView: View {
     }
 
     private var selectedServerName: String? {
-        mdmSelection.appliedID.map { id in model.mdmServers.first { $0.id == id }?.name ?? id }
+        let servers = model.mdmServers(for: model.appleActionOrg(for: reports))
+        return mdmSelection.appliedID.map { id in servers.first { $0.id == id }?.name ?? id }
     }
 
     private func selectedPrestageName(_ choice: BulkChoice, in prestages: [JamfPrestage]) -> String? {

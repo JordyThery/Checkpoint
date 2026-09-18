@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Picks an Apple order and hands back the serial numbers on it. Both Apple
-/// services report order numbers the same way.
+/// services report order numbers the same way, and with several
+/// organizations in scope the orders of all of them are listed together.
 ///
 /// Apple cannot filter devices by order, so the orders come from the same
 /// organization snapshot a large lookup already reads. Once that has been
@@ -109,7 +110,7 @@ struct OrderPickerView: View {
         isLoading = true
         if refresh {
             selection = nil
-            await model.organizationSnapshot(forceRefresh: true)
+            await model.refreshOrganizationsInScope()
         }
         orders = await model.abmOrders()
         isLoading = false

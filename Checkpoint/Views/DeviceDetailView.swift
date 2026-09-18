@@ -44,6 +44,11 @@ struct DeviceDetailView: View {
     /// Compliance fetched on selection, for the connection that serves it
     /// per device rather than with the lookup.
     @State private var compliance: JamfDeviceCompliance?
+    /// Activation Lock state fetched on selection. Nil both while loading
+    /// and when no answer came, which is why the row tracks loading
+    /// separately.
+    @State private var activationLock: ABMActivationLock?
+    @State private var isLoadingActivationLock = false
     /// Jamf School's per-device record, which carries the passcode state its
     /// device list leaves out. Fetched on selection for the same reason
     /// AppleCare coverage is.
@@ -396,7 +401,13 @@ struct DeviceDetailView: View {
                 Text("Unassigned").foregroundStyle(.orange)
             }
         }
+        if model.readsAllABMOrgs, let org = info.orgName {
+            LabeledContent("Organization", value: org)
+        }
         LabeledContent("Model", value: info.device.deviceModel ?? "—")
+        if !info.isReleased {
+            activationLockRow
+        }
         LabeledContent("Date added", value: DateFormatting.short(info.device.addedToOrgDateTime))
         LabeledContent("Order", value: info.device.orderNumber ?? "—")
         LabeledContent("Purchase Source", value: info.device.purchaseSourceType ?? "—")
@@ -447,11 +458,44 @@ struct DeviceDetailView: View {
 
     }
 
+    /// Activation Lock, from the Apple organization rather than the MDM.
+    ///
+    /// Unknown rather than Disabled when the organization gave no answer:
+    /// Apple fails this read for a device reporting an internal-only lock
+    /// state, and Disabled would be the wrong conclusion from a failure.
+    @ViewBuilder
+    private var activationLockRow: some View {
+        LabeledContent("Activation Lock") {
+            if isLoadingActivationLock {
+                ProgressView().controlSize(.small)
+            } else if let lock = activationLock {
+                VStack(alignment: .trailing, spacing: 2) {
+                    // Orange for enabled, plain for disabled: a lock can
+                    // stand in the way of reusing a device, but neither
+                    // state is a fault.
+                    Text(lock.summary)
+                        .foregroundStyle(lock.isLocked ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+                    if let detail = lock.detail {
+                        Text(detail)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("Unknown")
+                    .foregroundStyle(.secondary)
+                    .help("The organization did not report a lock state for this device.")
+            }
+        }
+    }
+
     @ViewBuilder
     private func abmActions(_ info: ABMInfo) -> some View {
         Picker("MDM Server", selection: $mdmSelection) {
             Text("Unassigned").tag(String?.none)
-            ForEach(model.mdmServers) { server in
+            // The device's own organization: a service ID from another one
+            // would be rejected.
+            ForEach(model.mdmServers(for: model.appleActionOrg(for: [report]))) { server in
                 Text(server.name).tag(Optional(server.id))
             }
         }
@@ -473,8 +517,8 @@ struct DeviceDetailView: View {
                 .disabled(mdmSelection == nil || mdmSelection == info.mdmServerID)
         }
 
-        let releaseUnavailable = model.releaseUnavailabilityReason
-        Button("Release from \(model.abmKind.label)", role: .destructive) { pending = .release }
+        let releaseUnavailable = model.releaseUnavailabilityReason(for: [report])
+        Button("Release from \(info.orgName ?? model.abmKind.label)", role: .destructive) { pending = .release }
             .disabled(releaseUnavailable != nil)
             .help(releaseUnavailable ?? "")
     }
@@ -996,7 +1040,11 @@ struct DeviceDetailView: View {
         loadedCoverage = nil
         schoolDetails = nil
         compliance = nil
+        activationLock = nil
+        isLoadingActivationLock = report.abm.value?.isReleased == false
         loadedCoverage = await model.appleCareCoverage(for: report)
+        activationLock = await model.activationLock(for: report)
+        isLoadingActivationLock = false
         guard report.mdm.value != nil else { return }
         // Only ask each product for what it actually serves: a Jamf School
         // server has none of the endpoints below, and a Jamf Pro one carries

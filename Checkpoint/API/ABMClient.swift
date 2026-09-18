@@ -59,6 +59,35 @@ struct AppleCareCoverage: Sendable, Identifiable, Hashable {
     }
 }
 
+/// A device's Activation Lock state, as the Apple organization reports it.
+///
+/// Added to both Apple services in September 2026, and the authoritative
+/// source: the organization reports the live state, covers Macs as well as
+/// mobile devices, and is the only one that says which kind of lock it is.
+nonisolated struct ABMActivationLock: Sendable {
+    let isLocked: Bool
+    /// `MDM`, `USER` or `NONE`. Only meaningful while locked.
+    let lockType: String?
+
+    /// Enabled or disabled, as the FileVault and passcode rows word an
+    /// on-or-off state. The kind of lock goes in `detail`, so the first word
+    /// is always the answer.
+    var summary: String {
+        isLocked ? "Enabled" : "Disabled"
+    }
+
+    /// The lock type and what can be done about it: an MDM lock has an
+    /// escrowed bypass code, a user's needs their Apple Account.
+    var detail: String? {
+        guard isLocked else { return nil }
+        switch lockType?.uppercased() {
+        case "MDM": return "MDM lock, clearable with the escrowed bypass code."
+        case "USER": return "User lock, needs the owner's Apple Account to clear."
+        default: return nil
+        }
+    }
+}
+
 struct MDMServer: Sendable, Identifiable, Hashable {
     let id: String
     let name: String
@@ -244,6 +273,28 @@ actor ABMClient {
                 endDateTime: $0.attributes.endDateTime
             )
         }
+    }
+
+    /// Activation Lock state for one device, or nil when the organization
+    /// will not say.
+    ///
+    /// Apple documents a server error for a device reporting an internal-only
+    /// lock state, so a 5xx is treated as "no answer" rather than surfaced:
+    /// it is a quirk of the device's report, not a fault the user can act on.
+    func activationLock(serial: String) async throws -> ABMActivationLock? {
+        struct Response: Decodable {
+            let data: Item
+            struct Item: Decodable { let attributes: Attributes }
+            struct Attributes: Decodable {
+                let isLocked: Bool?
+                let lockType: String?
+            }
+        }
+        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/activationLockStatus")
+        if status == 404 || status >= 500 { return nil }
+        try throwIfError(status: status, data: data)
+        let attributes = try JSONDecoder().decode(Response.self, from: data).data.attributes
+        return ABMActivationLock(isLocked: attributes.isLocked ?? false, lockType: attributes.lockType)
     }
 
     /// The ID of the MDM server the device is assigned to, if any.
