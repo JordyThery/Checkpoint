@@ -487,6 +487,7 @@ struct DeviceDetailView: View {
                     .help("The organization did not report a lock state for this device.")
             }
         }
+        .help("Reported by the Apple organization. Checkpoint does not read bypass codes or clear locks.")
     }
 
     @ViewBuilder

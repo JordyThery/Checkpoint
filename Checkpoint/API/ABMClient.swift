@@ -76,13 +76,14 @@ nonisolated struct ABMActivationLock: Sendable {
         isLocked ? "Enabled" : "Disabled"
     }
 
-    /// The lock type and what can be done about it: an MDM lock has an
-    /// escrowed bypass code, a user's needs their Apple Account.
+    /// The lock type and what it means for clearing the lock. Worded so that
+    /// neither line suggests Checkpoint holds the bypass code: it is escrowed
+    /// with Apple and the MDM, and Checkpoint neither reads nor stores it.
     var detail: String? {
         guard isLocked else { return nil }
         switch lockType?.uppercased() {
-        case "MDM": return "MDM lock, clearable with the escrowed bypass code."
-        case "USER": return "User lock, needs the owner's Apple Account to clear."
+        case "MDM": return "MDM lock. A bypass code is escrowed, so clearing it does not need the owner."
+        case "USER": return "User lock. Clearing it needs the owner's Apple Account."
         default: return nil
         }
     }

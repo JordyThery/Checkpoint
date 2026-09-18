@@ -75,13 +75,13 @@ Hiding a device also deselects it, so an action can never reach a device you can
 
 Reported from **Apple Business or Apple School Manager**, not from the MDM, and shown for whichever device is selected. Apple added this to both services in September 2026.
 
-The row reads **Enabled**, **Disabled** or **Unknown**, and when it is enabled it says *which kind* of lock is in place — an **MDM** lock, which can be cleared with the escrowed bypass code, or a **user** lock, which needs the owner's Apple Account. That is the part that decides what to do next.
+The row reads **Enabled**, **Disabled** or **Unknown**, and when it is enabled it says *which kind* of lock is in place — an **MDM** lock, for which a bypass code is escrowed so that clearing it does not need the owner, or a **user** lock, which does. That is the part that decides what to do next.
 
 The organization is the right source for three reasons: it knows the live state rather than what an inventory last collected, it covers Macs as well as iPhones and iPads, and it is the only one that distinguishes the two kinds of lock. Jamf Pro does report a lock boolean for mobile devices in its inventory, and Checkpoint deliberately does not show it: two rows that could disagree are worse than one that is authoritative.
 
 Apple serves this one device at a time, so it is read on selection like warranty coverage rather than in a lookup. A device whose lock state Apple will not report reads as Unknown rather than as disabled — Apple fails that read for a device reporting an internal-only lock state, and "Disabled" would be the wrong conclusion from a failure.
 
-Clearing a lock is not offered: neither Apple service exposes a way to do it.
+Checkpoint reports the state and nothing more: it never reads or stores a bypass code — those are escrowed with Apple and the MDM — and it offers no way to clear a lock, which neither Apple service exposes in any case.
 
 ## MDM server migration
 
