@@ -45,7 +45,9 @@ A device belongs to one organization at a time, so there is no ambiguity to reso
 
 **Apple actions work in one organization at a time.** Every one of them names a device management service, and a service ID means nothing outside the organization that issued it. A single device always resolves to one organization, so the inspector keeps working as usual; a bulk selection spanning two organizations disables the Apple actions and says which organizations are involved. The Jamf and Intune side is unaffected — it has one connection either way.
 
-Reading several organizations costs one full read each, but Apple's quota is per organization, so the reads run at the same time and the wait is the slowest organization rather than the sum of them. Snapshots are cached per organization for the session, so the cost is paid once, and a lookup that is about to spend that minute asks first.
+Searching several organizations does not mean reading them. Below the bulk threshold Checkpoint asks each organization about each device, which is cheaper than it sounds: an organization that does not hold the device says so in one request and costs nothing more, so a serial costs one request per organization plus two for whichever one has it. A handful of serials across two organizations is a second's work.
+
+Above the threshold each organization is read in full instead, as a single-organization lookup does. Apple's quota is per organization, so those reads run at the same time and the wait is the slowest organization rather than the sum. Snapshots are then cached per organization for the session, and a lookup about to spend that minute asks first.
 
 An Apple action afterwards re-reads only the organization it changed. The others have not changed, and re-reading one costs a minute of its quota for nothing.
 

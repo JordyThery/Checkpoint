@@ -103,6 +103,8 @@ actor IntuneClient {
     /// connections says which one it went to.
     private let connectionName: String
     private var cachedToken: (value: String, expiry: Date)?
+    /// The sign-in in flight, so concurrent callers share one.
+    private var signIn: Task<String, any Error>?
 
     init?(config: MDMConnection, secret: String, log: ActivityLog? = nil) {
         let tenant = config.tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -418,8 +420,22 @@ actor IntuneClient {
 
     // MARK: Auth
 
+    /// One token request at a time.
+    ///
+    /// A lookup starts several reads at once, and each would otherwise find
+    /// no cached token and ask for its own — five sign-ins in the same
+    /// second, four of them wasted. Callers arriving while one is in flight
+    /// wait for it instead.
     private func bearerToken() async throws -> String {
         if let cachedToken, cachedToken.expiry > Date() { return cachedToken.value }
+        if let signIn { return try await signIn.value }
+        let task = Task { try await signingIn() }
+        signIn = task
+        defer { signIn = nil }
+        return try await task.value
+    }
+
+    private func signingIn() async throws -> String {
         // Sign-ins are recorded, never their bodies: the request carries the
         // client secret and the response carries the token.
         do {

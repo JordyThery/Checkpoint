@@ -1170,10 +1170,7 @@ final class LookupModel {
     /// scope still needs reading.
     func needsOrganizationRead(forDeviceCount count: Int) -> Bool {
         guard isABMConfigured else { return false }
-        // Several organizations are always read in bulk: asking per device
-        // would mean asking each organization in turn until one had the
-        // device, at several times the request cost.
-        guard count >= Self.snapshotThreshold || readsAllABMOrgs else { return false }
+        guard count >= Self.snapshotThreshold else { return false }
         return abmOrgsInScope.contains { cachedSnapshot(for: $0) == nil }
     }
 
@@ -2004,7 +2001,15 @@ final class LookupModel {
         // when several organizations are in play, where asking per device
         // would mean asking each of them in turn.
         let orgsToRead = orgs ?? abmOrgsInScope
-        let readInBulk = deviceCount >= Self.snapshotThreshold || orgsToRead.count > 1
+        // The threshold alone decides, however many organizations are in
+        // scope. Asking per device across several is far cheaper than it
+        // looks: an organization that does not hold the device answers 404
+        // to the first request and costs nothing more, so a serial costs one
+        // request per organization plus two for the one that has it. Reading
+        // an organization in full costs a request per thousand devices plus
+        // one per device management service, which on a real tenant is a few
+        // dozen and can cross Apple's per-minute quota on its own.
+        let readInBulk = deviceCount >= Self.snapshotThreshold
         let pairs = orgsToRead.compactMap { org in
             makeABMClient(for: org).map { (org: org, client: $0) }
         }
@@ -2012,10 +2017,14 @@ final class LookupModel {
             ? pairs.filter { cachedSnapshot(for: $0.org) == nil }
             : []
         let fresh = await readSnapshots(needSnapshots)
-        // Service lists are small and independent, so they are read together
-        // rather than one organization after another.
+        // A snapshot already carries the organization's services, so only
+        // the organizations without one need asking. Those are read together
+        // rather than one after another.
+        let needServices = pairs.filter { pair in
+            (cachedSnapshot(for: pair.org) ?? fresh[pair.org.id]) == nil
+        }
         let servers = await withTaskGroup(of: (UUID, [MDMServer]?).self) { group in
-            for pair in pairs {
+            for pair in needServices {
                 group.addTask { (pair.org.id, try? await pair.client.mdmServers()) }
             }
             var byOrg: [UUID: [MDMServer]?] = [:]
@@ -2027,7 +2036,7 @@ final class LookupModel {
             var entry = ABMOrgContext(id: org.id, name: org.displayName, kind: org.kind, client: pair.client)
             entry.snapshot = cachedSnapshot(for: org) ?? fresh[org.id]
             entry.snapshotFailed = readInBulk && entry.snapshot == nil
-            if let list = servers[org.id] ?? nil {
+            if let list = entry.snapshot?.servers ?? (servers[org.id] ?? nil) {
                 mdmServersByOrg[org.id] = list
             }
             entry.mdmServerNames = Dictionary(
