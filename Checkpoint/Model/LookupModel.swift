@@ -459,7 +459,7 @@ final class LookupModel {
     var abmOrgsInScope: [ABMConfig] {
         switch abmScope {
         case .allOrganizations: settings.abmOrgs.filter(\.isConfigured)
-        case .organization: selectedABMOrg.map { [$0] } ?? []
+        case .organization: selectedABMOrg.map { $0.isConfigured ? [$0] : [] } ?? []
         }
     }
 
@@ -500,6 +500,21 @@ final class LookupModel {
 
     var isABMConfigured: Bool {
         abmOrgsInScope.contains { Keychain.get($0.privateKeyKeychainKey) != nil }
+    }
+
+    /// Brings the scope back to something that exists, after organizations
+    /// are added or removed. A scope pointing at a deleted organization would
+    /// leave the popup blank, and searching them all makes no sense once one
+    /// is left — the popup stops offering that entry.
+    func reconcileABMScope() {
+        if case .organization(let id) = abmScope,
+           !settings.abmOrgs.contains(where: { $0.id == id }) {
+            abmScope = settings.abmOrgs.first.map { .organization($0.id) } ?? .allOrganizations
+        }
+        if abmScope == .allOrganizations, settings.abmOrgs.count == 1,
+           let only = settings.abmOrgs.first {
+            abmScope = .organization(only.id)
+        }
     }
 
     /// Empties the results table. Cached clients are deliberately kept so their
@@ -589,7 +604,14 @@ final class LookupModel {
     /// organization snapshot instead of asking Apple per device, which the
     /// request quota would stretch to hours.
     func refreshRows(_ serials: [String]) async {
-        let context = await makeContext(deviceCount: serials.count)
+        // The organizations those devices were found in. A refresh after an
+        // action need not search the others: nothing happened to them, and
+        // re-reading one costs a minute of its quota.
+        let affected = Set(serials.compactMap { serial in
+            reports.first { $0.serial == serial }?.abm.value?.orgID
+        })
+        let orgs = affected.isEmpty ? nil : settings.abmOrgs.filter { affected.contains($0.id) }
+        let context = await makeContext(deviceCount: serials.count, orgs: orgs)
         for serial in serials {
             guard let index = reports.firstIndex(where: { $0.serial == serial }) else { continue }
             reports[index].abm = await Self.fetchABM(context: context, serial: serial)
@@ -695,8 +717,19 @@ final class LookupModel {
     func appleActionUnavailableReason(for reports: [DeviceReport]) -> String? {
         guard appleActionOrg(for: reports) == nil else { return nil }
         let names = Set(reports.compactMap { $0.abm.value?.orgName }).sorted()
-        return "The selected devices are in \(names.formatted(.list(type: .and))). "
-            + "Apple actions work in one organization at a time, so narrow the selection to one of them."
+        switch names.count {
+        case 0:
+            // Reachable with every organization in scope and a selection of
+            // devices none of them holds.
+            return "None of the selected devices are in an Apple organization."
+        case 1:
+            // One organization resolved by name but no longer configured,
+            // which is a different problem from spanning two.
+            return "\(names[0]) is no longer configured, so its devices cannot be acted on."
+        default:
+            return "The selected devices are in \(names.formatted(.list(type: .and))). "
+                + "Apple actions work in one organization at a time, so narrow the selection to one of them."
+        }
     }
 
     /// Why devices cannot be released from this organization, or nil.
@@ -741,7 +774,7 @@ final class LookupModel {
             let activityID = try await abm.submitActivity(.release, serials: serials)
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
-        invalidateSnapshot()
+        invalidateSnapshot(for: org)
         await refreshRows(serials)
     }
 
@@ -786,7 +819,7 @@ final class LookupModel {
             // below reads the new assignment instead of the old one.
             for id in activityIDs { await abm.waitForActivity(id: id) }
         }
-        invalidateSnapshot()
+        invalidateSnapshot(for: org)
         await refreshRows(inOrg.map(\.serial))
     }
 
@@ -858,7 +891,7 @@ final class LookupModel {
             // Apple applies activities asynchronously, so wait before re-reading.
             if let activityID { await abm.waitForActivity(id: activityID) }
         }
-        invalidateSnapshot()
+        invalidateSnapshot(for: org)
         await refreshRows(serials)
     }
 
@@ -917,6 +950,61 @@ final class LookupModel {
     func organizationSnapshot(forceRefresh: Bool = false) async -> ABMSnapshot? {
         guard let org = referenceABMOrg else { return nil }
         return await organizationSnapshot(for: org, forceRefresh: forceRefresh)
+    }
+
+    /// Reads several organizations at once, returning the snapshots that
+    /// succeeded.
+    ///
+    /// Apple's quota is per organization, so parallel reads do not contend
+    /// and the wall-clock cost is the slowest organization rather than the
+    /// sum. The progress text counts organizations rather than devices:
+    /// several device counts arriving at once would be unreadable, and it is
+    /// the number of organizations that explains the wait.
+    private func readSnapshots(_ pairs: [(org: ABMConfig, client: ABMClient)]) async -> [UUID: ABMSnapshot] {
+        guard !pairs.isEmpty else { return [:] }
+        // One organization keeps its per-device progress, which is the
+        // single-organization experience unchanged.
+        if pairs.count == 1 {
+            return await organizationSnapshot(for: pairs[0].org).map { [pairs[0].org.id: $0] } ?? [:]
+        }
+        isBuildingSnapshot = true
+        snapshotStatus = "Reading \(pairs.count) organizations…"
+        defer { isBuildingSnapshot = false; snapshotStatus = nil }
+
+        var results: [UUID: ABMSnapshot] = [:]
+        var done = 0
+        await withTaskGroup(of: (ABMConfig, Result<ABMSnapshot, any Error>).self) { group in
+            for pair in pairs {
+                group.addTask {
+                    do { return (pair.org, .success(try await pair.client.organizationSnapshot())) }
+                    catch { return (pair.org, .failure(error)) }
+                }
+            }
+            for await (org, result) in group {
+                done += 1
+                snapshotStatus = "Read \(done) of \(pairs.count) organizations…"
+                switch result {
+                case .success(let snapshot):
+                    abmSnapshots[org.id] = snapshot
+                    results[org.id] = snapshot
+                    recordAction(
+                        org.kind.activityService,
+                        "Read the organization: \(Self.deviceCount(snapshot.devices.count))",
+                        serials: [],
+                        orgName: org.displayName
+                    )
+                case .failure(let error):
+                    recordAction(
+                        org.kind.activityService,
+                        "Could not read the organization — \(error.localizedDescription)",
+                        serials: [],
+                        outcome: .failed,
+                        orgName: org.displayName
+                    )
+                }
+            }
+        }
+        return results
     }
 
     /// Reads one organization, or returns the snapshot already held for it.
@@ -1021,9 +1109,25 @@ final class LookupModel {
     /// refresh: an order added since the last read appears in none of the
     /// snapshots until they are rebuilt.
     func refreshOrganizationsInScope() async {
-        for org in abmOrgsInScope {
-            await organizationSnapshot(for: org, forceRefresh: true)
+        for org in abmOrgsInScope { abmSnapshots[org.id] = nil }
+        let pairs = abmOrgsInScope.compactMap { org in
+            makeABMClient(for: org).map { (org: org, client: $0) }
         }
+        _ = await readSnapshots(pairs)
+    }
+
+    /// Snapshots for every organization in scope, reading whichever are
+    /// missing together rather than one after another.
+    ///
+    /// The order picker needs all of them before it can show anything, so
+    /// reading them in sequence would cost their sum — the same trap the
+    /// lookup path avoids.
+    private func snapshotsInScope() async -> [ABMSnapshot] {
+        let pairs = abmOrgsInScope
+            .filter { cachedSnapshot(for: $0) == nil }
+            .compactMap { org in makeABMClient(for: org).map { (org: org, client: $0) } }
+        _ = await readSnapshots(pairs)
+        return abmOrgsInScope.compactMap { abmSnapshots[$0.id] }
     }
 
     /// Order numbers across every organization in scope, most devices first.
@@ -1034,8 +1138,7 @@ final class LookupModel {
     /// hiding the other.
     func abmOrders() async -> [(number: String, count: Int)] {
         var counts: [String: Int] = [:]
-        for org in abmOrgsInScope {
-            guard let snapshot = await organizationSnapshot(for: org) else { continue }
+        for snapshot in await snapshotsInScope() {
             for order in snapshot.orders { counts[order.number, default: 0] += order.count }
         }
         return counts
@@ -1047,8 +1150,7 @@ final class LookupModel {
     /// Every serial on that order across the organizations in scope.
     func serials(inOrder order: String) async -> [String] {
         var serials: [String] = []
-        for org in abmOrgsInScope {
-            guard let snapshot = await organizationSnapshot(for: org) else { continue }
+        for snapshot in await snapshotsInScope() {
             serials += snapshot.serials(inOrder: order)
         }
         return serials.sorted()
@@ -1078,10 +1180,13 @@ final class LookupModel {
     /// Discards the cached snapshot for the selected organization. Called
     /// after anything that changes Apple Business, so the next bulk lookup
     /// does not report the state from before the change.
-    /// Discards the snapshots of every organization in scope, after a change
-    /// that could have altered any of them.
-    private func invalidateSnapshot() {
-        for org in abmOrgsInScope { abmSnapshots[org.id] = nil }
+    /// Discards one organization's snapshot, after a change to it.
+    ///
+    /// Scoped deliberately: an action runs in a single organization, and
+    /// dropping every snapshot would make the refresh that follows re-read
+    /// organizations nothing had happened to — a minute of quota each.
+    private func invalidateSnapshot(for org: ABMConfig) {
+        abmSnapshots[org.id] = nil
     }
 
     // MARK: Groups
@@ -1842,6 +1947,11 @@ final class LookupModel {
         let kind: AppleOrgKind
         let client: ABMClient
         var snapshot: ABMSnapshot?
+        /// True when a snapshot was wanted and could not be read. The
+        /// per-device path is not a substitute for it: at three requests per
+        /// device against Apple's quota, a large lookup would crawl instead
+        /// of saying plainly that the organization could not be read.
+        var snapshotFailed = false
         var mdmServerNames: [String: String] = [:]
     }
 
@@ -1875,35 +1985,54 @@ final class LookupModel {
         var intuneFleet: [String: IntuneDevice] = [:]
     }
 
-    private func makeContext(deviceCount: Int = 0) async -> LookupContext {
+    /// Builds the clients and snapshots a lookup reads from.
+    ///
+    /// `orgs` narrows the Apple side to particular organizations, which is
+    /// what a refresh after an action passes: the devices it is refreshing
+    /// are known to belong to one organization, and the others have not
+    /// changed.
+    private func makeContext(deviceCount: Int = 0, orgs: [ABMConfig]? = nil) async -> LookupContext {
         var context = LookupContext(
             proClient: makeJamfClient(),
             schoolClient: makeJamfSchoolClient(),
             intuneClient: makeIntuneClient(),
             consoleBaseURL: selectedConnection?.normalizedBaseURL
         )
-        // One entry per organization in scope. A snapshot already in hand
-        // answers instantly and costs nothing, so it is used whatever the
-        // size of the lookup. Reading one is only worth it when asking per
-        // device would be slower — or when there are several organizations,
-        // where asking per device would mean asking each of them in turn.
-        let readInBulk = deviceCount >= Self.snapshotThreshold || readsAllABMOrgs
-        for org in abmOrgsInScope {
-            guard let client = makeABMClient(for: org) else { continue }
-            var entry = ABMOrgContext(id: org.id, name: org.displayName, kind: org.kind, client: client)
-            if let cached = cachedSnapshot(for: org) {
-                entry.snapshot = cached
-            } else if readInBulk {
-                entry.snapshot = await organizationSnapshot(for: org)
+        // One entry per organization being read. A snapshot already in hand
+        // answers instantly, so it is used whatever the size of the lookup.
+        // Reading one is worth it when asking per device would be slower, or
+        // when several organizations are in play, where asking per device
+        // would mean asking each of them in turn.
+        let orgsToRead = orgs ?? abmOrgsInScope
+        let readInBulk = deviceCount >= Self.snapshotThreshold || orgsToRead.count > 1
+        let pairs = orgsToRead.compactMap { org in
+            makeABMClient(for: org).map { (org: org, client: $0) }
+        }
+        let needSnapshots = readInBulk
+            ? pairs.filter { cachedSnapshot(for: $0.org) == nil }
+            : []
+        let fresh = await readSnapshots(needSnapshots)
+        // Service lists are small and independent, so they are read together
+        // rather than one organization after another.
+        let servers = await withTaskGroup(of: (UUID, [MDMServer]?).self) { group in
+            for pair in pairs {
+                group.addTask { (pair.org.id, try? await pair.client.mdmServers()) }
             }
-            if let servers = try? await client.mdmServers() {
-                mdmServersByOrg[org.id] = servers
-                entry.mdmServerNames = Dictionary(servers.map { ($0.id, $0.name) }) { first, _ in first }
-            } else {
-                entry.mdmServerNames = Dictionary(
-                    (mdmServersByOrg[org.id] ?? []).map { ($0.id, $0.name) }
-                ) { first, _ in first }
+            var byOrg: [UUID: [MDMServer]?] = [:]
+            for await (id, list) in group { byOrg[id] = list }
+            return byOrg
+        }
+        for pair in pairs {
+            let org = pair.org
+            var entry = ABMOrgContext(id: org.id, name: org.displayName, kind: org.kind, client: pair.client)
+            entry.snapshot = cachedSnapshot(for: org) ?? fresh[org.id]
+            entry.snapshotFailed = readInBulk && entry.snapshot == nil
+            if let list = servers[org.id] ?? nil {
+                mdmServersByOrg[org.id] = list
             }
+            entry.mdmServerNames = Dictionary(
+                (mdmServersByOrg[org.id] ?? []).map { ($0.id, $0.name) }
+            ) { first, _ in first }
             context.abmOrgs.append(entry)
         }
         if let jamf = context.proClient {
@@ -2005,6 +2134,13 @@ final class LookupModel {
 
     /// Reads one organization for one serial.
     private static func fetchABM(org: ABMOrgContext, serial: String) async -> FetchState<ABMInfo> {
+        // A wanted snapshot that failed is reported as a failure rather than
+        // worked around per device: three requests per serial against a
+        // twenty-a-minute quota turns a large lookup into a crawl, and the
+        // real answer is that the organization could not be read.
+        if org.snapshotFailed {
+            return .failed("\(org.name) could not be read.")
+        }
         // With a snapshot in hand there is nothing to ask Apple: everything
         // except AppleCare coverage is already known, and that is read on
         // demand from the inspector.

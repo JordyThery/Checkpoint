@@ -168,20 +168,28 @@ struct BulkActionsView: View {
     ///
     /// Every Apple action names a device management service, and a service
     /// belongs to one organization, so a selection spanning two has nothing
-    /// valid to send. The reason is stated once at the top rather than on
-    /// every button, and each action is disabled with it.
+    /// valid to send. The reason replaces the controls rather than disabling
+    /// them: a picker whose options have gone would not match its own
+    /// selection, and six dimmed buttons say less than one sentence.
     @ViewBuilder
     private var appleSection: some View {
-        let crossOrg = model.appleActionUnavailableReason(for: reports)
-        if let crossOrg {
+        if let reason = model.appleActionUnavailableReason(for: reports) {
             Label {
-                Text(crossOrg)
+                Text(reason)
             } icon: {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
             }
             .font(.callout)
+        } else {
+            appleActions
         }
+    }
+
+    /// The Apple actions themselves, shown only once the selection resolves
+    /// to one organization.
+    @ViewBuilder
+    private var appleActions: some View {
         let appleServers = model.mdmServers(for: model.appleActionOrg(for: reports))
         bulkPicker(
             "MDM Server",
@@ -191,19 +199,17 @@ struct BulkActionsView: View {
             options: appleServers.map { ($0.id, $0.name) }
         )
         Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
-            .disabled(crossOrg != nil || abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
+            .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
         Button("Unassign \(count(assignedCount)) from MDM Server") { pending = .unassignMDM }
-            .disabled(crossOrg != nil || assignedCount == 0)
+            .disabled(assignedCount == 0)
         if migratableCount > 0 {
             DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
             Button("Assign with Migration Deadline to \(count(migratableCount))") { pending = .scheduleMigration }
-                .disabled(crossOrg != nil || mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
+                .disabled(mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
         }
         if migratingCount > 0 {
             Button("Update Deadline for \(count(migratingCount))") { pending = .updateDeadline }
-                .disabled(crossOrg != nil)
             Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { pending = .cancelMigration }
-                .disabled(crossOrg != nil)
         }
         let releaseUnavailable = model.releaseUnavailabilityReason(for: reports)
         // Named after the organization being released from, as the

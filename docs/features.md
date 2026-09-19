@@ -41,11 +41,13 @@ Both fill the serial field, and both confirm before starting when the list is la
 
 The organization popup offers **All Organizations** when more than one is configured. A lookup then searches every one of them and the table gains an Organization column naming the one each device was found in — which answers a question a single-organization lookup cannot: *which of our Apple tenants owns this device?*
 
-A device belongs to one organization at a time, so there is no ambiguity to resolve. The one exception is a device released from one organization and re-added to another, which both report: Checkpoint prefers the organization where it is not released. An organization that cannot be reached does not hide a device another one holds — the lookup only reports a failure when no organization found it.
+A device belongs to one organization at a time, so there is no ambiguity to resolve. The one exception is a device released from one organization and re-added to another, which both report: Checkpoint prefers the organization where it is not released. An organization that cannot be read does not hide a device another one holds — a failure is only reported for devices no organization found, and it says which organization could not be read rather than reporting those devices as missing.
 
 **Apple actions work in one organization at a time.** Every one of them names a device management service, and a service ID means nothing outside the organization that issued it. A single device always resolves to one organization, so the inspector keeps working as usual; a bulk selection spanning two organizations disables the Apple actions and says which organizations are involved. The Jamf and Intune side is unaffected — it has one connection either way.
 
-Reading several organizations costs one full read each, but Apple's request quota is per organization, so they do not compete with each other. Snapshots are cached per organization for the session, so the cost is paid once.
+Reading several organizations costs one full read each, but Apple's quota is per organization, so the reads run at the same time and the wait is the slowest organization rather than the sum of them. Snapshots are cached per organization for the session, so the cost is paid once, and a lookup that is about to spend that minute asks first.
+
+An Apple action afterwards re-reads only the organization it changed. The others have not changed, and re-reading one costs a minute of its quota for nothing.
 
 ## Reading in bulk
 
@@ -59,7 +61,7 @@ Jamf School has no request quota and no pagination, and serves the whole instanc
 
 ## Filtering the results
 
-**Filter** narrows the list to devices matching every chosen criterion: Apple organization status, MDM server, PreStage or ADE profile, site or location, installed OS version, how long ago the device last enrolled, reported inventory or made contact, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
+**Filter** narrows the list to devices matching every chosen criterion: Apple organization status, which Apple organization a device is in when several were searched, MDM server, PreStage or ADE profile, site or location, installed OS version, how long ago the device last enrolled, reported inventory or made contact, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
 
 The menu offers only what the devices in front of you actually use, with a count beside each: a list of Macs shows the four PreStages they are in rather than every PreStage on the server, and the OS versions offered are the ones the devices are running. Criteria that cannot apply to the list are left out — a Jamf School lookup offers a check-in filter but no enrollment or inventory one, having no source for either.
 

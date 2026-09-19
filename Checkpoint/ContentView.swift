@@ -17,7 +17,7 @@ struct ContentView: View {
     @State private var sortOrder: [KeyPathComparator<DeviceReport>] = []
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
-    @State private var pendingGroup: PendingGroup?
+    @State private var pendingLookup: PendingLookup?
     /// Which of the two places that take keys has focus. Without this the
     /// serial field keeps it after a lookup, and the arrow keys edit text
     /// instead of moving down the results.
@@ -28,12 +28,13 @@ struct ContentView: View {
         case results
     }
 
-    /// A chosen group or order, held until its size has been confirmed.
-    /// Either can hold several hundred devices, which the name alone does
-    /// not reveal.
-    private struct PendingGroup: Identifiable {
+    /// A lookup held until it has been confirmed, because it will either
+    /// take a while or read an Apple organization in full first. A group or
+    /// order name is carried when there is one; serials typed into the field
+    /// have none.
+    private struct PendingLookup: Identifiable {
         let id = UUID()
-        let name: String
+        let name: String?
         let serials: [String]
     }
 
@@ -164,6 +165,9 @@ struct ContentView: View {
         .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item]) { result in
             handleImport(result)
         }
+        // A scope naming a deleted organization would leave the popup blank,
+        // and searching them all makes no sense once one is left.
+        .onChange(of: settings.abmOrgs.map(\.id)) { model.reconcileABMScope() }
         .sheet(isPresented: Binding(
             get: { updates.isPresented },
             set: { updates.isPresented = $0 }
@@ -184,16 +188,19 @@ struct ContentView: View {
             .environment(model)
         }
         .alert(
-            pendingGroup.map { "Look up \(LookupModel.deviceCount($0.serials)) from “\($0.name)”?" } ?? "",
-            isPresented: Binding(get: { pendingGroup != nil }, set: { if !$0 { pendingGroup = nil } })
+            pendingLookup.map { pending in
+                pending.name.map { "Look up \(LookupModel.deviceCount(pending.serials)) from “\($0)”?" }
+                    ?? "Look up \(LookupModel.deviceCount(pending.serials))?"
+            } ?? "",
+            isPresented: Binding(get: { pendingLookup != nil }, set: { if !$0 { pendingLookup = nil } })
         ) {
             Button("Cancel", role: .cancel) {}
             Button("Look Up") {
-                pendingGroup = nil
-                lookUp()
+                pendingLookup = nil
+                runLookup()
             }
         } message: {
-            Text(pendingGroupMessage)
+            Text(pendingLookupMessage)
         }
         .alert(
             "Import",
@@ -327,6 +334,10 @@ struct ContentView: View {
                         Text("\(entry.status.rawValue) (\(entry.count))").tag(entry.status)
                     }
                 }
+            }
+            if options.showAppleOrgs {
+                assignmentPicker("Organization", selection: $filters.appleOrg,
+                                 options: options.appleOrgs, noneCount: 0)
             }
             if options.showServers {
                 assignmentPicker("MDM Server", selection: $filters.mdmServer,
@@ -513,6 +524,22 @@ struct ContentView: View {
     }
 
     private func lookUp() {
+        let serials = LookupModel.parseSerials(serialsText)
+        guard !serials.isEmpty else { return }
+        // The serials in the field are in plain sight, so their number needs
+        // no confirming. A minute spent reading an organization does, and
+        // with several organizations in scope that happens whatever the size
+        // of the lookup.
+        if model.needsOrganizationRead(forDeviceCount: serials.count) {
+            pendingLookup = PendingLookup(name: nil, serials: serials)
+        } else {
+            runLookup()
+        }
+    }
+
+    /// Runs the lookup as it stands. Everything that needs confirming first
+    /// goes through `lookUp()` or `loadSerials(named:serials:)`.
+    private func runLookup() {
         selection.removeAll()
         let text = serialsText
         Task {
@@ -524,8 +551,8 @@ struct ContentView: View {
         }
     }
 
-    private var pendingGroupMessage: String {
-        guard let pending = pendingGroup else { return "" }
+    private var pendingLookupMessage: String {
+        guard let pending = pendingLookup else { return "" }
         if model.needsOrganizationRead(forDeviceCount: pending.serials.count) {
             return model.readsAllABMOrgs
                 ? "Every configured Apple organization is read in full first, which takes about a minute each. Later lookups reuse them. Each device is then checked against \(model.mdmProduct.label)."
@@ -544,9 +571,9 @@ struct ContentView: View {
         // no hint that it will.
         if serials.count > Self.confirmGroupLookupAbove
             || model.needsOrganizationRead(forDeviceCount: serials.count) {
-            pendingGroup = PendingGroup(name: name, serials: serials)
+            pendingLookup = PendingLookup(name: name, serials: serials)
         } else {
-            lookUp()
+            runLookup()
         }
     }
 

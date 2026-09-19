@@ -14,6 +14,10 @@ import Foundation
 nonisolated struct DeviceFilters: Equatable {
     var kind: Kind = .all
     var appleBusiness: ABMStatus = .any
+    /// The Apple organization a device was found in. Only offered when
+    /// several were searched, since with one the answer is the same for
+    /// every row.
+    var appleOrg: Assignment = .any
     var mdmServer: Assignment = .any
     var prestage: Assignment = .any
     var site: Assignment = .any
@@ -31,6 +35,7 @@ nonisolated struct DeviceFilters: Equatable {
         var count = issues.count
         if kind != .all { count += 1 }
         if appleBusiness != .any { count += 1 }
+        if appleOrg != .any { count += 1 }
         if mdmServer != .any { count += 1 }
         if prestage != .any { count += 1 }
         if site != .any { count += 1 }
@@ -44,6 +49,7 @@ nonisolated struct DeviceFilters: Equatable {
     func matches(_ report: DeviceReport) -> Bool {
         kind.matches(report)
             && appleBusiness.matches(report)
+            && appleOrg.matches(report.abm.value?.orgID?.uuidString, hasRecord: report.abm.value != nil)
             && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
             && prestage.matches(report.mdm.value?.prestageID, hasRecord: report.mdm.value != nil)
             && site.matches(report.mdm.value?.groupingID, hasRecord: report.mdm.value != nil)
@@ -184,7 +190,7 @@ nonisolated struct DeviceFilters: Equatable {
             switch self {
             case .mdmProfileExpired: "MDM profile expired"
             case .appleBusinessOnly: "No \(product.label) record"
-            case .mdmOnly: "Not in the Apple organization"
+            case .mdmOnly: "Not in an Apple organization"
             case .migrationInProgress: "Migration in progress"
             case .fileVaultOff: "FileVault not enabled"
             case .noPasscode: "No passcode set"
@@ -246,6 +252,8 @@ nonisolated struct FilterOptions {
         var id: String { window.rawValue }
     }
 
+    /// Apple organizations the loaded devices were found in.
+    var appleOrgs: [Option] = []
     var servers: [Option] = []
     var prestages: [Option] = []
     var sites: [Option] = []
@@ -269,6 +277,8 @@ nonisolated struct FilterOptions {
     var hasMobileDevices = false
 
     var showAppleBusiness: Bool { !statuses.isEmpty }
+    /// Only worth a picker when the devices came from more than one.
+    var showAppleOrgs: Bool { appleOrgs.count > 1 }
     var showServers: Bool { !servers.isEmpty || serverNone > 0 }
     var showPrestages: Bool { !prestages.isEmpty || prestageNone > 0 }
     var showSites: Bool { !sites.isEmpty || siteNone > 0 }
@@ -276,6 +286,7 @@ nonisolated struct FilterOptions {
     var showDates: Bool { !lastEnrollment.isEmpty || !lastInventory.isEmpty || !lastContact.isEmpty }
 
     init(reports: [DeviceReport], capabilities: MDMCapabilities = MDMProduct.jamfPro.capabilities) {
+        var appleOrgCounts: [String: (name: String, count: Int)] = [:]
         var serverCounts: [String: (name: String, count: Int)] = [:]
         var prestageCounts: [String: (name: String, count: Int)] = [:]
         var siteCounts: [String: (name: String, count: Int)] = [:]
@@ -298,6 +309,10 @@ nonisolated struct FilterOptions {
             case nil: break
             }
             if let abm = report.abm.value {
+                if let id = abm.orgID?.uuidString {
+                    let name = abm.orgName ?? id
+                    appleOrgCounts[id] = (name, (appleOrgCounts[id]?.count ?? 0) + 1)
+                }
                 if let id = abm.mdmServerID {
                     let name = abm.mdmServerName ?? id
                     serverCounts[id] = (name, (serverCounts[id]?.count ?? 0) + 1)
@@ -344,6 +359,7 @@ nonisolated struct FilterOptions {
                 .map { Option(id: $0.key, name: $0.value.name, count: $0.value.count) }
                 .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         }
+        appleOrgs = sorted(appleOrgCounts)
         servers = sorted(serverCounts)
         // localizedStandardCompare compares numerically, so 26.10 follows
         // 26.9 rather than preceding it.
