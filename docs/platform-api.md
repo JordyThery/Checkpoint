@@ -43,6 +43,7 @@ Permissions are granted per capability on the integration, rather than per privi
 | Software update state | `devices:read` |
 | Looking up a group | `device-groups:read` |
 | Sites | `sites:read` |
+| Department, building and room | `departments:read`, `buildings:read` |
 | PreStage display and changes | `prestage-enrollments:read`, `prestage-enrollments:update` |
 | PreStage filtering per ADE token | `device-enrollment-program-instances:read` |
 | MDM commands, except the two rows below | `device-actions:execute` |

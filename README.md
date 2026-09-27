@@ -22,6 +22,7 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | Assignment status and assigned MDM server | Record and device name | Record and device name | Record and device name |
 | Activation Lock state, and whether it is an MDM or a user lock | | | |
 | Migration status and deadline | PreStage scope and site | Location and Apple ADE profile | Compliance state |
+| | Department, building and room | | |
 | Warranty and AppleCare coverage | Enrollment, inventory and contact dates | Last check-in | Enrollment date and last sync |
 | Model, order number, purchase source | MDM profile expiration | Managed and supervised state | Management certificate expiration |
 | | FileVault and passcode state | Passcode state | Encryption and supervised state |

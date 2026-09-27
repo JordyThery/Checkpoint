@@ -267,11 +267,18 @@ nonisolated enum ActivityRedaction {
     /// Keys holding someone's personal details rather than a device's.
     ///
     /// Jamf School attaches an owner to every device record, carrying a name,
-    /// e-mail address and username, and in a school those are pupils. The log
-    /// is exportable and meant to be attachable to a bug report, so the whole
-    /// sub-object goes rather than its individual fields: one key covers every
-    /// name inside it, and it keeps covering them if Jamf adds another.
-    static let personalKeys: Set<String> = ["owner", "notes"]
+    /// e-mail address and username, and in a school those are pupils. Jamf
+    /// Pro's user and location assignment does the same, beside the department
+    /// and building Checkpoint reads from it: `userAndLocation` in a computer's
+    /// inventory record, `location` in a mobile device's detail.
+    ///
+    /// The log is exportable and meant to be attachable to a bug report, so
+    /// each sub-object goes whole rather than field by field: one key covers
+    /// every name inside it, and keeps covering them if Jamf adds another. The
+    /// department and building identifiers go with it, which is the intended
+    /// trade — the names they resolve to are in the inspector. Matching is
+    /// exact, so the local administrator `username` key is unaffected.
+    static let personalKeys: Set<String> = ["owner", "notes", "userAndLocation", "location"]
 
     /// Keys holding a device identifier. Not secrets, but they name the
     /// devices a log covers, so a redacted export replaces them.

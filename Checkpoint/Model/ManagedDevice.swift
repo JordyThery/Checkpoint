@@ -23,6 +23,12 @@ struct ManagedDeviceInfo: Sendable {
     var name: String?
     var siteID: String?
     var siteName: String?
+    /// Jamf Pro only: the device's user and location assignment, with the
+    /// department and building already resolved to names. Only the assignment
+    /// is read — the user attached to it is not shown or recorded.
+    var department: String?
+    var building: String?
+    var room: String?
     /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
     var unlockToken: String?
     /// Encryption state, from the inventory record rather than the

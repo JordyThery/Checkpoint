@@ -570,6 +570,17 @@ struct DeviceDetailView: View {
         if capabilities.contains(.locations), model.jamfLocations.isEmpty {
             LabeledContent("Location", value: info.locationName ?? "None")
         }
+        // Shown only where there is something to show: a device with no
+        // assignment, or a product that reports none, gets no row.
+        if let department = info.department, !department.isEmpty {
+            LabeledContent("Department", value: department)
+        }
+        if let building = info.building, !building.isEmpty {
+            LabeledContent("Building", value: building)
+        }
+        if let room = info.room, !room.isEmpty {
+            LabeledContent("Room", value: room)
+        }
         if capabilities.contains(.enrollmentDate) {
             LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
         }

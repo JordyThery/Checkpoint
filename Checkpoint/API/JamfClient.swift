@@ -26,6 +26,11 @@ struct JamfComputerRecord: Sendable {
     /// which keeps whatever it last saw.
     let osVersion: String?
     let osBuild: String?
+    /// User and location assignment. Departments and buildings are reported as
+    /// identifiers, which the caller resolves against the server's lists.
+    let departmentID: String?
+    let buildingID: String?
+    let room: String?
 }
 
 
@@ -47,6 +52,10 @@ struct JamfMobileDeviceRecord: Sendable {
     let security: MobileSecurityState?
     let osVersion: String?
     let osBuild: String?
+    /// User and location assignment, as for a computer.
+    let departmentID: String?
+    let buildingID: String?
+    let room: String?
 }
 
 /// A managed local administrator account that Jamf Pro holds a password for.
@@ -698,6 +707,7 @@ actor JamfClient {
                 let general: General?
                 let diskEncryption: DiskEncryption?
                 let operatingSystem: OperatingSystem?
+                let userAndLocation: UserAndLocation?
             }
             struct DiskEncryption: Decodable {
                 let fileVault2Enabled: Bool?
@@ -711,6 +721,14 @@ actor JamfClient {
             struct OperatingSystem: Decodable {
                 let version: String?
                 let build: String?
+            }
+            /// Only the assignment is read. The section also carries the
+            /// assigned user's name, e-mail address and telephone number,
+            /// which Checkpoint neither shows nor records.
+            struct UserAndLocation: Decodable {
+                let departmentId: String?
+                let buildingId: String?
+                let room: String?
             }
             struct General: Decodable {
                 let name: String?
@@ -747,6 +765,10 @@ actor JamfClient {
             // Reported as the installed OS, and compared against an enforced
             // update to tell one the device already has from one it still owes.
             queryItems.append(URLQueryItem(name: "section", value: "OPERATING_SYSTEM"))
+            // The department, building and room assignment. The section also
+            // carries the assigned user's details, so it is masked in the
+            // activity log; see ActivityRedaction.personalKeys.
+            queryItems.append(URLQueryItem(name: "section", value: "USER_AND_LOCATION"))
         }
         queryItems += [
             URLQueryItem(name: "page-size", value: "10"),
@@ -792,7 +814,10 @@ actor JamfClient {
                 )
             },
             osVersion: item.operatingSystem?.version,
-            osBuild: item.operatingSystem?.build
+            osBuild: item.operatingSystem?.build,
+            departmentID: item.userAndLocation?.departmentId,
+            buildingID: item.userAndLocation?.buildingId,
+            room: item.userAndLocation?.room
         )
     }
 
@@ -827,6 +852,7 @@ actor JamfClient {
             let osVersion: String?
             let osBuild: String?
             let site: Site?
+            let location: Location?
             // The escrowed unlock token lives in the per-OS detail object.
             let ios: OSDetails?
             let tvos: OSDetails?
@@ -835,6 +861,14 @@ actor JamfClient {
             struct Site: Decodable {
                 let id: String?
                 let name: String?
+            }
+            /// The mobile device equivalent of a computer's user and location
+            /// section, already part of this response. Only the assignment is
+            /// read; the user's own details are left alone.
+            struct Location: Decodable {
+                let departmentId: String?
+                let buildingId: String?
+                let room: String?
             }
             struct OSDetails: Decodable {
                 let unlockToken: String?
@@ -888,7 +922,10 @@ actor JamfClient {
                 )
             },
             osVersion: detail?.osVersion,
-            osBuild: detail?.osBuild
+            osBuild: detail?.osBuild,
+            departmentID: detail?.location?.departmentId,
+            buildingID: detail?.location?.buildingId,
+            room: detail?.location?.room
         )
     }
 
@@ -1782,6 +1819,63 @@ actor JamfClient {
             body: body
         )
         try throwIfError(status: status, data: data)
+    }
+
+    // MARK: Departments and buildings
+
+    /// Department names, keyed by identifier.
+    ///
+    /// Inventory reports a device's department as an identifier, so this list
+    /// is what turns it into a name. Server-wide and small, so callers read it
+    /// once per lookup. Needs Read Departments; without it the row is omitted
+    /// rather than shown unresolved.
+    func departmentNames() async throws -> [String: String] {
+        try await nameMap(path: "/api/v1/departments")
+    }
+
+    /// Building names, keyed by identifier. As for departments, and needs Read
+    /// Buildings.
+    func buildingNames() async throws -> [String: String] {
+        try await nameMap(path: "/api/v1/buildings")
+    }
+
+    /// Reads a paged Jamf Pro list of identifier and name into a map.
+    ///
+    /// Both lists answer with a total count, which is followed rather than
+    /// assumed: an instance with more entries than a page holds would
+    /// otherwise leave the later ones unresolved. The page cap guards against
+    /// an unbounded loop rather than marking an expected limit.
+    private func nameMap(path: String) async throws -> [String: String] {
+        struct Response: Decodable {
+            let totalCount: Int?
+            let results: [Item]?
+            struct Item: Decodable {
+                let id: String?
+                let name: String?
+            }
+        }
+        let pageSize = 1000
+        var map: [String: String] = [:]
+        var read = 0
+        for page in 0..<10 {
+            let (data, status) = try await send(
+                path: path,
+                queryItems: [
+                    URLQueryItem(name: "page", value: String(page)),
+                    URLQueryItem(name: "page-size", value: String(pageSize)),
+                ]
+            )
+            guard (200...299).contains(status) else { return map }
+            guard let response = try? JSONDecoder().decode(Response.self, from: data),
+                  let items = response.results, !items.isEmpty else { return map }
+            read += items.count
+            for item in items {
+                guard let id = item.id, let name = item.name, !name.isEmpty else { continue }
+                if map[id] == nil { map[id] = name }
+            }
+            guard let total = response.totalCount, read < total else { return map }
+        }
+        return map
     }
 
     /// Cheap connectivity/credentials check.

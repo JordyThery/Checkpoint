@@ -117,6 +117,12 @@ Reported for Jamf Pro and Intune, which reach it differently.
 
 Neither is filterable. Jamf Pro's is not present until a device is selected, for the same reason warranty coverage is not filterable, and a filter that worked on one product and not the other would be worse than none.
 
+## Department and building
+
+Jamf Pro only, shown when a device is selected: its **department**, **building** and **room**, for computers and mobile devices alike. Both connection types serve them, at no extra request per device — the assignment comes with the record the lookup already reads, and the two lists that turn its identifiers into names are read once per lookup, alongside the sites.
+
+A device with no assignment gets no row, as does an account that cannot read the lists. Only the assignment is read: the same record names the assigned user, which Checkpoint neither shows, exports, nor keeps in the [activity log](#activity-log).
+
 ## Recovery secrets
 
 Jamf Pro only. Intune holds a FileVault recovery key, but only its beta endpoint serves one, so it is left out until that is not the case. For Macs, Checkpoint can show the **FileVault personal recovery key**, the **Recovery Lock password**, the **device lock PIN**, and the password for each **managed local administrator account**. Unlike the actions above these are single-device only, are not part of a lookup, and are fetched only when you ask for one. The value appears in a sheet for as long as it is open and is never written to the table, kept on the device record, or included in an export.
@@ -131,7 +137,7 @@ Checkpoint checks GitHub once a day for a newer release, and Checkpoint → Chec
 
 Window → Activity Log (⌥⌘L) shows what Checkpoint asked each service to do and how it answered, in two tiers: the action you requested, and each HTTP request made to carry it out. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
 
-Every service is logged the same way, including Microsoft Graph. The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Jamf School attaches an owner to every device record, so the owner and any notes are withheld too — in a school those are pupils.
+Every service is logged the same way, including Microsoft Graph. The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Personal details are masked wherever a product reports them beside a device: Jamf School attaches an owner to every record, which in a school is a pupil, and Jamf Pro's user and location assignment carries a name, e-mail address, telephone number and job title. Each is masked whole rather than field by field, so nothing inside it can be missed.
 
 ![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
 

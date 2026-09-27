@@ -63,6 +63,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | PreStage filtering per ADE token | Read Device Enrollment Program Instances |
 | Looking up a group | Read Smart Computer Groups, Read Static Computer Groups, Read Smart Mobile Device Groups, Read Static Mobile Device Groups |
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
+| Department, building and room, shown when a device is selected | Read Departments, Read Buildings. Also available over the [Platform API](platform-api.md) |
 | Device compliance, shown when a device is selected | Read Device Compliance Information, and Read Conditional Access to check whether the integration is on. Also available over the [Platform API](platform-api.md) |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | FileVault recovery key | View Disk Encryption Recovery Key |
@@ -107,6 +108,8 @@ Software update state, declaration status and the enforced update target all com
 What each value means, and which of them the report keeps after they stop being true, is described in [Features](features.md#software-updates-and-declarations).
 
 FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.
+
+Without **Read Departments** or **Read Buildings**, that row is left out rather than shown as an identifier: Jamf Pro reports the assignment as an ID, and the name comes from the list those privileges grant. Room needs neither and appears either way.
 
 ## Username and password
 

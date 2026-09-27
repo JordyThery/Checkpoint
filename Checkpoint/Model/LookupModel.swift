@@ -1976,6 +1976,11 @@ final class LookupModel {
         var computerPrestageNames: [String: String] = [:]
         var mobilePrestageBySerial: [String: String] = [:]
         var mobilePrestageNames: [String: String] = [:]
+        /// Department and building names, keyed by the identifiers inventory
+        /// reports. Empty when the account cannot read the lists, which leaves
+        /// the rows out rather than showing an identifier.
+        var departmentNames: [String: String] = [:]
+        var buildingNames: [String: String] = [:]
         /// Every managed device in the Intune tenant, keyed by serial. Read in
         /// pages rather than per device because Graph documents no $filter on
         /// serialNumber, so there is no per-serial query to make.
@@ -2045,15 +2050,17 @@ final class LookupModel {
             context.abmOrgs.append(entry)
         }
         if let jamf = context.proClient {
-            // Started together rather than one after another. All five are
+            // Started together rather than one after another. All seven are
             // independent, and every one has to finish before the first
-            // device is looked up, so serially they were five round trips of
+            // device is looked up, so serially they were seven round trips of
             // dead time at the head of every lookup.
             async let computerPrestages = try? jamf.prestages(family: .computer)
             async let mobileDevicePrestages = try? jamf.prestages(family: .mobileDevice)
             async let siteList = try? jamf.sites()
             async let computerScope = try? jamf.prestageAssignments(family: .computer)
             async let mobileScope = try? jamf.prestageAssignments(family: .mobileDevice)
+            async let departmentList = try? jamf.departmentNames()
+            async let buildingList = try? jamf.buildingNames()
             if let list = await computerPrestages {
                 prestages = list
             }
@@ -2067,6 +2074,8 @@ final class LookupModel {
             context.mobilePrestageNames = Dictionary(mobilePrestages.map { ($0.id, $0.displayName) }) { first, _ in first }
             context.computerPrestageBySerial = await computerScope ?? [:]
             context.mobilePrestageBySerial = await mobileScope ?? [:]
+            context.departmentNames = await departmentList ?? [:]
+            context.buildingNames = await buildingList ?? [:]
         }
         if let intune = context.intuneClient {
             // One read for the tenant, however many serials are being looked
@@ -2293,6 +2302,9 @@ final class LookupModel {
                     name: record.name,
                     siteID: record.siteID,
                     siteName: record.siteName,
+                    department: record.departmentID.flatMap { context.departmentNames[$0] },
+                    building: record.buildingID.flatMap { context.buildingNames[$0] },
+                    room: record.room,
                     encryption: record.encryption,
                     osVersion: record.osVersion,
                     osBuild: record.osBuild,
@@ -2317,6 +2329,9 @@ final class LookupModel {
                     name: record.name,
                     siteID: record.siteID,
                     siteName: record.siteName,
+                    department: record.departmentID.flatMap { context.departmentNames[$0] },
+                    building: record.buildingID.flatMap { context.buildingNames[$0] },
+                    room: record.room,
                     unlockToken: record.unlockToken,
                     security: record.security,
                     osVersion: record.osVersion,
