@@ -806,7 +806,9 @@ private extension DeviceReport {
     var abmStatusText: String {
         abm.sortText(notConfigured: "Not configured", notFound: "Not in org") { info in
             if info.isReleased { return "Released" }
-            return info.device.status == "ASSIGNED" ? "Assigned" : "Unassigned"
+            // Case-insensitive, matching the status filter, so the cell and
+            // the filter can never disagree about the same device.
+            return info.device.status?.uppercased() == "ASSIGNED" ? "Assigned" : "Unassigned"
         }
     }
 
@@ -994,7 +996,7 @@ struct ABMStatusCell: View {
         case .found(let info):
             if info.isReleased {
                 Text("Released").foregroundStyle(.red)
-            } else if info.device.status == "ASSIGNED" {
+            } else if info.device.status?.uppercased() == "ASSIGNED" {
                 Text("Assigned").foregroundStyle(.green)
             } else {
                 Text("Unassigned").foregroundStyle(.orange)

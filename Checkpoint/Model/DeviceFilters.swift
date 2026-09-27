@@ -151,7 +151,10 @@ nonisolated struct DeviceFilters: Equatable {
         func matches(_ value: String?, hasRecord: Bool) -> Bool {
             switch self {
             case .any: true
-            case .none: hasRecord && value == nil
+            // An empty string counts as none: some APIs report an absent
+            // value that way, and the option counting already files those
+            // under None, so matching must agree with the count shown.
+            case .none: hasRecord && (value?.isEmpty ?? true)
             case .id(let wanted): value == wanted
             }
         }

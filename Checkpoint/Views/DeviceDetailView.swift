@@ -395,7 +395,7 @@ struct DeviceDetailView: View {
             if info.isReleased {
                 Text("Released \(DateFormatting.short(info.device.releasedFromOrgDateTime))")
                     .foregroundStyle(.red)
-            } else if info.device.status == "ASSIGNED" {
+            } else if info.device.status?.uppercased() == "ASSIGNED" {
                 Text("Assigned").foregroundStyle(.green)
             } else {
                 Text("Unassigned").foregroundStyle(.orange)

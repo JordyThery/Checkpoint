@@ -358,7 +358,7 @@ struct MDMConnectionEditor: View {
                     TextField("URL", text: $baseURL, prompt: Text("https://yourorg.jamfcloud.com"))
                 }
                 if isIntune {
-                    Text("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, passcode state, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Remove MDM Profile retires it.")
+                    Text("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Remove MDM Profile retires it.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -358,20 +358,25 @@ nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
 }
 
 extension MDMConnection {
-    /// Spelled out so that `product` keeps the key it was first saved under.
-    /// The synthesised keys follow the property names, so renaming the
-    /// property alone would write a key nothing reads and read one nothing
-    /// writes — every Jamf School connection would come back as Jamf Pro.
     enum CodingKeys: String, CodingKey {
         case id
         case name
-        case product = "product"
+        case product
         case baseURL
         case authMethod
         case account
         case region
         case environmentID
         case tenantID
+    }
+
+    /// The key the product was saved under before 2.3.0 renamed the property
+    /// — and, unintentionally, the stored key with it. Read so a connection
+    /// saved by an earlier version keeps its product instead of decoding as
+    /// Jamf Pro; never written, so a connection saves under `product` from
+    /// then on.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case flavor
     }
 }
 
@@ -384,10 +389,17 @@ extension MDMConnection {
         baseURL = try container.decode(String.self, forKey: .baseURL)
         authMethod = try container.decode(MDMAuthMethod.self, forKey: .authMethod)
         account = try container.decode(String.self, forKey: .account)
-        // Added with Jamf School support, so absent from servers saved by
-        // earlier versions. Those were all Jamf Pro; without a default the
-        // whole list fails to decode and every configured server disappears.
-        product = try container.decodeIfPresent(MDMProduct.self, forKey: .product) ?? .jamfPro
+        // Under `product` since 2.3.0, under `flavor` before it. Both are
+        // read, else a Jamf School server saved by 2.0.0–2.2.0 would decode
+        // as Jamf Pro; and with neither present nor readable it defaults to
+        // Jamf Pro rather than failing, or the whole list would silently
+        // disappear.
+        if let saved = try container.decodeIfPresent(MDMProduct.self, forKey: .product) {
+            product = saved
+        } else {
+            let legacy = try? decoder.container(keyedBy: LegacyCodingKeys.self)
+            product = ((try? legacy?.decodeIfPresent(MDMProduct.self, forKey: .flavor)) ?? nil) ?? .jamfPro
+        }
         // Added with Platform API support, so absent from servers saved by
         // earlier versions. Without defaults the whole list fails to decode
         // and silently disappears.

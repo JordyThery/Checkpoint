@@ -270,7 +270,9 @@ nonisolated enum ActivityRedaction {
     /// e-mail address and username, and in a school those are pupils. Jamf
     /// Pro's user and location assignment does the same, beside the department
     /// and building Checkpoint reads from it: `userAndLocation` in a computer's
-    /// inventory record, `location` in a mobile device's detail.
+    /// inventory record, `location` in a mobile device's detail — though the
+    /// detail withholds its whole body from the log, so that entry is a
+    /// backstop for the responses that do get recorded.
     ///
     /// The log is exportable and meant to be attachable to a bug report, so
     /// each sub-object goes whole rather than field by field: one key covers

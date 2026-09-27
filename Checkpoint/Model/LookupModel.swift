@@ -676,8 +676,6 @@ final class LookupModel {
         return "\(verb) \(total - failed) of \(total) \(noun)\(total == 1 ? "" : "s")\(suffix)"
     }
 
-    /// Which Apple service the selected organization belongs to, for wording
-    /// and for the actions it supports.
     /// Which Apple service to word things for. The interface shows
     /// `appleScopeLabel`, which stays neutral when the organizations in scope
     /// are of both kinds; this is for action wording, where one organization
@@ -1103,8 +1101,6 @@ final class LookupModel {
         adeInstanceReads[server.id] = nil
     }
 
-    /// Order numbers in the organization, with how many devices each covers.
-    /// Reads the organization if it has not been read already.
     /// Reads every organization in scope again, for the order picker's
     /// refresh: an order added since the last read appears in none of the
     /// snapshots until they are rebuilt.
@@ -1146,7 +1142,6 @@ final class LookupModel {
             .sorted { ($0.count, $1.number) > ($1.count, $0.number) }
     }
 
-    /// The serial numbers on an order.
     /// Every serial on that order across the organizations in scope.
     func serials(inOrder order: String) async -> [String] {
         var serials: [String] = []
@@ -1162,22 +1157,18 @@ final class LookupModel {
         abmSnapshots[org.id]
     }
 
-    /// Whether a lookup of this many devices would have to read the whole
-    /// Apple Business organization first, which takes about a minute. False
-    /// once a snapshot has been read, since it is reused.
     /// Whether a lookup of this size has to read an organization first, which
     /// is what makes a lookup take a minute. True while any organization in
-    /// scope still needs reading.
+    /// scope still needs reading; false once every snapshot is in hand, since
+    /// they are reused.
     func needsOrganizationRead(forDeviceCount count: Int) -> Bool {
         guard isABMConfigured else { return false }
         guard count >= Self.snapshotThreshold else { return false }
         return abmOrgsInScope.contains { cachedSnapshot(for: $0) == nil }
     }
 
-    /// Discards the cached snapshot for the selected organization. Called
-    /// after anything that changes Apple Business, so the next bulk lookup
-    /// does not report the state from before the change.
-    /// Discards one organization's snapshot, after a change to it.
+    /// Discards one organization's snapshot, after a change to it, so the
+    /// next bulk lookup does not report the state from before the change.
     ///
     /// Scoped deliberately: an action runs in a single organization, and
     /// dropping every snapshot would make the refresh that follows re-read
@@ -2061,15 +2052,13 @@ final class LookupModel {
             async let mobileScope = try? jamf.prestageAssignments(family: .mobileDevice)
             async let departmentList = try? jamf.departmentNames()
             async let buildingList = try? jamf.buildingNames()
-            if let list = await computerPrestages {
-                prestages = list
-            }
-            if let list = await mobileDevicePrestages {
-                mobilePrestages = list
-            }
-            if let list = await siteList {
-                sites = list
-            }
+            // Replaced even when a read fails: keeping the previous list
+            // would carry one server's sites or PreStages into another's
+            // pickers, and an action against the wrong server's taxonomy is
+            // worse than an empty picker.
+            prestages = await computerPrestages ?? []
+            mobilePrestages = await mobileDevicePrestages ?? []
+            sites = await siteList ?? []
             context.computerPrestageNames = Dictionary(prestages.map { ($0.id, $0.displayName) }) { first, _ in first }
             context.mobilePrestageNames = Dictionary(mobilePrestages.map { ($0.id, $0.displayName) }) { first, _ in first }
             context.computerPrestageBySerial = await computerScope ?? [:]
@@ -2091,9 +2080,8 @@ final class LookupModel {
             async let fleet = try? school.fleet()
             async let locationList = try? school.locations()
             context.schoolFleet = await fleet ?? [:]
-            if let list = await locationList {
-                jamfLocations = list
-            }
+            // Replaced even on failure, for the same reason as the sites.
+            jamfLocations = await locationList ?? []
             context.schoolLocationNames = Dictionary(jamfLocations.map { ($0.id, $0.name) }) { first, _ in first }
             // Left until last: it reads one device out of the fleet above.
             context.schoolTimeZone = await jamfSchoolTimeZone(school: school, fleet: context.schoolFleet)
