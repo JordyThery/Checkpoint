@@ -63,7 +63,7 @@ Jamf School has no request quota and no pagination, and serves the whole instanc
 
 ## Filtering the results
 
-**Filter** narrows the list to devices matching every chosen criterion: Apple organization status, which Apple organization a device is in when several were searched, MDM server, PreStage or ADE profile, site or location, installed OS version, how long ago the device last enrolled, reported inventory or made contact, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
+**Filter** narrows the list to devices matching every chosen criterion: Apple organization status, which Apple organization a device is in when several were searched, MDM server, device model, order number, purchase source, PreStage or ADE profile, site or location, department and building, installed OS version, compliance state, how long ago the device was added to its Apple organization, last enrolled, reported inventory or made contact, and conditions worth singling out — an expired MDM profile, a migration in progress, FileVault off, no passcode, no longer managed or supervised, or a device present in one system and not the other. Combined with Select All, this is how a bulk action is aimed: filter to the devices with an expired profile, select them, renew.
 
 The menu offers only what the devices in front of you actually use, with a count beside each: a list of Macs shows the four PreStages they are in rather than every PreStage on the server, and the OS versions offered are the ones the devices are running. Criteria that cannot apply to the list are left out — a Jamf School lookup offers a check-in filter but no enrollment or inventory one, having no source for either.
 
@@ -74,6 +74,8 @@ Filtering only reads what the lookup already fetched, so it costs nothing. Warra
 Hiding a device also deselects it, so an action can never reach a device you can no longer see.
 
 **Sort** by clicking a column header, and reverse it by clicking again. Rows stay in the order the serials were entered until you do. Columns sort by the text they show, so statuses group as they read and version numbers order numerically; the date columns sort by the date itself, treating a device that has never reported one as the least recently seen. Sorting is display only — it changes neither the filter nor the selection.
+
+**Choose columns** by right-clicking the header row, and drag headers to reorder them. Beyond the defaults, more are available hidden: model, order number, purchase source and date added from the Apple side; site, [department, building and room](#department-and-building), FileVault and passcode state from Jamf Pro; managed and supervised state, and compliance, where the product reports them. Every hidden column reads what the lookup already fetched, so showing one costs nothing, and the arrangement is kept across launches. Serial Number cannot be hidden — it is what identifies the rows — and, as everywhere, a column the connected product has no source for is not offered at all.
 
 ## Activation Lock
 

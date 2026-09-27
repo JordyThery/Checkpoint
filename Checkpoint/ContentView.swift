@@ -15,6 +15,10 @@ struct ContentView: View {
     /// Empty until a column header is clicked, which leaves the rows in the
     /// order the serials were entered.
     @State private var sortOrder: [KeyPathComparator<DeviceReport>] = []
+    /// Which columns show, and in what order. Kept in user defaults, so the
+    /// arrangement survives relaunches; state is keyed per column by its
+    /// customization ID, so columns another product hides keep theirs.
+    @AppStorage("resultsTableColumns") private var columnArrangement: TableColumnCustomization<DeviceReport>
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
     @State private var pendingLookup: PendingLookup?
@@ -343,6 +347,18 @@ struct ContentView: View {
                 assignmentPicker("MDM Server", selection: $filters.mdmServer,
                                  options: options.servers, noneCount: options.serverNone)
             }
+            if options.showModels {
+                assignmentPicker("Model", selection: $filters.model,
+                                 options: options.models, noneCount: 0)
+            }
+            if options.showOrderNumbers {
+                assignmentPicker("Order Number", selection: $filters.orderNumber,
+                                 options: options.orderNumbers, noneCount: options.orderNumberNone)
+            }
+            if options.showPurchaseSources {
+                assignmentPicker("Purchase Source", selection: $filters.purchaseSource,
+                                 options: options.purchaseSources, noneCount: 0)
+            }
             if options.showPrestages, model.mdmCapabilities.contains(.enrollmentProfileName) {
                 assignmentPicker(model.mdmProduct.enrollmentProfileLabel, selection: $filters.prestage,
                                  options: options.prestages, noneCount: options.prestageNone)
@@ -358,8 +374,23 @@ struct ContentView: View {
                     options: options.sites, noneCount: options.siteNone
                 )
             }
+            if options.showDepartments {
+                assignmentPicker("Department", selection: $filters.department,
+                                 options: options.departments, noneCount: options.departmentNone)
+            }
+            if options.showBuildings {
+                assignmentPicker("Building", selection: $filters.building,
+                                 options: options.buildings, noneCount: options.buildingNone)
+            }
+            if options.showCompliance {
+                assignmentPicker("Compliance", selection: $filters.compliance,
+                                 options: options.compliance, noneCount: 0)
+            }
             if options.showDates {
                 Divider()
+                if !options.dateAdded.isEmpty {
+                    datePicker("Date Added", selection: $filters.dateAdded, options: options.dateAdded)
+                }
                 if !options.lastEnrollment.isEmpty {
                     datePicker("Last Enrollment", selection: $filters.lastEnrollment, options: options.lastEnrollment)
                 }
@@ -436,83 +467,22 @@ struct ContentView: View {
     }
 
     private var resultsTable: some View {
-        Table(sortedReports, selection: $selection, sortOrder: $sortOrder) {
-            Group {
-                TableColumn("Serial Number", value: \.serial) { (report: DeviceReport) in
-                    Text(report.serial).monospaced()
-                }
-                TableColumn(model.appleScopeLabel, value: \.abmStatusText) { (report: DeviceReport) in
-                    ABMStatusCell(state: report.abm)
-                }
-                if model.readsAllABMOrgs {
-                    TableColumn("Organization", value: \.appleOrgText) { (report: DeviceReport) in
-                        FetchText(state: report.abm) { $0.orgName ?? "—" }
-                    }
-                }
-                TableColumn("MDM Server Assignment", value: \.mdmServerText) { (report: DeviceReport) in
-                    FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
-                }
-                TableColumn("Migration", value: \.migrationText) { (report: DeviceReport) in
-                    MigrationCell(state: report.abm)
-                }
-                TableColumn("Warranty Coverage", value: \.coverageText) { (report: DeviceReport) in
-                    FetchText(state: report.abm) { Self.coverageSummary($0) }
-                }
-                TableColumn("\(model.mdmProduct.label) Device Name", value: \.mdmNameText) { (report: DeviceReport) in
-                    MDMStatusCell(state: report.mdm)
-                }
-                TableColumn("OS Version", value: \.osVersionText) { (report: DeviceReport) in
-                    FetchText(state: report.mdm) { $0.osDisplay ?? "—" }
-                }
-                if model.mdmCapabilities.contains(.enrollmentProfileName) {
-                    TableColumn(model.mdmProduct.enrollmentProfileLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
-                        FetchText(state: report.mdm) { $0.prestageName ?? "None" }
-                    }
-                }
-            }
-            // Columns the connected product has no source for are left out
-            // rather than shown empty: on Jamf School the four dates and the
-            // profile expiry would be em-dashes for every row.
-            Group {
-                if model.mdmCapabilities.contains(.locations) {
-                    TableColumn("Location", value: \.locationText) { (report: DeviceReport) in
-                        FetchText(state: report.mdm) { $0.locationName ?? "None" }
-                    }
-                }
-                if model.mdmCapabilities.contains(.enrollmentDate) {
-                    TableColumn("Last Enrollment Date", value: \.lastEnrolledSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.mdm) { DateFormatting.short($0.lastEnrolledDate) }
-                    }
-                }
-                if model.mdmCapabilities.contains(.inventoryDates) {
-                    TableColumn("Last Inventory Update", value: \.reportSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.mdm) { DateFormatting.short($0.reportDate) }
-                    }
-                }
-                TableColumn(model.mdmProduct.lastContactLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
-                    FetchText(state: report.mdm) { DateFormatting.short($0.lastContact) }
-                }
-                if model.mdmCapabilities.contains(.inventoryDates) {
-                    TableColumn("Last Check-in", value: \.lastCheckInSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.mdm) { DateFormatting.short($0.lastContactTime) }
-                    }
-                }
-                if model.mdmCapabilities.contains(.mdmProfileExpiry) {
-                    TableColumn("MDM Profile Expiration", value: \.mdmProfileExpirationSortDate) { (report: DeviceReport) in
-                        FetchText(state: report.mdm) { DateFormatting.dateOnly($0.mdmProfileExpiration) }
-                    }
-                }
-                if model.mdmCapabilities.contains(.deviceLink) {
-                    TableColumn("") { (report: DeviceReport) in
-                        if let url = report.mdm.value?.webURL {
-                            Link(destination: url) {
-                                Image(systemName: "arrow.up.forward.app")
-                            }
-                            .help("Open in \(model.mdmProduct.label)")
+        Table(sortedReports, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columnArrangement) {
+            appleColumns
+            mdmRecordColumns
+            mdmStateColumns
+            // No customization ID, so the link stays where it is: a column
+            // of nothing but an arrow makes no sense anywhere else.
+            if model.mdmCapabilities.contains(.deviceLink) {
+                TableColumn("") { (report: DeviceReport) in
+                    if let url = report.mdm.value?.webURL {
+                        Link(destination: url) {
+                            Image(systemName: "arrow.up.forward.app")
                         }
+                        .help("Open in \(model.mdmProduct.label)")
                     }
-                    .width(28)
                 }
+                .width(28)
             }
         }
         .focused($focus, equals: .results)
@@ -520,6 +490,194 @@ struct ContentView: View {
             Button("Open in \(model.mdmProduct.label)") { openInConsole(ids) }
         } primaryAction: { ids in
             openInConsole(ids)
+        }
+    }
+
+    // Columns are chosen by right-clicking the header row, and gated twice.
+    // Capabilities decide what exists at all: a column the connected product
+    // has no source for is absent, not merely hidden, so the header menu
+    // never offers one that would read "—" on every row. Customization then
+    // decides what shows, and the ones marked hidden stay out of the way
+    // until asked for. Customization IDs are persisted, so they must never
+    // change once shipped.
+
+    /// The Apple side. Serial Number cannot be hidden — it is what
+    /// identifies the rows.
+    @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
+    private var appleColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
+        TableColumn("Serial Number", value: \.serial) { (report: DeviceReport) in
+            Text(report.serial).monospaced()
+        }
+        .customizationID("serial")
+        .disabledCustomizationBehavior(.visibility)
+        TableColumn(model.appleScopeLabel, value: \.abmStatusText) { (report: DeviceReport) in
+            ABMStatusCell(state: report.abm)
+        }
+        .customizationID("appleStatus")
+        if model.readsAllABMOrgs {
+            TableColumn("Organization", value: \.appleOrgText) { (report: DeviceReport) in
+                FetchText(state: report.abm) { $0.orgName ?? "—" }
+            }
+            .customizationID("appleOrg")
+        }
+        TableColumn("MDM Server Assignment", value: \.mdmServerText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
+        }
+        .customizationID("mdmServer")
+        TableColumn("Migration", value: \.migrationText) { (report: DeviceReport) in
+            MigrationCell(state: report.abm)
+        }
+        .customizationID("migration")
+        TableColumn("Warranty Coverage", value: \.coverageText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { Self.coverageSummary($0) }
+        }
+        .customizationID("warranty")
+        TableColumn("Model", value: \.modelText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { $0.device.deviceModel ?? "—" }
+        }
+        .customizationID("model")
+        .defaultVisibility(.hidden)
+        TableColumn("Order Number", value: \.orderNumberText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { $0.device.orderNumber ?? "—" }
+        }
+        .customizationID("orderNumber")
+        .defaultVisibility(.hidden)
+        TableColumn("Purchase Source", value: \.purchaseSourceText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { $0.device.purchaseSourceType ?? "—" }
+        }
+        .customizationID("purchaseSource")
+        .defaultVisibility(.hidden)
+        TableColumn("Date Added", value: \.dateAddedSortDate) { (report: DeviceReport) in
+            FetchText(state: report.abm) { DateFormatting.short($0.device.addedToOrgDateTime) }
+        }
+        .customizationID("dateAdded")
+        .defaultVisibility(.hidden)
+    }
+
+    /// What the MDM record says the device is: name, OS, and where it is
+    /// assigned.
+    @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
+    private var mdmRecordColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
+        TableColumn("\(model.mdmProduct.label) Device Name", value: \.mdmNameText) { (report: DeviceReport) in
+            MDMStatusCell(state: report.mdm)
+        }
+        .customizationID("deviceName")
+        TableColumn("OS Version", value: \.osVersionText) { (report: DeviceReport) in
+            FetchText(state: report.mdm) { $0.osDisplay ?? "—" }
+        }
+        .customizationID("osVersion")
+        if model.mdmCapabilities.contains(.enrollmentProfileName) {
+            TableColumn(model.mdmProduct.enrollmentProfileLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.prestageName ?? "None" }
+            }
+            .customizationID("enrollmentProfile")
+        }
+        if model.mdmCapabilities.contains(.locations) {
+            TableColumn("Location", value: \.locationText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.locationName ?? "None" }
+            }
+            .customizationID("location")
+        }
+        if model.mdmCapabilities.contains(.sites) {
+            TableColumn("Site", value: \.siteText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.siteName ?? "None" }
+            }
+            .customizationID("site")
+            .defaultVisibility(.hidden)
+        }
+        if model.mdmCapabilities.contains(.userAndLocation) {
+            TableColumn("Department", value: \.departmentText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.department ?? "—" }
+            }
+            .customizationID("department")
+            .defaultVisibility(.hidden)
+            TableColumn("Building", value: \.buildingText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.building ?? "—" }
+            }
+            .customizationID("building")
+            .defaultVisibility(.hidden)
+            TableColumn("Room", value: \.roomText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.room ?? "—" }
+            }
+            .customizationID("room")
+            .defaultVisibility(.hidden)
+        }
+    }
+
+    /// What state the device is in, and when it last said so.
+    @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
+    private var mdmStateColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
+        if model.mdmCapabilities.contains(.fileVault) {
+            TableColumn("FileVault", value: \.fileVaultText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.encryption?.displaySummary ?? "—" }
+            }
+            .customizationID("fileVault")
+            .defaultVisibility(.hidden)
+        }
+        if model.mdmCapabilities.contains(.passcodeState) {
+            TableColumn("Passcode", value: \.passcodeText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { ContentView.passcodeSummary($0) }
+            }
+            .customizationID("passcode")
+            .defaultVisibility(.hidden)
+        }
+        if model.mdmCapabilities.contains(.managementState) {
+            TableColumn("Managed", value: \.managedText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.isManaged.map { $0 ? "Yes" : "No" } ?? "—" }
+            }
+            .customizationID("managed")
+            .defaultVisibility(.hidden)
+            TableColumn("Supervised", value: \.supervisedText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.isSupervised.map { $0 ? "Yes" : "No" } ?? "—" }
+            }
+            .customizationID("supervised")
+            .defaultVisibility(.hidden)
+        }
+        if model.mdmCapabilities.contains(.compliance) {
+            TableColumn("Compliance", value: \.complianceText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.complianceSummary ?? "—" }
+            }
+            .customizationID("compliance")
+            .defaultVisibility(.hidden)
+        }
+        if model.mdmCapabilities.contains(.enrollmentDate) {
+            TableColumn("Last Enrollment Date", value: \.lastEnrolledSortDate) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { DateFormatting.short($0.lastEnrolledDate) }
+            }
+            .customizationID("lastEnrollment")
+        }
+        if model.mdmCapabilities.contains(.inventoryDates) {
+            TableColumn("Last Inventory Update", value: \.reportSortDate) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { DateFormatting.short($0.reportDate) }
+            }
+            .customizationID("lastInventory")
+        }
+        TableColumn(model.mdmProduct.lastContactLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
+            FetchText(state: report.mdm) { DateFormatting.short($0.lastContact) }
+        }
+        .customizationID("lastContact")
+        if model.mdmCapabilities.contains(.inventoryDates) {
+            TableColumn("Last Check-in", value: \.lastCheckInSortDate) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { DateFormatting.short($0.lastContactTime) }
+            }
+            .customizationID("lastCheckIn")
+        }
+        if model.mdmCapabilities.contains(.mdmProfileExpiry) {
+            TableColumn("MDM Profile Expiration", value: \.mdmProfileExpirationSortDate) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { DateFormatting.dateOnly($0.mdmProfileExpiration) }
+            }
+            .customizationID("mdmProfileExpiration")
+        }
+    }
+
+    /// Passcode state as one word, the way the column and its sort read it.
+    /// Compliance captions stay in the inspector; a cell has no room for
+    /// them.
+    static func passcodeSummary(_ info: ManagedDeviceInfo) -> String {
+        switch info.security?.passcodePresent {
+        case true: "Set"
+        case false: "Not set"
+        default: "—"
         }
     }
 
@@ -675,6 +833,20 @@ private extension DeviceReport {
         abm.sortText { ContentView.coverageSummary($0) }
     }
 
+    var modelText: String {
+        abm.sortText { $0.device.deviceModel ?? "—" }
+    }
+
+    var orderNumberText: String {
+        abm.sortText { $0.device.orderNumber ?? "—" }
+    }
+
+    var purchaseSourceText: String {
+        abm.sortText { $0.device.purchaseSourceType ?? "—" }
+    }
+
+    var dateAddedSortDate: Date { Self.sortDate(abm.value?.device.addedToOrgDateTime) }
+
     var mdmNameText: String {
         mdm.sortText(notConfigured: "Not configured", notFound: "No record") {
             $0.name ?? "Record #\($0.recordID)"
@@ -693,6 +865,42 @@ private extension DeviceReport {
 
     var locationText: String {
         mdm.sortText { $0.locationName ?? "None" }
+    }
+
+    var siteText: String {
+        mdm.sortText { $0.siteName ?? "None" }
+    }
+
+    var departmentText: String {
+        mdm.sortText { $0.department ?? "—" }
+    }
+
+    var buildingText: String {
+        mdm.sortText { $0.building ?? "—" }
+    }
+
+    var roomText: String {
+        mdm.sortText { $0.room ?? "—" }
+    }
+
+    var fileVaultText: String {
+        mdm.sortText { $0.encryption?.displaySummary ?? "—" }
+    }
+
+    var passcodeText: String {
+        mdm.sortText { ContentView.passcodeSummary($0) }
+    }
+
+    var managedText: String {
+        mdm.sortText { $0.isManaged.map { $0 ? "Yes" : "No" } ?? "—" }
+    }
+
+    var supervisedText: String {
+        mdm.sortText { $0.isSupervised.map { $0 ? "Yes" : "No" } ?? "—" }
+    }
+
+    var complianceText: String {
+        mdm.sortText { $0.complianceSummary ?? "—" }
     }
 
     var lastEnrolledSortDate: Date { Self.sortDate(mdm.value?.lastEnrolledDate) }

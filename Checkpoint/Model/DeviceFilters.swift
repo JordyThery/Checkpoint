@@ -19,12 +19,32 @@ nonisolated struct DeviceFilters: Equatable {
     /// every row.
     var appleOrg: Assignment = .any
     var mdmServer: Assignment = .any
+    /// The device model, as the Apple organization names it. Keyed by the
+    /// name itself: Apple reports no model identifier, and the name is the
+    /// value being asked about.
+    var model: Assignment = .any
+    /// The Apple order a device came in on, and where it was bought. Keyed
+    /// by the value itself, like the model.
+    var orderNumber: Assignment = .any
+    var purchaseSource: Assignment = .any
     var prestage: Assignment = .any
     var site: Assignment = .any
+    /// Department and building carry the resolved name as their key, like
+    /// the model: the record's identifiers were already traded for names
+    /// when the lookup resolved them.
+    var department: Assignment = .any
+    var building: Assignment = .any
     var osVersion: Assignment = .any
+    /// Intune's compliance verdict, keyed by the summary the column shows.
+    /// A picker rather than an issue toggle, because the states are not a
+    /// pair: In grace period is neither compliant nor a failure.
+    var compliance: Assignment = .any
     var lastEnrollment: DateWindow = .any
     var lastInventory: DateWindow = .any
     var lastContact: DateWindow = .any
+    /// When the device was added to its Apple organization — the one date
+    /// filter on the Apple side.
+    var dateAdded: DateWindow = .any
     /// Applied together: a device must satisfy all of them.
     var issues: Set<Issue> = []
 
@@ -37,12 +57,19 @@ nonisolated struct DeviceFilters: Equatable {
         if appleBusiness != .any { count += 1 }
         if appleOrg != .any { count += 1 }
         if mdmServer != .any { count += 1 }
+        if model != .any { count += 1 }
+        if orderNumber != .any { count += 1 }
+        if purchaseSource != .any { count += 1 }
         if prestage != .any { count += 1 }
         if site != .any { count += 1 }
+        if department != .any { count += 1 }
+        if building != .any { count += 1 }
         if osVersion != .any { count += 1 }
+        if compliance != .any { count += 1 }
         if lastEnrollment != .any { count += 1 }
         if lastInventory != .any { count += 1 }
         if lastContact != .any { count += 1 }
+        if dateAdded != .any { count += 1 }
         return count
     }
 
@@ -51,9 +78,16 @@ nonisolated struct DeviceFilters: Equatable {
             && appleBusiness.matches(report)
             && appleOrg.matches(report.abm.value?.orgID?.uuidString, hasRecord: report.abm.value != nil)
             && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
+            && model.matches(report.abm.value?.device.deviceModel, hasRecord: report.abm.value != nil)
+            && orderNumber.matches(report.abm.value?.device.orderNumber, hasRecord: report.abm.value != nil)
+            && purchaseSource.matches(report.abm.value?.device.purchaseSourceType, hasRecord: report.abm.value != nil)
+            && dateAdded.matches(report.abm.value?.device.addedToOrgDateTime, hasRecord: report.abm.value != nil)
             && prestage.matches(report.mdm.value?.prestageID, hasRecord: report.mdm.value != nil)
             && site.matches(report.mdm.value?.groupingID, hasRecord: report.mdm.value != nil)
+            && department.matches(report.mdm.value?.department, hasRecord: report.mdm.value != nil)
+            && building.matches(report.mdm.value?.building, hasRecord: report.mdm.value != nil)
             && osVersion.matches(report.mdm.value?.osVersion, hasRecord: report.mdm.value != nil)
+            && compliance.matches(report.mdm.value?.complianceSummary, hasRecord: report.mdm.value != nil)
             && lastEnrollment.matches(report.mdm.value?.lastEnrolledDate, hasRecord: report.mdm.value != nil)
             && lastInventory.matches(report.mdm.value?.reportDate, hasRecord: report.mdm.value != nil)
             && lastContact.matches(report.mdm.value?.lastContact, hasRecord: report.mdm.value != nil)
@@ -183,6 +217,8 @@ nonisolated struct DeviceFilters: Equatable {
         case migrationInProgress
         case fileVaultOff
         case noPasscode
+        case notManaged
+        case notSupervised
 
         var id: String { rawValue }
 
@@ -194,6 +230,8 @@ nonisolated struct DeviceFilters: Equatable {
             case .migrationInProgress: "Migration in progress"
             case .fileVaultOff: "FileVault not enabled"
             case .noPasscode: "No passcode set"
+            case .notManaged: "No longer managed"
+            case .notSupervised: "Not supervised"
             }
         }
 
@@ -222,6 +260,13 @@ nonisolated struct DeviceFilters: Equatable {
                     && report.mdm.value?.encryption?.isEncrypted == false
             case .noPasscode:
                 return report.mdm.value?.security?.passcodePresent == false
+            case .notManaged:
+                // A record whose device has stopped being managed: retired on
+                // Intune, or unmanaged on Jamf School. False only, so a
+                // product that reports nothing matches nothing.
+                return report.mdm.value?.isManaged == false
+            case .notSupervised:
+                return report.mdm.value?.isSupervised == false
             }
         }
     }
@@ -255,15 +300,28 @@ nonisolated struct FilterOptions {
     /// Apple organizations the loaded devices were found in.
     var appleOrgs: [Option] = []
     var servers: [Option] = []
+    /// Device models, orders and purchase sources, as the Apple organization
+    /// reports them.
+    var models: [Option] = []
+    var orderNumbers: [Option] = []
+    var purchaseSources: [Option] = []
     var prestages: [Option] = []
     var sites: [Option] = []
+    /// Departments and buildings, keyed by name like the models.
+    var departments: [Option] = []
+    var buildings: [Option] = []
     /// Installed OS versions. Unlike coverage or update state, these come
     /// with the lookup rather than per device, so they can be filtered on.
     var osVersions: [Option] = []
+    /// Intune's compliance states, keyed by the summary the column shows.
+    var compliance: [Option] = []
     /// Whether any device has a record but no value, so None is worth offering.
     var serverNone = 0
+    var orderNumberNone = 0
     var prestageNone = 0
     var siteNone = 0
+    var departmentNone = 0
+    var buildingNone = 0
     var osVersionNone = 0
     /// Date windows per field, empty when no loaded device reports that
     /// date — which is how Jamf School, having only a check-in, ends up
@@ -271,6 +329,7 @@ nonisolated struct FilterOptions {
     var lastEnrollment: [WindowCount] = []
     var lastInventory: [WindowCount] = []
     var lastContact: [WindowCount] = []
+    var dateAdded: [WindowCount] = []
     var statuses: [(status: DeviceFilters.ABMStatus, count: Int)] = []
     var issues: [(issue: DeviceFilters.Issue, count: Int)] = []
     var hasComputers = false
@@ -280,17 +339,34 @@ nonisolated struct FilterOptions {
     /// Only worth a picker when the devices came from more than one.
     var showAppleOrgs: Bool { appleOrgs.count > 1 }
     var showServers: Bool { !servers.isEmpty || serverNone > 0 }
+    var showModels: Bool { !models.isEmpty }
+    var showOrderNumbers: Bool { !orderNumbers.isEmpty }
+    var showPurchaseSources: Bool { !purchaseSources.isEmpty }
     var showPrestages: Bool { !prestages.isEmpty || prestageNone > 0 }
     var showSites: Bool { !sites.isEmpty || siteNone > 0 }
+    /// Only when some device has one: an account that cannot read the name
+    /// lists reports every device as None, and a picker offering nothing but
+    /// None answers no question.
+    var showDepartments: Bool { !departments.isEmpty }
+    var showBuildings: Bool { !buildings.isEmpty }
     var showOSVersions: Bool { !osVersions.isEmpty || osVersionNone > 0 }
-    var showDates: Bool { !lastEnrollment.isEmpty || !lastInventory.isEmpty || !lastContact.isEmpty }
+    var showCompliance: Bool { !compliance.isEmpty }
+    var showDates: Bool {
+        !lastEnrollment.isEmpty || !lastInventory.isEmpty || !lastContact.isEmpty || !dateAdded.isEmpty
+    }
 
     init(reports: [DeviceReport], capabilities: MDMCapabilities = MDMProduct.jamfPro.capabilities) {
         var appleOrgCounts: [String: (name: String, count: Int)] = [:]
         var serverCounts: [String: (name: String, count: Int)] = [:]
+        var modelCounts: [String: (name: String, count: Int)] = [:]
+        var orderCounts: [String: (name: String, count: Int)] = [:]
+        var purchaseCounts: [String: (name: String, count: Int)] = [:]
         var prestageCounts: [String: (name: String, count: Int)] = [:]
         var siteCounts: [String: (name: String, count: Int)] = [:]
+        var departmentCounts: [String: (name: String, count: Int)] = [:]
+        var buildingCounts: [String: (name: String, count: Int)] = [:]
         var osCounts: [String: (name: String, count: Int)] = [:]
+        var complianceCounts: [String: (name: String, count: Int)] = [:]
         // Windows overlap, so a date is tested against each of them rather
         // than assigned to one bucket. Parsed once per date to keep that from
         // costing a parse per window.
@@ -298,9 +374,11 @@ nonisolated struct FilterOptions {
         var enrollmentCounts = [Int](repeating: 0, count: windows.count)
         var inventoryCounts = enrollmentCounts
         var contactCounts = enrollmentCounts
+        var dateAddedCounts = enrollmentCounts
         var hasEnrollment = false
         var hasInventory = false
         var hasContact = false
+        var hasDateAdded = false
 
         for report in reports {
             switch report.deviceKind {
@@ -319,6 +397,26 @@ nonisolated struct FilterOptions {
                 } else {
                     serverNone += 1
                 }
+                // No None entry: an Apple record without a model is a wire
+                // gap, not an assignment a fleet is managed by. An order
+                // number can genuinely be absent — a device added with Apple
+                // Configurator has none — so there None means something.
+                if let name = abm.device.deviceModel, !name.isEmpty {
+                    modelCounts[name] = (name, (modelCounts[name]?.count ?? 0) + 1)
+                }
+                if let name = abm.device.orderNumber, !name.isEmpty {
+                    orderCounts[name] = (name, (orderCounts[name]?.count ?? 0) + 1)
+                } else {
+                    orderNumberNone += 1
+                }
+                if let name = abm.device.purchaseSourceType, !name.isEmpty {
+                    purchaseCounts[name] = (name, (purchaseCounts[name]?.count ?? 0) + 1)
+                }
+                let added = abm.device.addedToOrgDateTime.flatMap(DateFormatting.parseISO)
+                hasDateAdded = hasDateAdded || added != nil
+                for (index, window) in windows.enumerated() where window.contains(added) {
+                    dateAddedCounts[index] += 1
+                }
             }
             if let mdm = report.mdm.value {
                 if let id = mdm.prestageID {
@@ -332,6 +430,19 @@ nonisolated struct FilterOptions {
                     siteCounts[id] = (name, (siteCounts[id]?.count ?? 0) + 1)
                 } else {
                     siteNone += 1
+                }
+                if let name = mdm.department, !name.isEmpty {
+                    departmentCounts[name] = (name, (departmentCounts[name]?.count ?? 0) + 1)
+                } else {
+                    departmentNone += 1
+                }
+                if let name = mdm.building, !name.isEmpty {
+                    buildingCounts[name] = (name, (buildingCounts[name]?.count ?? 0) + 1)
+                } else {
+                    buildingNone += 1
+                }
+                if let summary = mdm.complianceSummary, !summary.isEmpty {
+                    complianceCounts[summary] = (summary, (complianceCounts[summary]?.count ?? 0) + 1)
                 }
                 // Grouped by version rather than by the displayed string, so
                 // a Mac and an iPad on the same release fall together.
@@ -361,11 +472,17 @@ nonisolated struct FilterOptions {
         }
         appleOrgs = sorted(appleOrgCounts)
         servers = sorted(serverCounts)
+        models = sorted(modelCounts)
+        orderNumbers = sorted(orderCounts)
+        purchaseSources = sorted(purchaseCounts)
         // localizedStandardCompare compares numerically, so 26.10 follows
         // 26.9 rather than preceding it.
         osVersions = sorted(osCounts)
         prestages = sorted(prestageCounts)
         sites = sorted(siteCounts)
+        departments = sorted(departmentCounts)
+        buildings = sorted(buildingCounts)
+        compliance = sorted(complianceCounts)
 
         func windowOptions(_ counts: [Int], reported: Bool) -> [WindowCount] {
             guard reported else { return [] }
@@ -374,6 +491,7 @@ nonisolated struct FilterOptions {
         lastEnrollment = windowOptions(enrollmentCounts, reported: hasEnrollment)
         lastInventory = windowOptions(inventoryCounts, reported: hasInventory)
         lastContact = windowOptions(contactCounts, reported: hasContact)
+        dateAdded = windowOptions(dateAddedCounts, reported: hasDateAdded)
 
         // Only statuses some device is actually in.
         statuses = DeviceFilters.ABMStatus.allCases
@@ -388,16 +506,16 @@ nonisolated struct FilterOptions {
         // A criterion the connection has no source for is left out entirely
         // rather than offered with a count of zero: on Jamf School, filtering
         // for an expired MDM profile would hide every device, having read no
-        // expiry for any of them. Passcode state is excluded for the same
-        // reason the coverage and update columns are: Jamf School reports it
-        // per device, so a lookup has it for none of them yet, and Intune
-        // does not report it at all.
+        // expiry for any of them. Passcode state is excluded there for the
+        // same reason the coverage and update columns are: Jamf School
+        // reports it per device, so a lookup has it for none of them yet.
         issues = DeviceFilters.Issue.allCases
             .filter { issue in
                 switch issue {
                 case .fileVaultOff: hasComputers && capabilities.contains(.fileVault)
                 case .noPasscode: hasMobileDevices && capabilities.contains(.passcodeState)
                 case .mdmProfileExpired: capabilities.contains(.mdmProfileExpiry)
+                case .notManaged, .notSupervised: capabilities.contains(.managementState)
                 default: true
                 }
             }

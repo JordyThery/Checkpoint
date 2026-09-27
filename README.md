@@ -36,7 +36,7 @@ Every discrepancy can be resolved from the same window: MDM assignments and migr
 
 ![Checkpoint showing twenty-two Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
 
-Columns and actions the connected product has no source for are left out rather than shown empty. Apple School Manager with Jamf School, showing location and ADE profile in place of site and PreStage:
+Right-click the column headers to choose what shows — more columns are available than appear by default, including model, order number, site, department and FileVault state. Columns and actions the connected product has no source for are left out rather than shown empty. Apple School Manager with Jamf School, showing location and ADE profile in place of site and PreStage:
 
 ![The same window connected to Apple School Manager and Jamf School, showing location and ADE profile columns in place of the Jamf Pro ones](docs/screenshot-jamf-school.png)
 

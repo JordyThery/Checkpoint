@@ -42,19 +42,20 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
 
     var capabilities: MDMCapabilities {
         switch self {
-        case .jamfPro: [.sites, .prestageScope, .enrollmentDate, .inventoryDates,
+        case .jamfPro: [.sites, .userAndLocation, .prestageScope, .enrollmentDate, .inventoryDates,
                         .mdmProfileExpiry, .fileVault, .passcodeState, .softwareUpdate,
                         .declarations, .recoverySecrets, .deviceLink, .deviceGroups,
                         .enrollmentProfileName, .complianceOnDemand]
         case .jamfSchool: [.locations, .passcodeOnDemand, .deviceLink, .deviceGroups,
-                           .enrollmentProfileName]
+                           .enrollmentProfileName, .managementState]
         // Intune reports one sync time rather than Jamf's four dates, so it
         // gets the enrollment date and the contact column and nothing else in
         // that family. `isEncrypted` is a bare boolean, which the encryption
         // state already handles as its fallback. No sites, no PreStage scope,
         // no declarative update reporting, and no recovery secrets: the
         // FileVault key is beta-only, so it is left out until it is not.
-        case .intune: [.enrollmentDate, .mdmProfileExpiry, .fileVault, .passcodeState, .compliance, .deviceLink]
+        case .intune: [.enrollmentDate, .mdmProfileExpiry, .fileVault, .passcodeState,
+                       .compliance, .deviceLink, .managementState]
         }
     }
 
@@ -219,6 +220,12 @@ nonisolated struct MDMCapabilities: OptionSet, Sendable {
     /// serve one; Intune's equivalent is an Entra group, which is not a
     /// device group and is not read.
     static let deviceGroups = MDMCapabilities(rawValue: 1 << 15)
+    /// The department, building and room a device is assigned to. Jamf Pro's
+    /// user and location record, arriving with the lookup.
+    static let userAndLocation = MDMCapabilities(rawValue: 1 << 19)
+    /// Whether the device is still managed and supervised, reported with the
+    /// lookup. Jamf Pro reports neither on its list endpoints.
+    static let managementState = MDMCapabilities(rawValue: 1 << 20)
 }
 
 /// How a connection authenticates. The three cases are Jamf's; another
