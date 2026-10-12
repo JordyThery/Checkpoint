@@ -28,6 +28,13 @@ nonisolated struct IntuneDevice: Sendable {
     /// whether the device is still under MDM at all.
     let managementAgent: String?
     let complianceState: String?
+    /// How the record enrolled, e.g. `appleBulkWithUser`. The `appleBulk`
+    /// values are Automated Device Enrollment.
+    let deviceEnrollmentType: String?
+
+    var enrolledViaADE: Bool? {
+        deviceEnrollmentType.map { $0.hasPrefix("appleBulk") }
+    }
 
     /// Whether the platform is one of Apple's mobile ones, where Intune's
     /// encryption flag reports data protection — enabled exactly when a
@@ -133,6 +140,7 @@ actor IntuneClient {
         "id", "serialNumber", "deviceName", "operatingSystem", "osVersion",
         "enrolledDateTime", "lastSyncDateTime", "managementCertificateExpirationDate",
         "isEncrypted", "isSupervised", "managementAgent", "complianceState",
+        "deviceEnrollmentType",
     ].joined(separator: ",")
 
     /// Every managed device in the tenant, keyed by serial number.
@@ -190,6 +198,7 @@ actor IntuneClient {
                 let isSupervised: Bool?
                 let managementAgent: String?
                 let complianceState: String?
+                let deviceEnrollmentType: String?
             }
         }
 
@@ -221,7 +230,8 @@ actor IntuneClient {
                 isEncrypted: item.isEncrypted,
                 isSupervised: item.isSupervised,
                 managementAgent: item.managementAgent,
-                complianceState: item.complianceState
+                complianceState: item.complianceState,
+                deviceEnrollmentType: item.deviceEnrollmentType
             )
         }
         return (devices, decoded.nextLink.flatMap(URL.init(string:)))

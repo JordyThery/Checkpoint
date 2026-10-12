@@ -16,6 +16,9 @@ struct ManagedDeviceInfo: Sendable {
     /// computer or mobile device ID, a Jamf School UDID, or an Intune managed
     /// device ID. Opaque here — only that product's client interprets it.
     var recordID: String
+    /// The configured connection the record came from, which is what routes
+    /// an action on it back to the right server.
+    var connectionID: UUID?
     var kind: DeviceKind
     var udid: String?
     /// UUID used by the modern /v2/mdm/commands endpoint.
@@ -32,6 +35,12 @@ struct ManagedDeviceInfo: Sendable {
     /// The administrator-entered asset tag. Jamf Pro and Jamf School report
     /// one; Intune's API has no such field.
     var assetTag: String?
+    /// Whether this record was created by Automated Device Enrollment, and
+    /// the method's name as the product words it. A record keeps the method
+    /// it enrolled with, so this says how the record got there — whether the
+    /// device is still there is what the activity fields say.
+    var enrolledViaADE: Bool?
+    var enrollmentMethod: String?
     /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
     var unlockToken: String?
     /// Encryption state, from the inventory record rather than the

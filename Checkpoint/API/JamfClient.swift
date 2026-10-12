@@ -32,8 +32,11 @@ struct JamfComputerRecord: Sendable {
     let buildingID: String?
     let room: String?
     let assetTag: String?
+    /// How the record enrolled. The boolean is inventory's own flag; the
+    /// method is its name for the flow, e.g. "PreStage enrollment".
+    let enrolledViaADE: Bool?
+    let enrollmentMethod: String?
 }
-
 
 struct JamfMobileDeviceRecord: Sendable {
     let id: String
@@ -58,6 +61,15 @@ struct JamfMobileDeviceRecord: Sendable {
     let buildingID: String?
     let room: String?
     let assetTag: String?
+    /// The detail endpoint words the method as one string, e.g.
+    /// "PreStage enrollment: [token] name (id)".
+    let enrollmentMethod: String?
+
+    /// Mobile inventory has no flag for it, so ADE is read off the method's
+    /// wording. Nil when the record reports no method at all.
+    var enrolledViaADE: Bool? {
+        enrollmentMethod.map { $0.hasPrefix("PreStage enrollment") }
+    }
 }
 
 /// A managed local administrator account that Jamf Pro holds a password for.
@@ -747,7 +759,12 @@ actor JamfClient {
                 let mdmCertificateExpiration: String?
                 let managementId: String?
                 let assetTag: String?
+                let enrolledViaAutomatedDeviceEnrollment: Bool?
+                let enrollmentMethod: EnrollmentMethod?
                 let site: Site?
+            }
+            struct EnrollmentMethod: Decodable {
+                let objectType: String?
             }
             struct Site: Decodable {
                 let id: String?
@@ -821,7 +838,9 @@ actor JamfClient {
             departmentID: item.userAndLocation?.departmentId,
             buildingID: item.userAndLocation?.buildingId,
             room: item.userAndLocation?.room,
-            assetTag: item.general?.assetTag
+            assetTag: item.general?.assetTag,
+            enrolledViaADE: item.general?.enrolledViaAutomatedDeviceEnrollment,
+            enrollmentMethod: item.general?.enrollmentMethod?.objectType
         )
     }
 
@@ -856,6 +875,7 @@ actor JamfClient {
             let osVersion: String?
             let osBuild: String?
             let assetTag: String?
+            let enrollmentMethod: String?
             let site: Site?
             let location: Location?
             // The escrowed unlock token lives in the per-OS detail object.
@@ -931,7 +951,8 @@ actor JamfClient {
             departmentID: detail?.location?.departmentId,
             buildingID: detail?.location?.buildingId,
             room: detail?.location?.room,
-            assetTag: detail?.assetTag
+            assetTag: detail?.assetTag,
+            enrollmentMethod: detail?.enrollmentMethod
         )
     }
 
