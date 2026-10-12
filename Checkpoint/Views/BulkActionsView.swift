@@ -47,6 +47,7 @@ struct BulkActionsView: View {
         case applySite
         case applyLocation
         case deleteRecord
+        case removeStaleRecords
         case command(MDMCommand)
     }
 
@@ -80,6 +81,11 @@ struct BulkActionsView: View {
     private func actionPrestages(kind: DeviceKind) -> [JamfPrestage] {
         guard let referenceReport else { return [] }
         return kind == .computer ? model.prestages(for: referenceReport) : model.mobilePrestages(for: referenceReport)
+    }
+
+    /// Records the combined lookup settled as stale, the bulk cleanup's input.
+    private var staleEntries: [(serial: String, info: ManagedDeviceInfo)] {
+        model.staleRecords(in: reports)
     }
 
     /// Devices that are in ABM and not released, the ones ABM actions can touch.
@@ -329,6 +335,16 @@ struct BulkActionsView: View {
                     }
                 }
             }
+            if !staleEntries.isEmpty {
+                Section("Findings") {
+                    LabeledContent("Stale Records", value: model.staleRecordSummary(in: reports))
+                    // Deliberately not gated on a single connection: removal
+                    // follows each record home, which is the point.
+                    Button("Remove \(staleEntries.count) Stale Record\(staleEntries.count == 1 ? "" : "s")", role: .destructive) {
+                        pending = .removeStaleRecords
+                    }
+                }
+            }
             Section("MDM Commands") { commandsSection }
         }
         .formStyle(.grouped)
@@ -491,6 +507,8 @@ struct BulkActionsView: View {
             "Move \(count(managedCount)) to location “\(selectedLocationName)”?"
         case .deleteRecord:
             actionProduct.removeRecordPrompt(count(managedCount))
+        case .removeStaleRecords:
+            "Remove \(staleEntries.count) stale record\(staleEntries.count == 1 ? "" : "s")?"
         case .command(let command):
             "\(command.title) — \(count(commandCount(command)))?"
         case nil:
@@ -528,6 +546,8 @@ struct BulkActionsView: View {
             "The device records move to the other location. Their groups and the profiles scoped to them are re-evaluated for the new location. Jamf School accepts twenty devices per request, so a larger selection is sent in batches."
         case .deleteRecord:
             actionProduct.removeRecordConsequence
+        case .removeStaleRecords:
+            "Removes \(model.staleRecordSummary(in: reports)). Each goes the way its product removes records — deleted from Jamf Pro and Intune, moved to the trash in Jamf School. The working records are untouched."
         case .command(let command):
             command.message(for: actionProduct)
         case nil:
@@ -595,6 +615,10 @@ struct BulkActionsView: View {
                 role: .destructive
             ) {
                 run { try await model.deleteMDMRecord(reports: reports) }
+            }
+        case .removeStaleRecords:
+            Button("Remove Stale Records", role: .destructive) {
+                run { try await model.removeStaleRecords(reports: reports) }
             }
         case .command(let command):
             Button(command.title, role: command.isDestructive ? .destructive : nil) {

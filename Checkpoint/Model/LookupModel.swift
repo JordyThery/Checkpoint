@@ -1671,6 +1671,53 @@ final class LookupModel {
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
     }
 
+    /// The stale records in a selection: every record beside the working one
+    /// on devices whose verdict settled as stale. Unverified rows are left to
+    /// the inspector, where the records can be weighed one by one, and a
+    /// mismatch is not a removal candidate at all — its one record is where
+    /// the device actually lives.
+    func staleRecords(in reports: [DeviceReport]) -> [(serial: String, info: ManagedDeviceInfo)] {
+        reports.flatMap { report -> [(String, ManagedDeviceInfo)] in
+            guard case .staleElsewhere = report.mdmVerdict else { return [] }
+            return report.otherRecords.map { (report.serial, $0) }
+        }
+    }
+
+    /// Removes every settled stale record in the selection, grouped per
+    /// connection so each product's removal is sent where it belongs. The
+    /// working records are never touched. Failures are collected per device
+    /// and thrown together once every connection has been tried.
+    func removeStaleRecords(reports: [DeviceReport]) async throws {
+        let entries = staleRecords(in: reports)
+        guard !entries.isEmpty else {
+            throw ActionError(message: "The selection has no stale records to remove.")
+        }
+        var failures: [String] = []
+        let byConnection = Dictionary(grouping: entries) { $0.info.connectionID }
+        for (id, group) in byConnection.sorted(by: { ($0.key?.uuidString ?? "") < ($1.key?.uuidString ?? "") }) {
+            guard let connection = id.flatMap({ id in settings.mdmConnections.first { $0.id == id } }) else {
+                failures += group.map { "\($0.serial): the record's connection is no longer configured." }
+                continue
+            }
+            failures += await removeRecords(group, connection: connection)
+        }
+        await refreshRows(Array(Set(entries.map(\.serial))))
+        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+    }
+
+    /// How the stale records distribute over connections, for the
+    /// confirmation: "2 on Jamf School and 1 on Intune Test".
+    func staleRecordSummary(in reports: [DeviceReport]) -> String {
+        let entries = staleRecords(in: reports)
+        let counts = Dictionary(grouping: entries) { entry in
+            connection(for: entry.info)?.displayName ?? "an unconfigured connection"
+        }
+        return counts
+            .map { "\($0.value.count) on \($0.key)" }
+            .sorted()
+            .formatted(.list(type: .and))
+    }
+
     /// Deletes or trashes records on one connection, per that product's
     /// meaning of removal, returning per-device failures rather than
     /// stopping at the first. The shared engine for Delete Record and the
