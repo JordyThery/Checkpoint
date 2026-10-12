@@ -494,6 +494,7 @@ struct ContentView: View {
 
     private var resultsTable: some View {
         Table(sortedReports, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columnArrangement) {
+            leadingColumns
             appleColumns
             mdmRecordColumns
             mdmStateColumns
@@ -530,12 +531,24 @@ struct ContentView: View {
     /// The Apple side. Serial Number cannot be hidden — it is what
     /// identifies the rows.
     @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
-    private var appleColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
+    private var leadingColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
         TableColumn("Serial Number", value: \.serial) { (report: DeviceReport) in
             Text(report.serial).monospaced()
         }
         .customizationID("serial")
         .disabledCustomizationBehavior(.visibility)
+        // First after the serial: the finding is what a combined lookup is
+        // run for. Movable like any column.
+        if model.readsAllConnections {
+            TableColumn("Finding", value: \.findingText) { (report: DeviceReport) in
+                FindingCell(report: report)
+            }
+            .customizationID("mdmFinding")
+        }
+    }
+
+    @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
+    private var appleColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
         TableColumn(model.appleScopeLabel, value: \.abmStatusText) { (report: DeviceReport) in
             ABMStatusCell(state: report.abm)
         }
@@ -591,10 +604,6 @@ struct ContentView: View {
                 }
             }
             .customizationID("mdmConnection")
-            TableColumn("Finding", value: \.findingText) { (report: DeviceReport) in
-                FindingCell(report: report)
-            }
-            .customizationID("mdmFinding")
         }
         TableColumn(model.deviceNameColumnLabel, value: \.mdmNameText) { (report: DeviceReport) in
             MDMStatusCell(state: report.mdm)
