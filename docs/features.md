@@ -39,7 +39,7 @@ Both fill the serial field, and both confirm before starting when the list is la
 
 ## Several Apple organizations at once
 
-The organization popup offers **All Organizations** when more than one is configured. A lookup then searches every one of them and the table gains an Organization column naming the one each device was found in — which answers a question a single-organization lookup cannot: *which of our Apple tenants owns this device?*
+The organization popup offers **All Organizations** when more than one is configured. A lookup then searches every one of them and the table gains an Organization column naming the one each device was found in — which answers a question a single-organization lookup cannot: *which of our Apple tenants owns this device?* It is a choice per session, not the default: lookups start in one organization.
 
 A device belongs to one organization at a time, so there is no ambiguity to resolve. The one exception is a device released from one organization and re-added to another, which both report: Checkpoint prefers the organization where it is not released. An organization that cannot be read does not hide a device another one holds — a failure is only reported for devices no organization found, and it says which organization could not be read rather than reporting those devices as missing.
 

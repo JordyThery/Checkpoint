@@ -410,11 +410,11 @@ final class LookupModel {
     init(settings: AppSettings, log: ActivityLog? = nil) {
         self.settings = settings
         self.log = log ?? ActivityLog()
-        // A single organization unless there are several, where reading them
-        // all is the more useful default and costs nothing extra to offer.
-        abmScope = settings.abmOrgs.count > 1
-            ? .allOrganizations
-            : settings.abmOrgs.first.map { ABMScope.organization($0.id) } ?? .allOrganizations
+        // One organization, the first configured. Searching them all is a
+        // choice per session rather than the default: most fleets are served
+        // by one organization at a time — an MSP works per customer — and a
+        // combined read should never be the surprise.
+        abmScope = settings.abmOrgs.first.map { ABMScope.organization($0.id) } ?? .allOrganizations
         selectedConnectionID = settings.mdmConnections.first?.id
     }
 
