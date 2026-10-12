@@ -45,9 +45,9 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         case .jamfPro: [.sites, .userAndLocation, .prestageScope, .enrollmentDate, .inventoryDates,
                         .mdmProfileExpiry, .fileVault, .passcodeState, .softwareUpdate,
                         .declarations, .recoverySecrets, .deviceLink, .deviceGroups,
-                        .enrollmentProfileName, .complianceOnDemand]
+                        .enrollmentProfileName, .complianceOnDemand, .assetTag]
         case .jamfSchool: [.locations, .passcodeOnDemand, .deviceLink, .deviceGroups,
-                           .enrollmentProfileName, .managementState]
+                           .enrollmentProfileName, .managementState, .assetTag]
         // Intune reports one sync time rather than Jamf's four dates, so it
         // gets the enrollment date and the contact column and nothing else in
         // that family. `isEncrypted` is a bare boolean, which the encryption
@@ -226,6 +226,9 @@ nonisolated struct MDMCapabilities: OptionSet, Sendable {
     /// Whether the device is still managed and supervised, reported with the
     /// lookup. Jamf Pro reports neither on its list endpoints.
     static let managementState = MDMCapabilities(rawValue: 1 << 20)
+    /// The asset tag, arriving with the lookup. Intune's API has no field
+    /// for it.
+    static let assetTag = MDMCapabilities(rawValue: 1 << 21)
 }
 
 /// How a connection authenticates. The three cases are Jamf's; another

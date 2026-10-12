@@ -581,6 +581,9 @@ struct DeviceDetailView: View {
         if let room = info.room, !room.isEmpty {
             LabeledContent("Room", value: room)
         }
+        if let assetTag = info.assetTag, !assetTag.isEmpty {
+            LabeledContent("Asset Tag", value: assetTag)
+        }
         if capabilities.contains(.enrollmentDate) {
             LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
         }

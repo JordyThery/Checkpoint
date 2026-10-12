@@ -34,6 +34,8 @@ nonisolated struct DeviceFilters: Equatable {
     /// when the lookup resolved them.
     var department: Assignment = .any
     var building: Assignment = .any
+    /// The asset tag, keyed by the tag itself. None finds untagged devices.
+    var assetTag: Assignment = .any
     var osVersion: Assignment = .any
     /// Intune's compliance verdict, keyed by the summary the column shows.
     /// A picker rather than an issue toggle, because the states are not a
@@ -64,6 +66,7 @@ nonisolated struct DeviceFilters: Equatable {
         if site != .any { count += 1 }
         if department != .any { count += 1 }
         if building != .any { count += 1 }
+        if assetTag != .any { count += 1 }
         if osVersion != .any { count += 1 }
         if compliance != .any { count += 1 }
         if lastEnrollment != .any { count += 1 }
@@ -86,6 +89,7 @@ nonisolated struct DeviceFilters: Equatable {
             && site.matches(report.mdm.value?.groupingID, hasRecord: report.mdm.value != nil)
             && department.matches(report.mdm.value?.department, hasRecord: report.mdm.value != nil)
             && building.matches(report.mdm.value?.building, hasRecord: report.mdm.value != nil)
+            && assetTag.matches(report.mdm.value?.assetTag, hasRecord: report.mdm.value != nil)
             && osVersion.matches(report.mdm.value?.osVersion, hasRecord: report.mdm.value != nil)
             && compliance.matches(report.mdm.value?.complianceSummary, hasRecord: report.mdm.value != nil)
             && lastEnrollment.matches(report.mdm.value?.lastEnrolledDate, hasRecord: report.mdm.value != nil)
@@ -313,6 +317,8 @@ nonisolated struct FilterOptions {
     /// Departments and buildings, keyed by name like the models.
     var departments: [Option] = []
     var buildings: [Option] = []
+    /// Asset tags, keyed by the tag itself.
+    var assetTags: [Option] = []
     /// Installed OS versions. Unlike coverage or update state, these come
     /// with the lookup rather than per device, so they can be filtered on.
     var osVersions: [Option] = []
@@ -325,6 +331,7 @@ nonisolated struct FilterOptions {
     var siteNone = 0
     var departmentNone = 0
     var buildingNone = 0
+    var assetTagNone = 0
     var osVersionNone = 0
     /// Date windows per field, empty when no loaded device reports that
     /// date — which is how Jamf School, having only a check-in, ends up
@@ -352,6 +359,9 @@ nonisolated struct FilterOptions {
     /// None answers no question.
     var showDepartments: Bool { !departments.isEmpty }
     var showBuildings: Bool { !buildings.isEmpty }
+    /// Like the departments: a fleet with no tags gets no picker, since one
+    /// offering nothing but None answers no question.
+    var showAssetTags: Bool { !assetTags.isEmpty }
     var showOSVersions: Bool { !osVersions.isEmpty || osVersionNone > 0 }
     var showCompliance: Bool { !compliance.isEmpty }
     var showDates: Bool {
@@ -368,6 +378,7 @@ nonisolated struct FilterOptions {
         var siteCounts: [String: (name: String, count: Int)] = [:]
         var departmentCounts: [String: (name: String, count: Int)] = [:]
         var buildingCounts: [String: (name: String, count: Int)] = [:]
+        var assetTagCounts: [String: (name: String, count: Int)] = [:]
         var osCounts: [String: (name: String, count: Int)] = [:]
         var complianceCounts: [String: (name: String, count: Int)] = [:]
         // Windows overlap, so a date is tested against each of them rather
@@ -444,6 +455,11 @@ nonisolated struct FilterOptions {
                 } else {
                     buildingNone += 1
                 }
+                if let tag = mdm.assetTag, !tag.isEmpty {
+                    assetTagCounts[tag] = (tag, (assetTagCounts[tag]?.count ?? 0) + 1)
+                } else {
+                    assetTagNone += 1
+                }
                 if let summary = mdm.complianceSummary, !summary.isEmpty {
                     complianceCounts[summary] = (summary, (complianceCounts[summary]?.count ?? 0) + 1)
                 }
@@ -485,6 +501,7 @@ nonisolated struct FilterOptions {
         sites = sorted(siteCounts)
         departments = sorted(departmentCounts)
         buildings = sorted(buildingCounts)
+        assetTags = sorted(assetTagCounts)
         compliance = sorted(complianceCounts)
 
         func windowOptions(_ counts: [Int], reported: Bool) -> [WindowCount] {

@@ -382,6 +382,10 @@ struct ContentView: View {
                 assignmentPicker("Building", selection: $filters.building,
                                  options: options.buildings, noneCount: options.buildingNone)
             }
+            if options.showAssetTags {
+                assignmentPicker("Asset Tag", selection: $filters.assetTag,
+                                 options: options.assetTags, noneCount: options.assetTagNone)
+            }
             if options.showCompliance {
                 assignmentPicker("Compliance", selection: $filters.compliance,
                                  options: options.compliance, noneCount: 0)
@@ -600,6 +604,13 @@ struct ContentView: View {
                 FetchText(state: report.mdm) { $0.room ?? "—" }
             }
             .customizationID("room")
+            .defaultVisibility(.hidden)
+        }
+        if model.mdmCapabilities.contains(.assetTag) {
+            TableColumn("Asset Tag", value: \.assetTagText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { $0.assetTag ?? "—" }
+            }
+            .customizationID("assetTag")
             .defaultVisibility(.hidden)
         }
     }
@@ -883,6 +894,10 @@ private extension DeviceReport {
 
     var roomText: String {
         mdm.sortText { $0.room ?? "—" }
+    }
+
+    var assetTagText: String {
+        mdm.sortText { $0.assetTag ?? "—" }
     }
 
     var fileVaultText: String {

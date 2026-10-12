@@ -27,6 +27,7 @@ struct JamfSchoolDevice: Sendable {
     let depProfile: String?
     /// Wall-clock time in the instance's own zone, with no offset attached.
     let lastCheckin: String?
+    let assetTag: String?
     let groupNames: [String]
     let inTrash: Bool
 
@@ -204,6 +205,7 @@ actor JamfSchoolClient {
                 let enrollType: String?
                 let depProfile: String?
                 let lastCheckin: String?
+                let assetTag: String?
                 let groups: [String]?
                 let inTrash: LenientBool?
             }
@@ -234,6 +236,7 @@ actor JamfSchoolClient {
                 enrollType: item.enrollType,
                 depProfile: item.depProfile,
                 lastCheckin: item.lastCheckin,
+                assetTag: item.assetTag,
                 groupNames: item.groups ?? [],
                 inTrash: item.inTrash?.value ?? false
             )

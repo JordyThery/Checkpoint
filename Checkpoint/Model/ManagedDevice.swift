@@ -29,6 +29,9 @@ struct ManagedDeviceInfo: Sendable {
     var department: String?
     var building: String?
     var room: String?
+    /// The administrator-entered asset tag. Jamf Pro and Jamf School report
+    /// one; Intune's API has no such field.
+    var assetTag: String?
     /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
     var unlockToken: String?
     /// Encryption state, from the inventory record rather than the

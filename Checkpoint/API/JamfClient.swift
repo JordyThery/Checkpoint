@@ -31,6 +31,7 @@ struct JamfComputerRecord: Sendable {
     let departmentID: String?
     let buildingID: String?
     let room: String?
+    let assetTag: String?
 }
 
 
@@ -56,6 +57,7 @@ struct JamfMobileDeviceRecord: Sendable {
     let departmentID: String?
     let buildingID: String?
     let room: String?
+    let assetTag: String?
 }
 
 /// A managed local administrator account that Jamf Pro holds a password for.
@@ -744,6 +746,7 @@ actor JamfClient {
                 let mdmProfileExpiration: String?
                 let mdmCertificateExpiration: String?
                 let managementId: String?
+                let assetTag: String?
                 let site: Site?
             }
             struct Site: Decodable {
@@ -817,7 +820,8 @@ actor JamfClient {
             osBuild: item.operatingSystem?.build,
             departmentID: item.userAndLocation?.departmentId,
             buildingID: item.userAndLocation?.buildingId,
-            room: item.userAndLocation?.room
+            room: item.userAndLocation?.room,
+            assetTag: item.general?.assetTag
         )
     }
 
@@ -851,6 +855,7 @@ actor JamfClient {
             let mdmProfileExpirationTimestamp: String?
             let osVersion: String?
             let osBuild: String?
+            let assetTag: String?
             let site: Site?
             let location: Location?
             // The escrowed unlock token lives in the per-OS detail object.
@@ -925,7 +930,8 @@ actor JamfClient {
             osBuild: detail?.osBuild,
             departmentID: detail?.location?.departmentId,
             buildingID: detail?.location?.buildingId,
-            room: detail?.location?.room
+            room: detail?.location?.room,
+            assetTag: detail?.assetTag
         )
     }
 

@@ -2194,6 +2194,7 @@ final class LookupModel {
             kind: device.kind,
             udid: device.udid,
             name: device.name,
+            assetTag: device.assetTag?.isEmpty == false ? device.assetTag : nil,
             osVersion: device.osVersion?.isEmpty == false ? device.osVersion : nil,
             osName: device.osPrefix?.isEmpty == false ? device.osPrefix : nil,
             lastContact: DateFormatting.isoFromInstanceLocal(
@@ -2293,6 +2294,7 @@ final class LookupModel {
                     department: record.departmentID.flatMap { context.departmentNames[$0] },
                     building: record.buildingID.flatMap { context.buildingNames[$0] },
                     room: record.room,
+                    assetTag: record.assetTag?.isEmpty == false ? record.assetTag : nil,
                     encryption: record.encryption,
                     osVersion: record.osVersion,
                     osBuild: record.osBuild,
@@ -2320,6 +2322,7 @@ final class LookupModel {
                     department: record.departmentID.flatMap { context.departmentNames[$0] },
                     building: record.buildingID.flatMap { context.buildingNames[$0] },
                     room: record.room,
+                    assetTag: record.assetTag?.isEmpty == false ? record.assetTag : nil,
                     unlockToken: record.unlockToken,
                     security: record.security,
                     osVersion: record.osVersion,
