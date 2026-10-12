@@ -19,6 +19,7 @@ struct DeviceDetailView: View {
         let note: String?
     }
     @State private var prestageSelection: String?
+    @State private var assetTagField = ""
     @State private var siteSelection = "-1"
     /// Jamf School location, that product's equivalent of a site.
     @State private var locationSelection: String?
@@ -64,6 +65,7 @@ struct DeviceDetailView: View {
         case applyPrestage
         case applySite
         case applyLocation
+        case applyAssetTag
         case deleteRecord
         case removeOtherRecord(ManagedDeviceInfo)
         case command(MDMCommand)
@@ -194,6 +196,7 @@ struct DeviceDetailView: View {
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.mdm.value?.prestageID) { syncSelections() }
+        .onChange(of: report.mdm.value?.assetTag) { syncSelections() }
         .onChange(of: report.mdm.value?.siteID) { syncSelections() }
         .onChange(of: report.mdm.value?.locationID) { syncSelections() }
         .sheet(item: $revealedSecret) { secret in
@@ -319,6 +322,10 @@ struct DeviceDetailView: View {
             "Move \(report.serial) to site “\(selectedSiteName)”?"
         case .applyLocation:
             "Move \(report.serial) to location “\(selectedLocationName)”?"
+        case .applyAssetTag:
+            assetTagField.trimmingCharacters(in: .whitespaces).isEmpty
+                ? "Clear the asset tag on \(report.serial)?"
+                : "Set the asset tag on \(report.serial) to “\(assetTagField.trimmingCharacters(in: .whitespaces))”?"
         case .deleteRecord:
             model.product(for: report).removeRecordPrompt(report.serial)
         case .removeOtherRecord(let info):
@@ -352,6 +359,8 @@ struct DeviceDetailView: View {
             "Only the Jamf Pro record moves to the other site. The PreStages the device can join stay the same, because they follow the ADE token that synced it."
         case .applyLocation:
             "The device record moves to the other location. Its groups and the profiles scoped to it are re-evaluated for the new location."
+        case .applyAssetTag:
+            "The tag is written to the \(model.product(for: report).label) record."
         case .deleteRecord:
             model.product(for: report).removeRecordConsequence
         case .removeOtherRecord(let info):
@@ -415,6 +424,11 @@ struct DeviceDetailView: View {
                     guard let locationID else { return }
                     try await model.setLocation(reports: [report], to: locationID)
                 }
+            }
+        case .applyAssetTag:
+            Button(assetTagField.trimmingCharacters(in: .whitespaces).isEmpty ? "Clear Asset Tag" : "Set Asset Tag") {
+                let tag = assetTagField
+                run { try await model.setAssetTag(tag, for: report) }
             }
         case .deleteRecord:
             Button(
@@ -1069,6 +1083,11 @@ struct DeviceDetailView: View {
             Button("Apply PreStage Change") { pending = .applyPrestage }
                 .disabled(prestageSelection == info.prestageID)
         }
+        if capabilities.contains(.assetTag) {
+            TextField("Asset Tag", text: $assetTagField, prompt: Text("None"))
+            Button("Apply Asset Tag") { pending = .applyAssetTag }
+                .disabled(assetTagField.trimmingCharacters(in: .whitespaces) == (info.assetTag ?? ""))
+        }
         // Recovery secrets are read on demand and never kept on the report, so
         // they are not fetched by a lookup and do not appear in the table.
         if capabilities.contains(.recoverySecrets), info.kind == .computer {
@@ -1237,6 +1256,7 @@ struct DeviceDetailView: View {
         let current = model.reports.first { $0.serial == report.serial } ?? report
         mdmSelection = current.abm.value?.mdmServerID
         prestageSelection = current.mdm.value?.prestageID
+        assetTagField = current.mdm.value?.assetTag ?? ""
         siteSelection = current.mdm.value?.siteID ?? "-1"
         locationSelection = current.mdm.value?.locationID
     }

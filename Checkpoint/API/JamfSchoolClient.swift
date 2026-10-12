@@ -393,6 +393,12 @@ actor JamfSchoolClient {
         try throwIfError(status: status, data: data)
     }
 
+    /// Sets or clears the device's asset tag. The endpoint leaves alone any
+    /// field the request omits, so only the tag is sent.
+    func setAssetTag(udid: String, assetTag: String) async throws {
+        try await command(udid: udid, action: "details", parameters: [("assetTag", assetTag)])
+    }
+
     // MARK: Record changes
 
     /// Moves the device record to the trash. Unlike a Jamf Pro deletion this

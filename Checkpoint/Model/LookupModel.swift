@@ -1845,6 +1845,46 @@ final class LookupModel {
         await refreshRows(affected)
     }
 
+    /// Sets or clears one device's asset tag, on whichever Jamf product holds
+    /// the record. A single-device action: tags identify devices one by one,
+    /// so writing one tag across a selection would answer no real question.
+    func setAssetTag(_ assetTag: String, for report: DeviceReport) async throws {
+        guard let info = report.mdm.value, let connection = connection(for: report) else {
+            throw ActionError(message: "\(report.serial) has no MDM record.")
+        }
+        let tag = assetTag.trimmingCharacters(in: .whitespaces)
+        let summary = tag.isEmpty
+            ? "Cleared the asset tag on \(report.serial)"
+            : "Set the asset tag on \(report.serial) to \(tag)"
+        try await recording(
+            connection.product.activityService,
+            summary,
+            serials: [report.serial],
+            connectionName: connection.displayName
+        ) {
+            switch connection.product {
+            case .jamfPro:
+                guard let jamf = makeJamfClient(for: connection) else {
+                    throw ActionError(message: "\(connection.displayName) has no usable credentials.")
+                }
+                switch info.kind {
+                case .computer:
+                    try await jamf.setComputerAssetTag(computerID: info.recordID, assetTag: tag)
+                case .mobileDevice:
+                    try await jamf.setMobileDeviceAssetTag(deviceID: info.recordID, assetTag: tag)
+                }
+            case .jamfSchool:
+                guard let school = makeJamfSchoolClient(for: connection) else {
+                    throw ActionError(message: "\(connection.displayName) has no usable credentials.")
+                }
+                try await school.setAssetTag(udid: info.recordID, assetTag: tag)
+            case .intune:
+                throw ActionError(message: "Intune's API carries no asset tag.")
+            }
+        }
+        await refreshRows([report.serial])
+    }
+
     /// Moves the devices' Jamf Pro records to another site ("-1" for none).
     /// Note this does not change which PreStages a device can join. That is
     /// determined by the ADE token that synced it, not by the record's site.

@@ -1882,6 +1882,29 @@ actor JamfClient {
         try throwIfError(status: status, data: data)
     }
 
+    /// Sets or clears a computer's asset tag. Jamf Pro takes an empty string
+    /// as clearing it.
+    func setComputerAssetTag(computerID: String, assetTag: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["general": ["assetTag": assetTag]])
+        let (data, status) = try await send(
+            path: "/api/v4/computers-inventory-detail/\(computerID)",
+            method: "PATCH",
+            body: body
+        )
+        try throwIfError(status: status, data: data)
+    }
+
+    /// Sets or clears a mobile device's asset tag.
+    func setMobileDeviceAssetTag(deviceID: String, assetTag: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["assetTag": assetTag])
+        let (data, status) = try await send(
+            path: "/api/v2/mobile-devices/\(deviceID)",
+            method: "PATCH",
+            body: body
+        )
+        try throwIfError(status: status, data: data)
+    }
+
     // MARK: Departments and buildings
 
     /// Department names, keyed by identifier.

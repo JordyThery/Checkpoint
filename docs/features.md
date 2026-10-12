@@ -141,7 +141,7 @@ Jamf Pro only, shown when a device is selected: its **department**, **building**
 
 ## Asset tag
 
-Jamf Pro and Jamf School. Shown in the inspector when a device has one, with a hidden-by-default column and a filter whose None entry finds the devices that still need tagging. It arrives with the record the lookup already reads. Intune's API carries no asset tag, so the column is not offered there.
+Jamf Pro and Jamf School. Shown in the inspector when a device has one, with a hidden-by-default column and a filter whose None entry finds the devices that still need tagging. It arrives with the record the lookup already reads, and it can be set or cleared from the inspector — one device at a time, since a tag identifies a single device. Intune's API carries no asset tag, so neither the column nor the field is offered there.
 
 A device with no assignment gets no row, as does an account that cannot read the lists. Only the assignment is read: the same record names the assigned user, which Checkpoint neither shows, exports, nor keeps in the [activity log](#activity-log).
 

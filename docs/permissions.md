@@ -41,6 +41,7 @@ Each key carries its own list of permitted methods, chosen when you create it. G
 | Restart Device | Restart device |
 | Wipe | Wipe device |
 | Remove MDM Profile | Unenroll device |
+| Asset tag changes | Update details |
 | Change location | Move devices |
 | Move to Trash | Delete device |
 | Findings across connections | Get Automated Device Enrollment devices |
@@ -66,6 +67,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
 | Department, building and room, shown when a device is selected | Read Departments, Read Buildings. Also available over the [Platform API](platform-api.md) |
 | Device compliance, shown when a device is selected | Read Device Compliance Information, and Read Conditional Access to check whether the integration is on. Also available over the [Platform API](platform-api.md) |
+| Asset tag changes | Update Computers, Update Mobile Devices |
 | Delete records | Delete Computers, Delete Mobile Devices |
 | FileVault recovery key | View Disk Encryption Recovery Key |
 | Recovery Lock password | View Recovery Lock |
