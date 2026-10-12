@@ -672,9 +672,8 @@ struct DeviceDetailView: View {
         if let room = info.room, !room.isEmpty {
             LabeledContent("Room", value: room)
         }
-        if let assetTag = info.assetTag, !assetTag.isEmpty {
-            LabeledContent("Asset Tag", value: assetTag)
-        }
+        // No read-only asset tag row: the editable field among the actions
+        // shows the current value, and one label should not appear twice.
         if capabilities.contains(.enrollmentDate) {
             LabeledContent("Last Enrollment Date", value: DateFormatting.short(info.lastEnrolledDate))
         }
