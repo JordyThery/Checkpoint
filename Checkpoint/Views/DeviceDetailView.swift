@@ -65,6 +65,7 @@ struct DeviceDetailView: View {
         case applySite
         case applyLocation
         case deleteRecord
+        case removeOtherRecord(ManagedDeviceInfo)
         case command(MDMCommand)
         case viewLocalAdminPassword(JamfLocalAdminAccount)
     }
@@ -81,6 +82,48 @@ struct DeviceDetailView: View {
         return formatter.string(from: rotationTime).map { "in \($0)" } ?? "shortly afterwards"
     }
 
+
+
+    /// One extra record's facts and its exit. Lean on purpose: the working
+    /// record above carries the detail, and what matters here is where this
+    /// one is, whether it is alive, and how to remove it.
+    @ViewBuilder
+    private func otherRecordRows(_ info: ManagedDeviceInfo) -> some View {
+        let product = model.connection(for: info)?.product ?? .jamfPro
+        LabeledContent("Device Name", value: info.name ?? "—")
+        if let method = info.enrollmentMethod, !method.isEmpty {
+            LabeledContent("Enrollment", value: method)
+        }
+        if let managed = info.isManaged {
+            LabeledContent("Managed", value: managed ? "Yes" : "No")
+        }
+        LabeledContent("Last Contact", value: DateFormatting.short(info.lastContact ?? info.lastContactTime ?? info.reportDate))
+        if let url = info.webURL {
+            Link("Open in \(product.label)", destination: url)
+        }
+        Button(product.removeRecordLabel, role: .destructive) {
+            pending = .removeOtherRecord(info)
+        }
+    }
+
+    /// The MDM section is titled for the record's product once there is a
+    /// record, and for the scope before there is one.
+    private var mdmSectionTitle: String {
+        report.mdm.value != nil ? model.product(for: report).label : model.mdmScopeLabel
+    }
+
+    private var missingConnectionHint: String {
+        model.readsAllConnections
+            ? "Add a connection in Settings to see enrollment details."
+            : model.mdmProduct.missingConnectionHint
+    }
+
+    private var noRecordHint: String {
+        model.readsAllConnections
+            ? "No device record was found on any configured connection."
+            : model.mdmProduct.noRecordHint
+    }
+
     var body: some View {
         Form {
             Section {
@@ -88,7 +131,7 @@ struct DeviceDetailView: View {
                     Text(report.serial).monospaced().textSelection(.enabled)
                 }
                 if let url = report.mdm.value?.webURL {
-                    Link("Open in \(model.mdmProduct.label)", destination: url)
+                    Link("Open in \(model.product(for: report).label)", destination: url)
                 }
             }
             // Read-only detail and the actions that act on it are kept in
@@ -97,13 +140,32 @@ struct DeviceDetailView: View {
             if let info = report.abm.value, !info.isReleased {
                 Section { abmActions(info) }
             }
-            Section(model.mdmProduct.label) { mdmContent }
+            if let verdict = report.mdmVerdict, let summary = verdict.summary {
+                Section("Finding") {
+                    Label {
+                        Text(summary)
+                    } icon: {
+                        Image(systemName: verdict.isFinding ? "exclamationmark.triangle.fill" : "questionmark.circle")
+                            .foregroundStyle(verdict.isFinding ? .orange : .secondary)
+                    }
+                    .font(.callout)
+                }
+            }
+            Section(mdmSectionTitle) { mdmContent }
             if let info = report.mdm.value {
                 Section { mdmActions(info) }
                 if !localAdmins.isEmpty {
                     Section("Managed Local Administrator Accounts") { localAdminRows }
                 }
                 Section("MDM Commands") { commandButtons(info) }
+            }
+            // Records beside the working one, each with the way out that
+            // fits its product. This is where a stale record gets cleaned up
+            // from the place it was discovered.
+            ForEach(report.otherRecords, id: \.recordID) { info in
+                Section("Also on \(model.connection(for: info)?.displayName ?? "another connection")") {
+                    otherRecordRows(info)
+                }
             }
         }
         .formStyle(.grouped)
@@ -124,7 +186,11 @@ struct DeviceDetailView: View {
         }
         // Kept out of loadDeviceDetail: it is server-wide, cached for the
         // session, and slow enough that the rows above should not wait on it.
-        .task { await model.loadADEInstances() }
+        .task(id: report.mdm.value?.connectionID) {
+            if let connection = model.connection(for: report) {
+                await model.loadADEInstances(for: connection)
+            }
+        }
         .onChange(of: report.serial) { syncSelections() }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.mdm.value?.prestageID) { syncSelections() }
@@ -182,7 +248,7 @@ struct DeviceDetailView: View {
                 if let command = pinCommand { executeWithPIN(command) }
             }
         } message: {
-            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message(for: model.mdmProduct) ?? "")")
+            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message(for: model.product(for: report)) ?? "")")
         }
         .confirmationDialog(
             pendingTitle,
@@ -205,8 +271,8 @@ struct DeviceDetailView: View {
     /// device-enrollment (ADE) instance that synced this serial. Falls back
     /// to the full list when the instance is unknown.
     private var prestageChoices: [JamfPrestage] {
-        let all = report.mdm.value?.kind == .mobileDevice ? model.mobilePrestages : model.prestages
-        guard let instance = model.adeInstance(forSerial: report.serial) else { return all }
+        let all = report.mdm.value?.kind == .mobileDevice ? model.mobilePrestages(for: report) : model.prestages(for: report)
+        guard let instance = model.adeInstance(for: report) else { return all }
         let matching = all.filter { $0.enrollmentInstanceID == instance }
         return matching.isEmpty ? all : matching
     }
@@ -216,12 +282,12 @@ struct DeviceDetailView: View {
     }
 
     private var selectedSiteName: String {
-        model.sites.first { $0.id == siteSelection }?.name ?? "None"
+        model.sites(for: report).first { $0.id == siteSelection }?.name ?? "None"
     }
 
     private var selectedLocationName: String {
         locationSelection.map { id in
-            model.jamfLocations.first { $0.id == id }?.name ?? id
+            model.locations(for: report).first { $0.id == id }?.name ?? id
         } ?? "None"
     }
 
@@ -254,7 +320,9 @@ struct DeviceDetailView: View {
         case .applyLocation:
             "Move \(report.serial) to location “\(selectedLocationName)”?"
         case .deleteRecord:
-            model.mdmProduct.removeRecordPrompt(report.serial)
+            model.product(for: report).removeRecordPrompt(report.serial)
+        case .removeOtherRecord(let info):
+            (model.connection(for: info)?.product ?? .jamfPro).removeRecordPrompt(report.serial)
         case .command(let command):
             "\(command.title) — \(report.serial)?"
         case .viewLocalAdminPassword:
@@ -285,9 +353,11 @@ struct DeviceDetailView: View {
         case .applyLocation:
             "The device record moves to the other location. Its groups and the profiles scoped to it are re-evaluated for the new location."
         case .deleteRecord:
-            model.mdmProduct.removeRecordConsequence
+            model.product(for: report).removeRecordConsequence
+        case .removeOtherRecord(let info):
+            (model.connection(for: info)?.product ?? .jamfPro).removeRecordConsequence
         case .command(let command):
-            command.message(for: model.mdmProduct)
+            command.message(for: model.product(for: report))
         case .viewLocalAdminPassword(let account):
             "Viewing the password for \(account.username) will cause Jamf Pro to rotate it \(rotationDescription)."
         case nil:
@@ -348,10 +418,17 @@ struct DeviceDetailView: View {
             }
         case .deleteRecord:
             Button(
-                model.mdmProduct.removeRecordAction,
+                model.product(for: report).removeRecordAction,
                 role: .destructive
             ) {
                 run { try await model.deleteMDMRecord(reports: [report]) }
+            }
+        case .removeOtherRecord(let info):
+            Button(
+                (model.connection(for: info)?.product ?? .jamfPro).removeRecordAction,
+                role: .destructive
+            ) {
+                run { try await model.removeRecord(info, serial: report.serial) }
             }
         case .command(let command):
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
@@ -538,10 +615,10 @@ struct DeviceDetailView: View {
         case .pending:
             ProgressView().controlSize(.small)
         case .notConfigured:
-            Text(model.mdmProduct.missingConnectionHint)
+            Text(missingConnectionHint)
                 .foregroundStyle(.secondary)
         case .notFound:
-            Text(model.mdmProduct.noRecordHint)
+            Text(noRecordHint)
                 .foregroundStyle(.secondary)
         case .failed(let message):
             Text(message).foregroundStyle(.red)
@@ -559,15 +636,15 @@ struct DeviceDetailView: View {
     /// School server those five rows do not exist.
     @ViewBuilder
     private func mdmDetails(_ info: ManagedDeviceInfo) -> some View {
-        let capabilities = model.mdmCapabilities
+        let capabilities = model.capabilities(for: report)
         LabeledContent(info.kind == .computer ? "Computer Name" : "Device Name", value: info.name ?? "—")
         if let os = info.osDisplay {
             LabeledContent("OS Version", value: os)
         }
-        if capabilities.contains(.sites), model.sites.isEmpty {
+        if capabilities.contains(.sites), model.sites(for: report).isEmpty {
             LabeledContent("Site", value: info.siteName ?? "None")
         }
-        if capabilities.contains(.locations), model.jamfLocations.isEmpty {
+        if capabilities.contains(.locations), model.locations(for: report).isEmpty {
             LabeledContent("Location", value: info.locationName ?? "None")
         }
         // Shown only where there is something to show: a device with no
@@ -609,7 +686,7 @@ struct DeviceDetailView: View {
             }
         }
         if info.kind == .mobileDevice || info.lastContact != nil {
-            LabeledContent(model.mdmProduct.lastContactLabel, value: DateFormatting.short(info.lastContact))
+            LabeledContent(model.product(for: report).lastContactLabel, value: DateFormatting.short(info.lastContact))
         }
         if capabilities.contains(.inventoryDates), info.kind == .computer {
             LabeledContent("Last Check-in", value: DateFormatting.short(info.lastContactTime))
@@ -639,7 +716,7 @@ struct DeviceDetailView: View {
         }
         if let security = info.security {
             passcodeRow(security)
-                .help(model.mdmProduct == .intune
+                .help(model.product(for: report) == .intune
                       ? "Derived from data protection, which iPhone and iPad enable exactly when a passcode is set."
                       : "")
         }
@@ -961,21 +1038,21 @@ struct DeviceDetailView: View {
 
     @ViewBuilder
     private func mdmActions(_ info: ManagedDeviceInfo) -> some View {
-        let capabilities = model.mdmCapabilities
-        if capabilities.contains(.sites), !model.sites.isEmpty {
+        let capabilities = model.capabilities(for: report)
+        if capabilities.contains(.sites), !model.sites(for: report).isEmpty {
             Picker("Site", selection: $siteSelection) {
                 Text("None").tag("-1")
-                ForEach(model.sites) { site in
+                ForEach(model.sites(for: report)) { site in
                     Text(site.name).tag(site.id)
                 }
             }
             Button("Apply Site Change") { pending = .applySite }
                 .disabled(siteSelection == (info.siteID ?? "-1"))
         }
-        if capabilities.contains(.locations), !model.jamfLocations.isEmpty {
+        if capabilities.contains(.locations), !model.locations(for: report).isEmpty {
             Picker("Location", selection: $locationSelection) {
                 Text("None").tag(String?.none)
-                ForEach(model.jamfLocations) { location in
+                ForEach(model.locations(for: report)) { location in
                     Text(location.name).tag(Optional(location.id))
                 }
             }
@@ -1019,7 +1096,7 @@ struct DeviceDetailView: View {
             }
         }
         // Destructive action last, matching Release in the Apple Business block.
-        Button(model.mdmProduct.removeRecordLabel, role: .destructive) { pending = .deleteRecord }
+        Button(model.product(for: report).removeRecordLabel, role: .destructive) { pending = .deleteRecord }
     }
 
     /// One row per managed local administrator account Jamf Pro holds, in the
@@ -1064,7 +1141,7 @@ struct DeviceDetailView: View {
         // Only ask each product for what it actually serves: a Jamf School
         // server has none of the endpoints below, and a Jamf Pro one carries
         // passcode state in the lookup already.
-        if model.mdmCapabilities.contains(.passcodeOnDemand) {
+        if model.capabilities(for: report).contains(.passcodeOnDemand) {
             schoolDetails = await model.jamfSchoolDetails(for: report)
             return
         }
@@ -1072,22 +1149,22 @@ struct DeviceDetailView: View {
         // Gated rather than left to the client factory to refuse: a product
         // with no declarative reporting should not be asked in the first
         // place, and the same goes for the recovery secrets below.
-        guard model.mdmCapabilities.contains(.declarations) else { return }
+        guard model.capabilities(for: report).contains(.declarations) else { return }
         ddm = await model.ddmStatus(for: report)
         // Both need the status first, and neither is worth a request for a
         // device with nothing declarative to say.
         if let ddm {
-            enforcement = await model.updateEnforcement(in: ddm)
+            enforcement = await model.updateEnforcement(in: ddm, for: report)
             if let blueprint = ddm.rejectedUpdateEnforcement?.blueprintID
                 ?? ddm.declarations.compactMap(\.blueprintID).first {
-                blueprintName = await model.blueprintName(for: blueprint)
+                blueprintName = await model.blueprintName(for: blueprint, report: report)
             }
         }
         guard report.mdm.value?.kind == .computer,
-              model.mdmCapabilities.contains(.recoverySecrets) else { return }
+              model.capabilities(for: report).contains(.recoverySecrets) else { return }
         localAdmins = await model.localAdminAccounts(for: report)
         if !localAdmins.isEmpty {
-            rotationTime = await model.localAdminRotationTime()
+            rotationTime = await model.localAdminRotationTime(for: report)
         }
     }
 
@@ -1110,9 +1187,9 @@ struct DeviceDetailView: View {
 
     @ViewBuilder
     private func commandButtons(_ info: ManagedDeviceInfo) -> some View {
-        let product = model.mdmProduct
+        let product = model.product(for: report)
         ForEach(MDMCommand.commands(for: info.kind, product: product), id: \.self) { command in
-            let unavailable = model.unavailabilityReason(for: command)
+            let unavailable = model.unavailabilityReason(for: command, reports: [report])
                 ?? command.inapplicabilityReason(for: info)
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
                 if command.needsPIN(product: product) {
@@ -1126,7 +1203,7 @@ struct DeviceDetailView: View {
             .help(unavailable ?? command.message(for: product))
         }
         let blocked = MDMCommand.commands(for: info.kind, product: product)
-            .filter { model.unavailabilityReason(for: $0) != nil }
+            .filter { model.unavailabilityReason(for: $0, reports: [report]) != nil }
             .map(\.title)
         if !blocked.isEmpty {
             Text("\(blocked.formatted(.list(type: .and))) need an API client connection.")
@@ -1145,7 +1222,7 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued in \(model.mdmProduct.label).") {
+        run(successMessage: "\(command.title) was queued in \(model.product(for: report).label).") {
             try await model.sendCommand(command, reports: [report], passcode: pin)
         }
     }

@@ -43,6 +43,7 @@ Each key carries its own list of permitted methods, chosen when you create it. G
 | Remove MDM Profile | Unenroll device |
 | Change location | Move devices |
 | Move to Trash | Delete device |
+| Findings across connections | Get Automated Device Enrollment devices |
 
 **What Jamf School cannot report**, and therefore what Checkpoint leaves out entirely for it: FileVault state, MDM profile expiration, software update state, last enrollment date, last inventory update, sites, PreStage scope, and all four recovery secrets. `hardwareEncryptionEnabled` is not FileVault and is not used.
 
@@ -60,7 +61,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 | --- | --- |
 | Device lookup, including FileVault state, passcode state and software update state | Read Computers, Read Mobile Devices |
 | PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
-| PreStage filtering per ADE token | Read Device Enrollment Program Instances |
+| PreStage filtering per ADE token, and findings across connections | Read Device Enrollment Program Instances |
 | Looking up a group | Read Smart Computer Groups, Read Static Computer Groups, Read Smart Mobile Device Groups, Read Static Mobile Device Groups |
 | Site display and changes | Read Sites, Update Computers, Update Mobile Devices |
 | Department, building and room, shown when a device is selected | Read Departments, Read Buildings. Also available over the [Platform API](platform-api.md) |

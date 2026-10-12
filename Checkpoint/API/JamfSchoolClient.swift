@@ -270,6 +270,32 @@ actor JamfSchoolClient {
         )
     }
 
+    // MARK: Automated Device Enrollment
+
+    /// Serial numbers of every ADE placeholder on the instance — the devices
+    /// Apple assigns to this server's token. The list can lag behind Apple
+    /// after a reassignment, so membership says where Apple pointed the
+    /// device, not necessarily where it points today.
+    ///
+    /// Placeholders already removed are excluded; the rest count whatever
+    /// their state, since even an unenrolled placeholder marks an assignment.
+    func adeSerials() async throws -> Set<String> {
+        struct Response: Decodable {
+            let placeholders: [Item]?
+            struct Item: Decodable {
+                let serialNumber: String?
+                let status: String?
+            }
+        }
+        let (data, status) = try await send(path: "/api/dep", protocolVersion: "3")
+        try throwIfError(status: status, data: data)
+        let items = try JSONDecoder().decode(Response.self, from: data).placeholders ?? []
+        return Set(items.compactMap { item in
+            guard item.status != "removed", let serial = item.serialNumber, !serial.isEmpty else { return nil }
+            return serial.uppercased()
+        })
+    }
+
     // MARK: Locations
 
     func locations() async throws -> [JamfSchoolLocation] {
@@ -440,7 +466,8 @@ actor JamfSchoolClient {
         method: String = "GET",
         queryItems: [URLQueryItem] = [],
         body: Data? = nil,
-        contentType: String = "application/x-www-form-urlencoded; charset=utf-8"
+        contentType: String = "application/x-www-form-urlencoded; charset=utf-8",
+        protocolVersion: String? = nil
     ) async throws -> (Data, Int) {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError(message: "Invalid Jamf School URL")
@@ -458,9 +485,12 @@ actor JamfSchoolClient {
             request.httpBody = body
             request.setValue(contentType, forHTTPHeaderField: "Content-Type")
         }
-        // X-Server-Protocol-Version is deliberately not sent. The documented
-        // endpoint versions suggest it matters, but the devices and locations
-        // responses are byte-for-byte identical with and without it.
+        // X-Server-Protocol-Version is sent only where it decides the answer.
+        // The devices and locations responses are byte-for-byte identical
+        // with and without it, but /dep answers 404 unless it says 3.
+        if let protocolVersion {
+            request.setValue(protocolVersion, forHTTPHeaderField: "X-Server-Protocol-Version")
+        }
 
         let loggedPath = [components.path, components.query].compactMap { $0 }.joined(separator: "?")
         let started = Date()

@@ -53,7 +53,14 @@ struct ContentView: View {
     /// Built from every loaded device, not the filtered subset, so choosing a
     /// filter does not remove the other options from the menu.
     private var filterOptions: FilterOptions {
-        FilterOptions(reports: model.reports, capabilities: model.mdmCapabilities)
+        FilterOptions(
+            reports: model.reports,
+            capabilities: model.mdmCapabilities,
+            connectionNames: Dictionary(
+                settings.mdmConnections.map { ($0.id, $0.displayName) }
+            ) { first, _ in first },
+            combinedLookup: model.readsAllConnections
+        )
     }
 
     /// Rows in the order the table draws them. Sorting is display only: the
@@ -84,7 +91,7 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No Devices",
                         systemImage: "laptopcomputer.and.iphone",
-                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.appleScopeLabel) and \(model.mdmProduct.label).")
+                        description: Text("Enter serial numbers above, or import a text/CSV list, to check their status in \(model.appleScopeLabel) and \(model.mdmScopeLabel).")
                     )
                     .frame(maxHeight: .infinity)
                 } else {
@@ -130,15 +137,23 @@ struct ContentView: View {
                 }
                 if !settings.mdmConnections.isEmpty {
                     ToolbarItem {
-                        Picker("Jamf server", selection: Binding(
-                            get: { model.selectedConnection?.id },
-                            set: { model.selectedConnectionID = $0 }
+                        Picker("MDM connection", selection: Binding(
+                            get: { model.mdmScope },
+                            set: { model.mdmScope = $0 }
                         )) {
                             ForEach(settings.mdmConnections) { server in
-                                Text(server.displayName).tag(Optional(server.id))
+                                Text(server.displayName).tag(LookupModel.MDMScope.connection(server.id))
+                            }
+                            // Only worth offering when there is more than one
+                            // to search.
+                            if settings.mdmConnections.count > 1 {
+                                Divider()
+                                Text("All Connections").tag(LookupModel.MDMScope.allConnections)
                             }
                         }
-                        .help("\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions")
+                        .help(model.readsAllConnections
+                              ? "Every configured connection is searched, and devices with records on several are flagged. MDM actions apply to a selection whose records are on one connection."
+                              : "\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions")
                     }
                 }
                 ToolbarItem {
@@ -172,6 +187,7 @@ struct ContentView: View {
         // A scope naming a deleted organization would leave the popup blank,
         // and searching them all makes no sense once one is left.
         .onChange(of: settings.abmOrgs.map(\.id)) { model.reconcileABMScope() }
+        .onChange(of: settings.mdmConnections.map(\.id)) { model.reconcileMDMScope() }
         .sheet(isPresented: Binding(
             get: { updates.isPresented },
             set: { updates.isPresented = $0 }
@@ -230,7 +246,9 @@ struct ContentView: View {
             Button("Import…") { showingImporter = true }
                 .help("Import a text or CSV file with one serial number per line")
                 .disabled(model.isLoading)
-            if model.mdmCapabilities.contains(.deviceGroups) {
+            // Group lookups read one server's group list, so the button
+            // needs a single connection in scope.
+            if model.mdmCapabilities.contains(.deviceGroups), model.selectedConnection != nil {
                 Button("Group…") { showingGroupPicker = true }
                     .help("Look up every device in a \(model.mdmProduct.label) group")
                     .disabled(model.isLoading || settings.mdmConnections.isEmpty)
@@ -277,7 +295,7 @@ struct ContentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             if !model.isABMConfigured && settings.mdmConnections.isEmpty {
-                Text("\(model.appleScopeLabel) and \(model.mdmProduct.label) are not configured yet.")
+                Text("\(model.appleScopeLabel) and \(model.mdmScopeLabel) are not configured yet.")
             } else if !model.isABMConfigured {
                 Text("\(model.appleScopeLabel) is not configured, so its columns will be empty.")
             } else {
@@ -347,6 +365,10 @@ struct ContentView: View {
                 assignmentPicker("MDM Server", selection: $filters.mdmServer,
                                  options: options.servers, noneCount: options.serverNone)
             }
+            if options.showMDMConnections {
+                assignmentPicker("Connection", selection: $filters.mdmConnection,
+                                 options: options.mdmConnections, noneCount: 0)
+            }
             if options.showModels {
                 assignmentPicker("Model", selection: $filters.model,
                                  options: options.models, noneCount: 0)
@@ -360,7 +382,7 @@ struct ContentView: View {
                                  options: options.purchaseSources, noneCount: 0)
             }
             if options.showPrestages, model.mdmCapabilities.contains(.enrollmentProfileName) {
-                assignmentPicker(model.mdmProduct.enrollmentProfileLabel, selection: $filters.prestage,
+                assignmentPicker(model.enrollmentProfileColumnLabel, selection: $filters.prestage,
                                  options: options.prestages, noneCount: options.prestageNone)
             }
             if options.showOSVersions {
@@ -402,7 +424,7 @@ struct ContentView: View {
                     datePicker("Last Inventory Update", selection: $filters.lastInventory, options: options.lastInventory)
                 }
                 if !options.lastContact.isEmpty {
-                    datePicker(model.mdmProduct.lastContactLabel, selection: $filters.lastContact, options: options.lastContact)
+                    datePicker(model.lastContactColumnLabel, selection: $filters.lastContact, options: options.lastContact)
                 }
             }
             if !options.issues.isEmpty {
@@ -562,7 +584,19 @@ struct ContentView: View {
     /// assigned.
     @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
     private var mdmRecordColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
-        TableColumn("\(model.mdmProduct.label) Device Name", value: \.mdmNameText) { (report: DeviceReport) in
+        if model.readsAllConnections {
+            TableColumn("Connection", value: \.connectionText) { (report: DeviceReport) in
+                FetchText(state: report.mdm) { info in
+                    model.connection(for: info)?.displayName ?? "—"
+                }
+            }
+            .customizationID("mdmConnection")
+            TableColumn("Finding", value: \.findingText) { (report: DeviceReport) in
+                FindingCell(report: report)
+            }
+            .customizationID("mdmFinding")
+        }
+        TableColumn(model.deviceNameColumnLabel, value: \.mdmNameText) { (report: DeviceReport) in
             MDMStatusCell(state: report.mdm)
         }
         .customizationID("deviceName")
@@ -571,7 +605,7 @@ struct ContentView: View {
         }
         .customizationID("osVersion")
         if model.mdmCapabilities.contains(.enrollmentProfileName) {
-            TableColumn(model.mdmProduct.enrollmentProfileLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
+            TableColumn(model.enrollmentProfileColumnLabel, value: \.enrollmentProfileText) { (report: DeviceReport) in
                 FetchText(state: report.mdm) { $0.prestageName ?? "None" }
             }
             .customizationID("enrollmentProfile")
@@ -663,7 +697,7 @@ struct ContentView: View {
             }
             .customizationID("lastInventory")
         }
-        TableColumn(model.mdmProduct.lastContactLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
+        TableColumn(model.lastContactColumnLabel, value: \.lastContactSortDate) { (report: DeviceReport) in
             FetchText(state: report.mdm) { DateFormatting.short($0.lastContact) }
         }
         .customizationID("lastContact")
@@ -900,6 +934,15 @@ private extension DeviceReport {
         mdm.sortText { $0.assetTag ?? "—" }
     }
 
+    /// Sorting only; the cell resolves the display name through the model.
+    var connectionText: String {
+        mdm.value?.connectionID?.uuidString ?? "—"
+    }
+
+    var findingText: String {
+        mdmVerdict?.summary ?? ""
+    }
+
     var fileVaultText: String {
         mdm.sortText { $0.encryption?.displaySummary ?? "—" }
     }
@@ -1038,6 +1081,26 @@ struct MDMStatusCell: View {
         case .found(let info):
             Text(info.name ?? "Record #\(info.recordID)")
                 .foregroundStyle(.green)
+        }
+    }
+}
+
+/// One device's verdict from a combined lookup: a finding in orange, the
+/// neutral unverified badge in secondary, nothing when all is consistent.
+private struct FindingCell: View {
+    let report: DeviceReport
+
+    var body: some View {
+        if let verdict = report.mdmVerdict, let summary = verdict.summary {
+            Label {
+                Text(summary)
+            } icon: {
+                Image(systemName: verdict.isFinding ? "exclamationmark.triangle.fill" : "questionmark.circle")
+                    .foregroundStyle(verdict.isFinding ? .orange : .secondary)
+            }
+            .help(summary)
+        } else {
+            Text(report.mdmVerdict == nil ? "—" : "")
         }
     }
 }

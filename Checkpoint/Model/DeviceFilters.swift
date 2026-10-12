@@ -29,6 +29,9 @@ nonisolated struct DeviceFilters: Equatable {
     var purchaseSource: Assignment = .any
     var prestage: Assignment = .any
     var site: Assignment = .any
+    /// The connection a device's working record is on. Only offered when
+    /// several were searched, like the Apple organization.
+    var mdmConnection: Assignment = .any
     /// Department and building carry the resolved name as their key, like
     /// the model: the record's identifiers were already traded for names
     /// when the lookup resolved them.
@@ -59,6 +62,7 @@ nonisolated struct DeviceFilters: Equatable {
         if appleBusiness != .any { count += 1 }
         if appleOrg != .any { count += 1 }
         if mdmServer != .any { count += 1 }
+        if mdmConnection != .any { count += 1 }
         if model != .any { count += 1 }
         if orderNumber != .any { count += 1 }
         if purchaseSource != .any { count += 1 }
@@ -81,6 +85,7 @@ nonisolated struct DeviceFilters: Equatable {
             && appleBusiness.matches(report)
             && appleOrg.matches(report.abm.value?.orgID?.uuidString, hasRecord: report.abm.value != nil)
             && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
+            && mdmConnection.matches(report.mdm.value?.connectionID?.uuidString, hasRecord: report.mdm.value != nil)
             && model.matches(report.abm.value?.device.deviceModel, hasRecord: report.abm.value != nil)
             && orderNumber.matches(report.abm.value?.device.orderNumber, hasRecord: report.abm.value != nil)
             && purchaseSource.matches(report.abm.value?.device.purchaseSourceType, hasRecord: report.abm.value != nil)
@@ -226,6 +231,11 @@ nonisolated struct DeviceFilters: Equatable {
         case noPasscode
         case notManaged
         case notSupervised
+        case notADEEnrolled
+        case unassignedWithRecord
+        case multipleMDMRecords
+        case assignedElsewhere
+        case staleMDMRecord
 
         var id: String { rawValue }
 
@@ -239,6 +249,11 @@ nonisolated struct DeviceFilters: Equatable {
             case .noPasscode: "No passcode set"
             case .notManaged: "No longer managed"
             case .notSupervised: "Not supervised"
+            case .notADEEnrolled: "Not enrolled through ADE"
+            case .unassignedWithRecord: "Has a record, unassigned in Apple"
+            case .multipleMDMRecords: "Records on several connections"
+            case .assignedElsewhere: "Record not on the assigned connection"
+            case .staleMDMRecord: "Stale record elsewhere"
             }
         }
 
@@ -274,6 +289,25 @@ nonisolated struct DeviceFilters: Equatable {
                 return report.mdm.value?.isManaged == false
             case .notSupervised:
                 return report.mdm.value?.isSupervised == false
+            case .notADEEnrolled:
+                // Any record that reached its MDM outside Automated Device
+                // Enrollment. False only: a record reporting no method says
+                // nothing either way.
+                return report.hasNonADERecord
+            case .unassignedWithRecord:
+                // In an Apple organization, assigned to no service — or
+                // released from it — yet holding an MDM record. Computed
+                // from the report itself so it works in any scope.
+                guard let abm = report.abm.value, report.mdm.value != nil else { return false }
+                return abm.isReleased || abm.mdmServerID == nil
+            case .multipleMDMRecords:
+                return !report.otherRecords.isEmpty
+            case .assignedElsewhere:
+                if case .assignedElsewhere = report.mdmVerdict { return true }
+                return false
+            case .staleMDMRecord:
+                if case .staleElsewhere = report.mdmVerdict { return true }
+                return false
             }
         }
     }
@@ -307,6 +341,8 @@ nonisolated struct FilterOptions {
     /// Apple organizations the loaded devices were found in.
     var appleOrgs: [Option] = []
     var servers: [Option] = []
+    /// Connections holding the working records, combined lookups only.
+    var mdmConnections: [Option] = []
     /// Device models, orders and purchase sources, as the Apple organization
     /// reports them.
     var models: [Option] = []
@@ -348,6 +384,7 @@ nonisolated struct FilterOptions {
     var showAppleBusiness: Bool { !statuses.isEmpty }
     /// Only worth a picker when the devices came from more than one.
     var showAppleOrgs: Bool { appleOrgs.count > 1 }
+    var showMDMConnections: Bool { mdmConnections.count > 1 }
     var showServers: Bool { !servers.isEmpty || serverNone > 0 }
     var showModels: Bool { !models.isEmpty }
     var showOrderNumbers: Bool { !orderNumbers.isEmpty }
@@ -368,9 +405,15 @@ nonisolated struct FilterOptions {
         !lastEnrollment.isEmpty || !lastInventory.isEmpty || !lastContact.isEmpty || !dateAdded.isEmpty
     }
 
-    init(reports: [DeviceReport], capabilities: MDMCapabilities = MDMProduct.jamfPro.capabilities) {
+    init(
+        reports: [DeviceReport],
+        capabilities: MDMCapabilities = MDMProduct.jamfPro.capabilities,
+        connectionNames: [UUID: String] = [:],
+        combinedLookup: Bool = false
+    ) {
         var appleOrgCounts: [String: (name: String, count: Int)] = [:]
         var serverCounts: [String: (name: String, count: Int)] = [:]
+        var connectionCounts: [String: (name: String, count: Int)] = [:]
         var modelCounts: [String: (name: String, count: Int)] = [:]
         var orderCounts: [String: (name: String, count: Int)] = [:]
         var purchaseCounts: [String: (name: String, count: Int)] = [:]
@@ -433,6 +476,10 @@ nonisolated struct FilterOptions {
                 }
             }
             if let mdm = report.mdm.value {
+                if let id = mdm.connectionID {
+                    let name = connectionNames[id] ?? id.uuidString
+                    connectionCounts[id.uuidString] = (name, (connectionCounts[id.uuidString]?.count ?? 0) + 1)
+                }
                 if let id = mdm.prestageID {
                     let name = mdm.prestageName ?? id
                     prestageCounts[id] = (name, (prestageCounts[id]?.count ?? 0) + 1)
@@ -491,6 +538,7 @@ nonisolated struct FilterOptions {
         }
         appleOrgs = sorted(appleOrgCounts)
         servers = sorted(serverCounts)
+        mdmConnections = sorted(connectionCounts)
         models = sorted(modelCounts)
         orderNumbers = sorted(orderCounts)
         purchaseSources = sorted(purchaseCounts)
@@ -536,6 +584,10 @@ nonisolated struct FilterOptions {
                 case .noPasscode: hasMobileDevices && capabilities.contains(.passcodeState)
                 case .mdmProfileExpired: capabilities.contains(.mdmProfileExpiry)
                 case .notManaged, .notSupervised: capabilities.contains(.managementState)
+                // Verdict-backed, so they exist only when connections were
+                // compared; offering them after a single-connection lookup
+                // would hide every device.
+                case .multipleMDMRecords, .assignedElsewhere, .staleMDMRecord: combinedLookup
                 default: true
                 }
             }

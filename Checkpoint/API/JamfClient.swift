@@ -1205,6 +1205,40 @@ actor JamfClient {
         )
     }
 
+    /// The Apple service identity of every ADE token on the instance. A
+    /// token's `serverUuid` is the same ID Apple Business or School Manager
+    /// gives the matching device management service — verified identical on
+    /// two instances — which is what links a connection to Apple's
+    /// assignment without any configuration.
+    func adeServerUUIDs() async throws -> Set<String> {
+        struct ListResponse: Decodable {
+            let totalCount: Int
+            let results: [Item]
+            struct Item: Decodable { let serverUuid: String? }
+        }
+        var uuids = Set<String>()
+        var count = 0
+        var page = 0
+        while true {
+            let (data, status) = try await send(
+                path: "/api/v1/device-enrollments",
+                queryItems: [
+                    URLQueryItem(name: "page", value: String(page)),
+                    URLQueryItem(name: "page-size", value: "100"),
+                ]
+            )
+            try throwIfError(status: status, data: data)
+            let decoded = try JSONDecoder().decode(ListResponse.self, from: data)
+            for item in decoded.results {
+                if let uuid = item.serverUuid, !uuid.isEmpty { uuids.insert(uuid) }
+            }
+            count += decoded.results.count
+            if count >= decoded.totalCount || decoded.results.isEmpty { break }
+            page += 1
+        }
+        return uuids
+    }
+
     /// Maps serial number → device-enrollment (ADE) instance ID for every
     /// device synced through any of the server's ADE tokens. Used to filter
     /// PreStages to the ones a device can actually be scoped to.
