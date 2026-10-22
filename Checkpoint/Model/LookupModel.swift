@@ -198,13 +198,14 @@ nonisolated enum MDMCommand: Hashable, Sendable {
 
     /// Whether the Platform API gateway can carry this command.
     ///
-    /// Lock and clear passcode exist solely as command types on
-    /// `POST /v2/mdm/commands`, which the gateway publishes as GET only. Renew
-    /// profile is accepted there but renews nothing, returning every UDID
-    /// under `udidsNotProcessed`, confirmed for both device kinds against an
-    /// instance that renews them over a direct connection. Everything else
-    /// reaches the gateway through a per-device Jamf Pro endpoint or the
-    /// platform device actions API.
+    /// Renew profile is the one exception: the gateway accepts it but renews
+    /// nothing, returning every UDID under `udidsNotProcessed`, confirmed for
+    /// both device kinds against an instance that renews them over a direct
+    /// connection. Lock and clear passcode, command types on
+    /// `POST /v2/mdm/commands`, joined the rest in October 2026, when the
+    /// gateway began publishing that route; both were verified on a device.
+    /// Everything else reaches the gateway through a per-device Jamf Pro
+    /// endpoint or the platform device actions API.
     ///
     /// The single place to revisit when Jamf widens gateway coverage. The list
     /// of what the gateway cannot carry is repeated for users in
@@ -212,8 +213,9 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// connection is chosen in Settings; change all three together.
     private var worksOverGateway: Bool {
         switch self {
-        case .lockComputer, .lockMobile, .clearPasscode, .renewProfile: false
-        case .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
+        case .renewProfile: false
+        case .lockComputer, .lockMobile, .clearPasscode,
+             .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
              .blankPush, .redeployFramework, .updateInventory: true
         }
     }

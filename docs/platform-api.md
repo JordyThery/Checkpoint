@@ -47,7 +47,7 @@ Permissions are granted per capability on the integration, rather than per privi
 | PreStage display and changes | `prestage-enrollments:read`, `prestage-enrollments:update` |
 | PreStage filtering per ADE token | `device-enrollment-program-instances:read` |
 | MDM commands, except the two rows below | `device-actions:execute` |
-| Wipe and Remove MDM Profile | `destructive-device-actions:execute` |
+| Lock, Wipe and Remove MDM Profile | `destructive-device-actions:execute` |
 | Redeploy Jamf Framework | `device-actions:execute`, `computer-check-in:read` |
 | Restart and Shut Down | `devices:read` to resolve the device, plus the device actions above |
 | FileVault recovery key | `disk-encryption-recovery-key:read` |
@@ -64,15 +64,15 @@ The four secrets take four separate scopes, so granting one does not grant the o
 
 ## What the gateway cannot carry
 
-**Three commands are unavailable over the Platform API.** Checkpoint dims all three and explains why, so nothing fails halfway.
+**One command is unavailable over the Platform API.** Checkpoint dims it and explains why, so nothing fails halfway.
 
 | Command | Why |
 | --- | --- |
-| Lock | Exists only as a command type on Jamf Pro's batched MDM command endpoint, which the gateway publishes as GET only |
-| Clear Passcode | The same endpoint, for the same reason |
 | Renew MDM Profile | Accepted by the gateway, but renews nothing: every device comes back under `udidsNotProcessed`, for computers and mobile devices alike, on an instance that renews them fine over a direct connection |
 
-Everything else works, including lookups, PreStages, sites, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need one of the three above.
+Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need to renew an MDM profile.
+
+Lock and Clear Passcode became available in October 2026, when the gateway began accepting commands on Jamf Pro's batched MDM command endpoint rather than only reads. Checkpoint 2.7.0 and earlier still dim both over the Platform API.
 
 FileVault state, mobile passcode state, software update state, managed local administrator accounts and the group lookup were each checked over both connections and returned identical results, so there is no difference in what Checkpoint can show.
 

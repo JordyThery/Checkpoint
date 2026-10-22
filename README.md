@@ -48,7 +48,7 @@ An Intune tenant, showing compliance and a single sync time in place of Jamf's f
 
 - **[Features](docs/features.md)** — actions, MDM commands, lookups, filtering and sorting, migration, software updates and declarations, recovery secrets, activity log
 - **[Permissions](docs/permissions.md)** — the Apple role, the Jamf Pro privileges and the Jamf School API-key methods each feature needs
-- **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through Jamf's gateway, and the three commands it cannot carry
+- **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through Jamf's gateway, and the one command it cannot carry
 - **[Intune](docs/intune.md)** — connecting an Intune tenant, what Microsoft Graph does and does not expose, and the app registration it needs
 
 ## Requirements

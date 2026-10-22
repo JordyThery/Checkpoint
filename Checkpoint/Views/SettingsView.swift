@@ -422,7 +422,7 @@ struct MDMConnectionEditor: View {
                 }
                 Section {
                     Label {
-                        Text("Lock, Clear Passcode and Renew MDM Profile cannot be sent over the Platform API. Everything else works, including lookups, PreStages, sites, Wipe, Restart and Shut Down.")
+                        Text("Renew MDM Profile cannot be sent over the Platform API. Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Restart and Shut Down.")
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
