@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 import Observation
 
 /// Which device management product a connection talks to.
@@ -468,7 +469,7 @@ nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
     var privateKeyKeychainKey: String { "abm.\(id.uuidString)" }
 
     /// Key used while the app supported a single organization. Only read during
-    /// migration; see `AppSettings.migrateLegacyABMOrg`.
+    /// migration; see `LegacyABMMigration`.
     static let legacyPrivateKeyKeychainKey = "abm.privateKey"
 
     var displayName: String {
@@ -498,20 +499,29 @@ extension ABMConfig {
     }
 }
 
-/// Single-organization Apple Business layout used before multi-organization
-/// support. Decoded only to migrate it into `AppSettings.abmOrgs`.
-private struct LegacyABMConfig: Codable {
-    var clientID = ""
-    var keyID = ""
-}
-
 @MainActor
 @Observable
 final class AppSettings {
     static let shared = AppSettings()
 
-    var mdmConnections: [MDMConnection] { didSet { save() } }
-    var abmOrgs: [ABMConfig] { didSet { save() } }
+    /// The Apple organizations and MDM connections, in JTKit's shared list.
+    /// Saved in `abmOrgs` and `jamfServers`, as before.
+    let connections: ConnectionStore<CheckpointConnection>
+
+    var mdmConnections: [MDMConnection] {
+        connections.records.compactMap { if case .mdm(let server) = $0 { server } else { nil } }
+    }
+
+    var abmOrgs: [ABMConfig] {
+        connections.records.compactMap { if case .apple(let org) = $0 { org } else { nil } }
+    }
+
+    /// The single Apple organization and MDM connection last chosen, kept
+    /// across launches. "All" is for the session only and lives in
+    /// `LookupModel`.
+    var appleChoiceID: UUID? { didSet { saveChoice(appleChoiceID, ConnectionChoiceKeys.apple) } }
+    var mdmChoiceID: UUID? { didSet { saveChoice(mdmChoiceID, ConnectionChoiceKeys.mdm) } }
+
     /// Whether the hint about an unconfigured service has been dismissed.
     /// Kept, rather than shown again each launch, because running against one
     /// service is a deliberate setup for some people.
@@ -521,48 +531,35 @@ final class AppSettings {
     // the keys this class used. Saving a copy here too would overwrite them
     // whenever another setting changed.
 
-    private init() {
-        let defaults = UserDefaults.standard
-        // Stored under its original key. Renaming it would orphan every
-        // connection already configured, and the app would come up empty.
-        mdmConnections = defaults.data(forKey: "jamfServers")
-            .flatMap { try? JSONDecoder().decode([MDMConnection].self, from: $0) } ?? []
-        abmOrgs = defaults.data(forKey: "abmOrgs")
-            .flatMap { try? JSONDecoder().decode([ABMConfig].self, from: $0) } ?? []
+    @ObservationIgnored private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard, secrets: any SecretStore = CheckpointSecrets.keychain) {
+        self.defaults = defaults
+        // Before the list is read, so a carried-over organization is in it.
+        LegacyABMMigration.run(defaults: defaults, secrets: secrets)
+        connections = ConnectionStore(
+            storage: CheckpointConnectionStorage(defaults: defaults),
+            secrets: [.main: SecretLocation(store: secrets, account: CheckpointSecrets.account(for:))])
+        appleChoiceID = defaults.string(forKey: ConnectionChoiceKeys.apple).flatMap(UUID.init(uuidString:))
+        mdmChoiceID = defaults.string(forKey: ConnectionChoiceKeys.mdm).flatMap(UUID.init(uuidString:))
         configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")
-        if abmOrgs.isEmpty { migrateLegacyABMOrg() }
     }
 
-    /// Carries a pre-multi-organization Apple Business setup into `abmOrgs`,
-    /// moving its keychain item to the new per-organization key. The old item
-    /// is removed only once the copy reads back, so a failed write can never
-    /// lose a private key that cannot be downloaded from Apple again.
-    private func migrateLegacyABMOrg() {
-        let defaults = UserDefaults.standard
-        guard let data = defaults.data(forKey: "abmConfig"),
-              let legacy = try? JSONDecoder().decode(LegacyABMConfig.self, from: data) else { return }
-        let legacyPEM = Keychain.get(ABMConfig.legacyPrivateKeyKeychainKey)
-        guard !legacy.clientID.isEmpty || !(legacyPEM ?? "").isEmpty else {
-            defaults.removeObject(forKey: "abmConfig")
-            return
+    /// A connection's secret: an MDM connection's client secret, password or
+    /// API key, or an Apple organization's private key.
+    func secret(for record: CheckpointConnection) -> String? {
+        connections.secret(.main, for: record.connection)
+    }
+
+    private func saveChoice(_ id: UUID?, _ key: String) {
+        if let id {
+            defaults.set(id.uuidString, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
         }
-        let org = ABMConfig(name: "Apple Business", clientID: legacy.clientID, keyID: legacy.keyID)
-        if let legacyPEM, !legacyPEM.isEmpty {
-            Keychain.set(legacyPEM, for: org.privateKeyKeychainKey)
-            if Keychain.get(org.privateKeyKeychainKey) == legacyPEM {
-                Keychain.delete(ABMConfig.legacyPrivateKeyKeychainKey)
-            }
-        }
-        abmOrgs = [org]
-        defaults.removeObject(forKey: "abmConfig")
-        // Property observers don't fire inside an initializer, so persist here.
-        save()
     }
 
     private func save() {
-        let defaults = UserDefaults.standard
-        if let data = try? JSONEncoder().encode(mdmConnections) { defaults.set(data, forKey: "jamfServers") }
-        if let data = try? JSONEncoder().encode(abmOrgs) { defaults.set(data, forKey: "abmOrgs") }
         defaults.set(configurationHintDismissed, forKey: "configurationHintDismissed")
     }
 }

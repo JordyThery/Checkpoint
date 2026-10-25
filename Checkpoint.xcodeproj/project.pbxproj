@@ -8,10 +8,22 @@
 
 /* Begin PBXBuildFile section */
 		087B3063308E3BFA00D0CB8A /* JTKit in Frameworks */ = {isa = PBXBuildFile; productRef = 087B3062308E3BFA00D0CB8A /* JTKit */; };
+		087B40E9308E9E6200D0CB8A /* JTKitTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 087B40E8308E9E6200D0CB8A /* JTKitTestSupport */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		087B40E2308E9E5800D0CB8A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000100000000;
+			remoteInfo = Checkpoint;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Checkpoint.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Checkpoint.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		087B40DE308E9E5800D0CB8A /* CheckpointTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CheckpointTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -33,6 +45,16 @@
 			path = Checkpoint;
 			sourceTree = "<group>";
 		};
+		087B40CF308E97B700D0CB8A /* CheckpointTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CheckpointTests;
+			sourceTree = "<group>";
+		};
+		087B40DF308E9E5800D0CB8A /* CheckpointTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CheckpointTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -42,6 +64,12 @@
 				087B3063308E3BFA00D0CB8A /* JTKit in Frameworks */,
 			);
 		};
+		087B40DB308E9E5800D0CB8A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				087B40E9308E9E6200D0CB8A /* JTKitTestSupport in Frameworks */,
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -49,6 +77,9 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000010 /* Checkpoint */,
+				087B40CF308E97B700D0CB8A /* CheckpointTests */,
+				087B40DF308E9E5800D0CB8A /* CheckpointTests */,
+				087B40D5308E97C000D0CB8A /* Frameworks */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -57,8 +88,16 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000120 /* Checkpoint.app */,
+				087B40DE308E9E5800D0CB8A /* CheckpointTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		087B40D5308E97C000D0CB8A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -85,6 +124,30 @@
 			productReference = 000000000000000000000120 /* Checkpoint.app */;
 			productType = "com.apple.product-type.application";
 		};
+		087B40DD308E9E5800D0CB8A /* CheckpointTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 087B40E4308E9E5800D0CB8A /* Build configuration list for PBXNativeTarget "CheckpointTests" */;
+			buildPhases = (
+				087B40DA308E9E5800D0CB8A /* Sources */,
+				087B40DB308E9E5800D0CB8A /* Frameworks */,
+				087B40DC308E9E5800D0CB8A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				087B40E3308E9E5800D0CB8A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				087B40DF308E9E5800D0CB8A /* CheckpointTests */,
+			);
+			name = CheckpointTests;
+			packageProductDependencies = (
+				087B40E8308E9E6200D0CB8A /* JTKitTestSupport */,
+			);
+			productName = CheckpointTests;
+			productReference = 087B40DE308E9E5800D0CB8A /* CheckpointTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -92,11 +155,15 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2630;
+				LastSwiftUpdateCheck = 2710;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					087B40DD308E9E5800D0CB8A = {
+						CreatedOnToolsVersion = 27.1;
+						TestTargetID = 000000000000000100000000;
 					};
 				};
 			};
@@ -118,12 +185,18 @@
 			projectRoot = "";
 			targets = (
 				000000000000000100000000 /* Checkpoint */,
+				087B40DD308E9E5800D0CB8A /* CheckpointTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		000000000000000140000000 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		087B40DC308E9E5800D0CB8A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -136,7 +209,20 @@
 			files = (
 			);
 		};
+		087B40DA308E9E5800D0CB8A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		087B40E3308E9E5800D0CB8A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000100000000 /* Checkpoint */;
+			targetProxy = 087B40E2308E9E5800D0CB8A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		000000000000000011000000 /* Debug configuration for PBXProject "Checkpoint" */ = {
@@ -377,6 +463,48 @@
 			};
 			name = Release;
 		};
+		087B40E5308E9E5800D0CB8A /* Debug configuration for PBXNativeTarget "CheckpointTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = K3LQ9NPBMG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = be.jordythery.CheckpointTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Checkpoint.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Checkpoint";
+			};
+			name = Debug;
+		};
+		087B40E6308E9E5800D0CB8A /* Release configuration for PBXNativeTarget "CheckpointTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = K3LQ9NPBMG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = be.jordythery.CheckpointTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Checkpoint.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Checkpoint";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -396,6 +524,14 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		087B40E4308E9E5800D0CB8A /* Build configuration list for PBXNativeTarget "CheckpointTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				087B40E5308E9E5800D0CB8A /* Debug configuration for PBXNativeTarget "CheckpointTests" */,
+				087B40E6308E9E5800D0CB8A /* Release configuration for PBXNativeTarget "CheckpointTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -404,7 +540,7 @@
 			repositoryURL = "https://github.com/JordyThery/JTKit.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.4.2;
+				minimumVersion = 0.5.3;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -414,6 +550,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */;
 			productName = JTKit;
+		};
+		087B40E8308E9E6200D0CB8A /* JTKitTestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */;
+			productName = JTKitTestSupport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

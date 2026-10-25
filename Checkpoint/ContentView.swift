@@ -119,46 +119,24 @@ struct ContentView: View {
             .toolbar {
                 // Hidden until something is configured: an empty popup button is
                 // unexplained chrome, and the hint below already points at Settings.
+                // JTKit's pickers, one per role; "All" is offered once there is
+                // more than one to search.
                 if !settings.abmOrgs.isEmpty {
                     ToolbarItem {
-                        Picker("Apple organization", selection: Binding(
-                            get: { model.abmScope },
-                            set: { model.abmScope = $0 }
-                        )) {
-                            ForEach(settings.abmOrgs) { org in
-                                Text(org.displayName).tag(LookupModel.ABMScope.organization(org.id))
-                            }
-                            // Only worth offering when there is more than one
-                            // to search.
-                            if settings.abmOrgs.count > 1 {
-                                Divider()
-                                Text("All Organizations").tag(LookupModel.ABMScope.allOrganizations)
-                            }
-                        }
-                        .help(model.readsAllABMOrgs
-                              ? "Every configured Apple organization is searched. Apple actions need one organization, so they apply to a selection within a single one."
-                              : "\(model.abmKind.label) organization used for lookups and actions")
+                        ConnectionPicker(
+                            store: settings.connections, role: model.appleRole, itemTitle: \.displayName,
+                            help: model.readsAllABMOrgs
+                                ? "Every configured Apple organization is searched. Apple actions need one organization, so they apply to a selection within a single one."
+                                : "\(model.abmKind.label) organization used for lookups and actions")
                     }
                 }
                 if !settings.mdmConnections.isEmpty {
                     ToolbarItem {
-                        Picker("MDM connection", selection: Binding(
-                            get: { model.mdmScope },
-                            set: { model.mdmScope = $0 }
-                        )) {
-                            ForEach(settings.mdmConnections) { server in
-                                Text(server.displayName).tag(LookupModel.MDMScope.connection(server.id))
-                            }
-                            // Only worth offering when there is more than one
-                            // to search.
-                            if settings.mdmConnections.count > 1 {
-                                Divider()
-                                Text("All Connections").tag(LookupModel.MDMScope.allConnections)
-                            }
-                        }
-                        .help(model.readsAllConnections
-                              ? "Every configured connection is searched, and devices with records on several are flagged. MDM actions apply to a selection whose records are on one connection."
-                              : "\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions")
+                        ConnectionPicker(
+                            store: settings.connections, role: model.mdmRole, itemTitle: \.displayName,
+                            help: model.readsAllConnections
+                                ? "Every configured connection is searched, and devices with records on several are flagged. MDM actions apply to a selection whose records are on one connection."
+                                : "\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions")
                     }
                 }
                 ToolbarItem {

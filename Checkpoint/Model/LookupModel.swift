@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 import Observation
 
 // MARK: - Report models
@@ -387,7 +388,7 @@ nonisolated enum DateFormatting {
 @MainActor
 @Observable
 final class LookupModel {
-    private let settings: AppSettings
+    let settings: AppSettings
     let log: ActivityLog
 
     var reports: [DeviceReport] = []
@@ -406,7 +407,29 @@ final class LookupModel {
         case allOrganizations
     }
 
-    var abmScope: ABMScope = .allOrganizations
+    /// The organization last chosen, which is saved, or "All" for this
+    /// session (JTKit's `AllConnectionsChoice`, never saved). A saved
+    /// organization that no longer exists falls back to the first.
+    var abmScope: ABMScope {
+        get {
+            let ids = settings.abmOrgs.map(\.id)
+            if appleAll.isInEffect(connectionCount: ids.count) { return .allOrganizations }
+            return ConnectionChoiceResolver.single(saved: settings.appleChoiceID, among: ids)
+                .map(ABMScope.organization) ?? .allOrganizations
+        }
+        set {
+            switch newValue {
+            case .allOrganizations:
+                appleAll.isChosen = true
+            case .organization(let id):
+                appleAll.isChosen = false
+                settings.appleChoiceID = id
+            }
+        }
+    }
+
+    /// "All Organizations", for this session only.
+    let appleAll = AllConnectionsChoice(title: "All Organizations")
 
     /// Which MDM connections a lookup reads. Reading all of them answers
     /// where a device's records live — including the stale ones — and is
@@ -417,7 +440,28 @@ final class LookupModel {
         case allConnections
     }
 
-    var mdmScope: MDMScope = .allConnections
+    /// The connection last chosen, which is saved, or "All" for this session
+    /// only, as for `abmScope`.
+    var mdmScope: MDMScope {
+        get {
+            let ids = settings.mdmConnections.map(\.id)
+            if mdmAll.isInEffect(connectionCount: ids.count) { return .allConnections }
+            return ConnectionChoiceResolver.single(saved: settings.mdmChoiceID, among: ids)
+                .map(MDMScope.connection) ?? .allConnections
+        }
+        set {
+            switch newValue {
+            case .allConnections:
+                mdmAll.isChosen = true
+            case .connection(let id):
+                mdmAll.isChosen = false
+                settings.mdmChoiceID = id
+            }
+        }
+    }
+
+    /// "All Connections", for this session only.
+    let mdmAll = AllConnectionsChoice(title: "All Connections")
 
     /// Compatibility spelling of the single-connection scope, for the code
     /// that reads or sets the selection as an identifier.
@@ -522,14 +566,11 @@ final class LookupModel {
     init(settings: AppSettings, log: ActivityLog? = nil) {
         self.settings = settings
         self.log = log ?? ActivityLog()
-        // One organization, the first configured. Searching them all is a
-        // choice per session rather than the default: most fleets are served
-        // by one organization at a time — an MSP works per customer — and a
-        // combined read should never be the surprise.
-        abmScope = settings.abmOrgs.first.map { ABMScope.organization($0.id) } ?? .allOrganizations
-        // One connection for the same reason as one organization: combining
-        // is the user's call, per session.
-        mdmScope = settings.mdmConnections.first.map { MDMScope.connection($0.id) } ?? .allConnections
+        // One organization and one connection at launch: the last single
+        // ones chosen. Searching them all is a choice per session rather than
+        // the default: most fleets are served by one organization at a time
+        // — an MSP works per customer — and a combined read should never be
+        // the surprise. JTKit's "All" is never saved, which guarantees it.
     }
 
     /// Records the outcome of a user-requested action, alongside the individual
@@ -644,13 +685,13 @@ final class LookupModel {
 
     /// Brings the scope back to something that exists, after connections are
     /// added or removed — the MDM side of `reconcileABMScope`.
+    ///
+    /// A deleted connection already falls back to the first (see
+    /// `mdmScope`); this ends "All" once one connection is left, so adding a
+    /// second one later doesn't bring a combined read back unasked.
     func reconcileMDMScope() {
-        if case .connection(let id) = mdmScope,
-           !settings.mdmConnections.contains(where: { $0.id == id }) {
-            mdmScope = settings.mdmConnections.first.map { .connection($0.id) } ?? .allConnections
-        }
-        if mdmScope == .allConnections, settings.mdmConnections.count <= 1 {
-            mdmScope = settings.mdmConnections.first.map { .connection($0.id) } ?? .allConnections
+        if settings.mdmConnections.count < AllConnectionsChoice.minimumConnections {
+            mdmAll.isChosen = false
         }
     }
 
@@ -678,21 +719,16 @@ final class LookupModel {
     }
 
     var isABMConfigured: Bool {
-        abmOrgsInScope.contains { Keychain.get($0.privateKeyKeychainKey) != nil }
+        abmOrgsInScope.contains { settings.secret(for: .apple($0)) != nil }
     }
 
     /// Brings the scope back to something that exists, after organizations
-    /// are added or removed. A scope pointing at a deleted organization would
-    /// leave the popup blank, and searching them all makes no sense once one
-    /// is left — the popup stops offering that entry.
+    /// are added or removed. A deleted organization already falls back to the
+    /// first (see `abmScope`); searching them all makes no sense once one is
+    /// left — the popup stops offering that entry — so "All" ends then.
     func reconcileABMScope() {
-        if case .organization(let id) = abmScope,
-           !settings.abmOrgs.contains(where: { $0.id == id }) {
-            abmScope = settings.abmOrgs.first.map { .organization($0.id) } ?? .allOrganizations
-        }
-        if abmScope == .allOrganizations, settings.abmOrgs.count == 1,
-           let only = settings.abmOrgs.first {
-            abmScope = .organization(only.id)
+        if settings.abmOrgs.count < AllConnectionsChoice.minimumConnections {
+            appleAll.isChosen = false
         }
     }
 
@@ -2358,7 +2394,7 @@ final class LookupModel {
 
     private func makeABMClient(for config: ABMConfig) -> ABMClient? {
         guard config.isConfigured,
-              let pem = Keychain.get(config.privateKeyKeychainKey), !pem.isEmpty else { return nil }
+              let pem = settings.secret(for: .apple(config)), !pem.isEmpty else { return nil }
         let key = [config.id.uuidString, config.clientID, config.keyID, pem].joined(separator: "|")
         if let cached = abmClients[key] { return cached }
         let client = ABMClient(
@@ -2394,7 +2430,7 @@ final class LookupModel {
 
     private func makeJamfClient(for config: MDMConnection) -> JamfClient? {
         guard config.product == .jamfPro,
-              let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
+              let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
         if let cached = jamfClients[key] { return cached }
         guard let client = JamfClient(config: config, secret: secret, log: log) else { return nil }
@@ -2408,7 +2444,7 @@ final class LookupModel {
 
     private func makeIntuneClient(for config: MDMConnection) -> IntuneClient? {
         guard config.product == .intune,
-              let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
+              let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.tenantID, config.account, secret].joined(separator: "|")
         if let cached = intuneClients[key] { return cached }
         guard let client = IntuneClient(config: config, secret: secret, log: log) else { return nil }
@@ -2422,7 +2458,7 @@ final class LookupModel {
 
     private func makeJamfSchoolClient(for config: MDMConnection) -> JamfSchoolClient? {
         guard config.product == .jamfSchool,
-              let secret = Keychain.get(config.secretKeychainKey), !secret.isEmpty else { return nil }
+              let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
         let key = [config.id.uuidString, config.normalizedBaseURL, config.account, secret].joined(separator: "|")
         if let cached = jamfSchoolClients[key] { return cached }
         guard let client = JamfSchoolClient(config: config, secret: secret, log: log) else { return nil }

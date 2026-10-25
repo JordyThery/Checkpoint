@@ -1,12 +1,11 @@
 import JTKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 // Checkpoint's parts of JTKit's Settings window: a section for its General
-// tab, below JTKit's Appearance, then the Apple and MDM tabs, before Updates.
+// tab, below JTKit's Appearance, then the Connections tab, before Updates.
 
-/// How tall the Apple and MDM tabs are: a list beside an editor has no natural
-/// height, so these two keep the height the whole window used to have.
+/// How tall the Connections tab is: a list beside an editor has no natural
+/// height, so it keeps the height the Apple and MDM tabs had.
 private let connectionsTabHeight: CGFloat = 500
 
 // MARK: - General
@@ -25,390 +24,124 @@ struct GeneralSettingsSection: View {
     }
 }
 
-// MARK: - Apple Business
+// MARK: - Connections
 
-struct ABMSettingsTab: View {
+/// JTKit's shared Connections tab: the Apple organizations and the MDM
+/// connections in one list, each still saved where it always was.
+struct ConnectionsTab: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LookupModel.self) private var model
-    @State private var selectedID: UUID?
+    @Environment(ActivityLog.self) private var log
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                List(selection: $selectedID) {
-                    ForEach(settings.abmOrgs) { org in
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(org.displayName)
-                            // Named here so two organizations of different
-                            // services are distinguishable at a glance.
-                            Text(org.kind.label)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .tag(org.id)
-                    }
-                }
-                Divider()
-                HStack(spacing: 10) {
-                    Button { add() } label: { Image(systemName: "plus") }
-                        .help("Add an Apple Business or Apple School Manager organization")
-                    Button { removeSelected() } label: { Image(systemName: "minus") }
-                        .disabled(selectedID == nil)
-                        .help("Remove the selected organization")
-                    Spacer()
-                }
-                .buttonStyle(.borderless)
-                .padding(6)
-            }
-            .frame(width: 180)
-            Divider()
-            if let index = settings.abmOrgs.firstIndex(where: { $0.id == selectedID }) {
-                ABMOrgEditor(config: settings.abmOrgs[index])
-                    .id(settings.abmOrgs[index].id)
-            } else {
-                ContentUnavailableView(
-                    "No Organization Selected",
-                    systemImage: "apple.logo",
-                    description: Text("Add an Apple Business or Apple School Manager organization with the + button. You can store several and switch between them in the toolbar.")
-                )
-                .frame(maxWidth: .infinity)
-            }
+        ConnectionsSettingsTab(
+            store: settings.connections,
+            services: CheckpointConnection.services,
+            optionalFields: [.jamfProWebURL],
+            serviceGroups: CheckpointConnection.serviceGroups,
+            signInMethods: CheckpointConnection.signInMethods,
+            roles: [model.appleRole, model.mdmRole],
+            height: connectionsTabHeight,
+            newRecord: CheckpointConnection.new(for:),
+            test: { record, typed in try await test(record, typed: typed) }
+        ) { $record in
+            ConnectionNotes(record: record, saved: settings.connections.record(id: record.id))
         }
-        .frame(width: SettingsLayout.width, height: connectionsTabHeight)
-        .tabItem { Label("Apple", systemImage: "apple.logo") }
-        // The organization in use, for the same reason as the connections.
-        // With every organization in scope there is no single one, so the
-        // first configured one opens.
-        .onAppear { selectedID = model.selectedABMOrg?.id ?? settings.abmOrgs.first?.id }
     }
 
-    private func add() {
-        let org = ABMConfig(name: "New Organization")
-        settings.abmOrgs.append(org)
-        selectedID = org.id
-    }
-
-    private func removeSelected() {
-        guard let selectedID,
-              let index = settings.abmOrgs.firstIndex(where: { $0.id == selectedID }) else { return }
-        Keychain.delete(settings.abmOrgs[index].privateKeyKeychainKey)
-        settings.abmOrgs.remove(at: index)
-        self.selectedID = settings.abmOrgs.first?.id
+    /// Tests the values in the editor, saved or not, with the secret typed
+    /// there or else the stored one.
+    private func test(_ record: CheckpointConnection, typed: [ConnectionSecretKind: String]) async throws -> String {
+        guard let secret = typed[.main] ?? settings.secret(for: record), !secret.isEmpty else {
+            throw ConnectionTestError(record.connection.signIn == .applePrivateKey
+                                      ? "Import the private key first."
+                                      : "Enter the \(record.connection.signIn.secretName?.lowercased() ?? "secret") first.")
+        }
+        switch record {
+        case .apple(let org):
+            let client = ABMClient(clientID: org.clientID, keyID: org.keyID, privateKeyPEM: secret,
+                                   kind: org.kind, connectionName: org.displayName, log: log)
+            let count = try await client.verify()
+            return "Connected · \(count) MDM server\(count == 1 ? "" : "s") visible"
+        case .mdm(let server) where server.product == .intune:
+            guard let client = IntuneClient(config: server, secret: secret, log: log) else {
+                throw ConnectionTestError("Enter a tenant ID, client ID and client secret first.")
+            }
+            try await client.verify()
+            return "Connected"
+        case .mdm(let server) where server.product == .jamfSchool:
+            guard let client = JamfSchoolClient(config: server, secret: secret, log: log) else {
+                throw ConnectionTestError("Enter a valid server URL, Network ID and API key first.")
+            }
+            let locations = try await client.verify()
+            return "Connected · \(locations) location\(locations == 1 ? "" : "s")"
+        case .mdm(let server):
+            guard let client = JamfClient(config: server, secret: secret, log: log) else {
+                throw ConnectionTestError("Enter a valid server URL first.")
+            }
+            try await client.verify()
+            return "Connected"
+        }
     }
 }
 
-struct ABMOrgEditor: View {
-    @Environment(AppSettings.self) private var settings
-    @Environment(ActivityLog.self) private var log
-    let config: ABMConfig
+private struct ConnectionTestError: LocalizedError {
+    let errorDescription: String?
+    init(_ message: String) { errorDescription = message }
+}
 
-    @State private var name = ""
-    @State private var kind: AppleOrgKind = .business
-    @State private var clientID = ""
-    @State private var keyID = ""
-    @State private var privateKeyPEM = ""
-    @State private var hasStoredKey = false
-    @State private var showingImporter = false
-    @State private var statusMessage: String?
-    @State private var isTesting = false
+extension LookupModel {
+    /// The Apple organization in use: the toolbar picker, the Connection menu
+    /// and "Use This Connection" in Settings.
+    var appleRole: ConnectionRole {
+        ConnectionRole("Apple", useTitle: "Use This Connection", selection: Binding(
+            get: { ConnectionChoiceResolver.single(saved: self.settings.appleChoiceID,
+                                                   among: self.settings.abmOrgs.map(\.id)) },
+            set: { self.settings.appleChoiceID = $0 }
+        ), services: CheckpointConnection.appleServices, all: appleAll)
+    }
+
+    /// The MDM connection in use, as for `appleRole`.
+    var mdmRole: ConnectionRole {
+        ConnectionRole("MDM", useTitle: "Use This Connection", selection: Binding(
+            get: { ConnectionChoiceResolver.single(saved: self.settings.mdmChoiceID,
+                                                   among: self.settings.mdmConnections.map(\.id)) },
+            set: { self.settings.mdmChoiceID = $0 }
+        ), services: CheckpointConnection.mdmServices, all: mdmAll)
+    }
+}
+
+/// What Checkpoint explains below the shared fields: what each product can
+/// and can't show, and how to set up its access.
+private struct ConnectionNotes: View {
+    let record: CheckpointConnection
+    let saved: CheckpointConnection?
 
     var body: some View {
-        Form {
-            Section("Organization") {
-                TextField("Name", text: $name, prompt: Text("Head Office"))
-                Picker("Service", selection: $kind) {
-                    ForEach(AppleOrgKind.allCases) { kind in
-                        Text(kind.label).tag(kind)
-                    }
-                }
-                if !kind.supportsRelease {
-                    Text("\(kind.label) uses the same API as Apple Business, except that it provides no way to release devices from the organization. That action is dimmed.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("API Credentials") {
-                TextField("Client ID", text: $clientID,
-                          prompt: Text(kind == .business ? "BUSINESSAPI.xxxxxxxx-…" : "SCHOOLAPI.xxxxxxxx-…"))
-                TextField("Key ID", text: $keyID)
-            }
-            Section("Private Key") {
-                if hasStoredKey {
-                    LabeledContent("Stored Key", value: "A private key is saved in your keychain")
-                }
-                TextEditor(text: $privateKeyPEM)
-                    .font(.caption.monospaced())
-                    .frame(height: 90)
-                Button("Import .pem File…") { showingImporter = true }
-                Text("Paste the PEM private key downloaded when creating the API account in \(kind.label) (Settings → Integrations → API), or import the .pem file. The account needs the Device Enrollment Manager role or higher. The key is stored only in your keychain.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+        if let savedService = saved?.connection.service, savedService != record.connection.service {
             Section {
-                HStack {
-                    Button("Save") { save() }
-                    Button("Test Connection") { test() }
-                        .disabled(isTesting)
-                    if isTesting {
-                        ProgressView().controlSize(.small)
-                    }
+                Label {
+                    Text("This connection is saved as \(savedService.displayName). Changing the service keeps the address, account and stored secret, which the new service is unlikely to accept — check them before saving.")
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
                 }
-                if let statusMessage {
-                    Text(statusMessage).font(.caption)
-                }
+                .font(.caption)
             }
         }
-        .formStyle(.grouped)
-        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item]) { result in
-            if case .success(let url) = result {
-                let hasAccess = url.startAccessingSecurityScopedResource()
-                defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
-                if let contents = try? String(contentsOf: url, encoding: .utf8) {
-                    privateKeyPEM = contents
+        switch record {
+        case .apple(let org):
+            Section {
+                note("Import the .pem private key downloaded when creating the API account in \(org.kind.label) (Settings → Integrations → API). The account needs the Device Enrollment Manager role or higher. The key is stored only in your keychain.")
+                if !org.kind.supportsRelease {
+                    note("\(org.kind.label) uses the same API as Apple Business, except that it provides no way to release devices from the organization. That action is dimmed.")
                 }
             }
-        }
-        .onAppear {
-            name = config.name
-            kind = config.kind
-            clientID = config.clientID
-            keyID = config.keyID
-            hasStoredKey = Keychain.get(config.privateKeyKeychainKey) != nil
-        }
-    }
-
-    private func save() {
-        guard let index = settings.abmOrgs.firstIndex(where: { $0.id == config.id }) else { return }
-        settings.abmOrgs[index].name = name
-        settings.abmOrgs[index].kind = kind
-        settings.abmOrgs[index].clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.abmOrgs[index].keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pem = privateKeyPEM.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !pem.isEmpty {
-            Keychain.set(pem, for: config.privateKeyKeychainKey)
-            hasStoredKey = true
-            privateKeyPEM = ""
-        }
-        statusMessage = "Saved."
-    }
-
-    private func test() {
-        save()
-        guard let pem = Keychain.get(config.privateKeyKeychainKey), !pem.isEmpty else {
-            statusMessage = "Add the private key first."
-            return
-        }
-        let client = ABMClient(
-            clientID: clientID,
-            keyID: keyID,
-            privateKeyPEM: pem,
-            kind: kind,
-            connectionName: name.isEmpty ? config.displayName : name,
-            log: log
-        )
-        isTesting = true
-        Task {
-            do {
-                let count = try await client.verify()
-                statusMessage = "Connected. \(count) MDM server\(count == 1 ? "" : "s") visible."
-            } catch {
-                statusMessage = error.localizedDescription
-            }
-            isTesting = false
-        }
-    }
-}
-
-// MARK: - MDM connections
-
-struct MDMSettingsTab: View {
-    @Environment(AppSettings.self) private var settings
-    @Environment(LookupModel.self) private var model
-    @State private var selectedID: UUID?
-
-    var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                List(selection: $selectedID) {
-                    ForEach(settings.mdmConnections) { server in
-                        Text(server.displayName).tag(server.id)
-                    }
-                }
-                Divider()
-                HStack(spacing: 10) {
-                    Button { add() } label: { Image(systemName: "plus") }
-                        .help("Add a Jamf Pro or Jamf School server, or an Intune tenant")
-                    Button { removeSelected() } label: { Image(systemName: "minus") }
-                        .disabled(selectedID == nil)
-                        .help("Remove the selected connection")
-                    Spacer()
-                }
-                .buttonStyle(.borderless)
-                .padding(6)
-            }
-            .frame(width: 180)
-            Divider()
-            if let index = settings.mdmConnections.firstIndex(where: { $0.id == selectedID }) {
-                MDMConnectionEditor(config: settings.mdmConnections[index])
-                    .id(settings.mdmConnections[index].id)
-            } else {
-                ContentUnavailableView(
-                    "No Connection Selected",
-                    systemImage: "server.rack",
-                    description: Text("Add a Jamf Pro or Jamf School server, or an Intune tenant, with the + button. You can store several, e.g. production and testing.")
-                )
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .frame(width: SettingsLayout.width, height: connectionsTabHeight)
-        .tabItem { Label("MDM", systemImage: "server.rack") }
-        // Opens on the connection the app is using, not the first in the
-        // list. Opening on the first made a connection look as though it were
-        // configured for the wrong product, and editing it then changed a
-        // connection nobody meant to touch.
-        .onAppear { selectedID = model.selectedConnection?.id ?? settings.mdmConnections.first?.id }
-    }
-
-    private func add() {
-        let server = MDMConnection(name: "New Server")
-        settings.mdmConnections.append(server)
-        selectedID = server.id
-    }
-
-    private func removeSelected() {
-        guard let selectedID,
-              let index = settings.mdmConnections.firstIndex(where: { $0.id == selectedID }) else { return }
-        Keychain.delete(settings.mdmConnections[index].secretKeychainKey)
-        settings.mdmConnections.remove(at: index)
-        self.selectedID = settings.mdmConnections.first?.id
-    }
-}
-
-struct MDMConnectionEditor: View {
-    @Environment(AppSettings.self) private var settings
-    @Environment(ActivityLog.self) private var log
-    let config: MDMConnection
-
-    @State private var name = ""
-    @State private var product: MDMProduct = .jamfPro
-    @State private var baseURL = ""
-    @State private var authMethod: MDMAuthMethod = .apiClient
-    @State private var account = ""
-    @State private var secret = ""
-    @State private var region: JamfRegion = .us
-    @State private var environmentID = ""
-    @State private var tenantID = ""
-    @State private var hasStoredSecret = false
-    @State private var statusMessage: String?
-    @State private var isTesting = false
-
-    /// Jamf School has no gateway, so the Platform API rows never apply to it
-    /// even if a server was switched over from Jamf Pro.
-    private var isGateway: Bool { product == .jamfPro && authMethod == .platformGateway }
-    private var isSchool: Bool { product == .jamfSchool }
-    private var isIntune: Bool { product == .intune }
-
-    var body: some View {
-        Form {
-            Section(isIntune ? "Tenant" : "Server") {
-                // Named explicitly: with several connections configured, a
-                // form that shows only its fields gives no way to tell which
-                // one is about to be saved.
-                LabeledContent("Editing", value: config.displayName)
-                TextField("Name", text: $name, prompt: Text("Production"))
-                Picker("Product", selection: $product) {
-                    ForEach(MDMProduct.allCases) { option in
-                        Text(option.label).tag(option)
-                    }
-                }
-                // Changing product can leave an authentication method the new
-                // product does not accept, so it is corrected here rather
-                // than left to fail at sign-in.
-                .onChange(of: product) { _, new in
-                    let allowed = MDMAuthMethod.methods(for: new)
-                    if !allowed.contains(authMethod) { authMethod = allowed[0] }
-                }
-                if product != config.product {
-                    Label {
-                        Text("This connection is saved as \(config.product.label). Changing the product keeps the URL, account and stored secret, which the new product is unlikely to accept — check them before saving.")
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
-                    .font(.caption)
-                }
-                if isIntune {
-                    TextField("Tenant ID", text: $tenantID, prompt: Text("contoso.onmicrosoft.com"))
-                    Text("Requests go to Microsoft Graph, so no URL is needed. The tenant ID can be the GUID or a verified domain name.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    TextField("URL", text: $baseURL, prompt: Text("https://yourorg.jamfcloud.com"))
-                }
-                if isIntune {
-                    Text("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Remove MDM Profile retires it.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if isSchool {
-                    Text("Jamf School reports fewer attributes than Jamf Pro, so the columns and actions it has no source for are hidden: FileVault, MDM profile expiry, software update state, PreStage scope and the recovery secrets.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if isGateway {
-                    Text("Requests go to the gateway. This URL is still used to link devices to their Jamf Pro records.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Section("Authentication") {
-                if isSchool {
-                    TextField("Network ID", text: $account, prompt: Text("067680"))
-                    SecureField(
-                        "API Key",
-                        text: $secret,
-                        prompt: hasStoredSecret ? Text("Stored in keychain, type to replace") : nil
-                    )
-                    Text("The Network ID is under Devices → Enroll Device(s). Create the API key under Organization → Settings → API, and grant it the methods you intend to use: each key carries its own list, so a missing one refuses a single feature rather than the whole connection.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if isIntune {
-                    TextField("Client ID", text: $account, prompt: Text("00000000-0000-0000-0000-000000000000"))
-                    SecureField(
-                        "Client Secret",
-                        text: $secret,
-                        prompt: hasStoredSecret ? Text("Stored in keychain, type to replace") : nil
-                    )
-                    Text("Create an app registration in Entra, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, and PrivilegedOperations.All to send commands. Application permissions need admin consent before any of them work.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Picker("Method", selection: $authMethod) {
-                        ForEach(MDMAuthMethod.methods(for: product)) { method in
-                            Text(method.label).tag(method)
-                        }
-                    }
-                    TextField(authMethod == .usernamePassword ? "Username" : "Client ID", text: $account)
-                    SecureField(
-                        authMethod == .usernamePassword ? "Password" : "Client Secret",
-                        text: $secret,
-                        prompt: hasStoredSecret ? Text("Stored in keychain, type to replace") : nil
-                    )
-                }
-            }
-            if isGateway {
-                Section("Platform API") {
-                    Picker("Region", selection: $region) {
-                        ForEach(JamfRegion.allCases) { region in
-                            Text(region.label).tag(region)
-                        }
-                    }
-                    TextField("Environment ID", text: $environmentID, prompt: Text("00000000-0000-0000-0000-000000000000"))
-                    Text("Requires an environment-scoped integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+        case .mdm(let server):
+            switch server.connection.service {
+            case .jamfPlatform:
                 Section {
+                    note("Requires an environment-scoped integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in. Requests go to the gateway; the Jamf Pro web address is still used to link devices to their Jamf Pro records.")
                     Label {
                         Text("Renew MDM Profile cannot be sent over the Platform API. Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Restart and Shut Down.")
                     } icon: {
@@ -417,115 +150,27 @@ struct MDMConnectionEditor: View {
                     }
                     .font(.callout)
                 }
-            }
-            Section {
-                HStack {
-                    Button("Save") { save() }
-                    Button("Test Connection") { test() }
-                        .disabled(isTesting)
-                    if isTesting {
-                        ProgressView().controlSize(.small)
-                    }
+            case .jamfSchool:
+                Section {
+                    note("The Network ID is under Devices → Enroll Device(s). Create the API key under Organization → Settings → API, and grant it the methods you intend to use: each key carries its own list, so a missing one refuses a single feature rather than the whole connection.")
+                    note("Jamf School reports fewer attributes than Jamf Pro, so the columns and actions it has no source for are hidden: FileVault, MDM profile expiry, software update state, PreStage scope and the recovery secrets.")
                 }
-                if let statusMessage {
-                    Text(statusMessage).font(.caption)
+            case .intune:
+                Section {
+                    note("Requests go to Microsoft Graph, so no URL is needed. The tenant ID can be the GUID or a verified domain name.")
+                    note("Create an app registration in Entra, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, and PrivilegedOperations.All to send commands. Application permissions need admin consent before any of them work.")
+                    note("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Remove MDM Profile retires it.")
                 }
+            default:
+                EmptyView()
             }
-        }
-        .formStyle(.grouped)
-        .onAppear {
-            name = config.name
-            product = config.product
-            baseURL = config.baseURL
-            authMethod = config.authMethod
-            account = config.account
-            region = config.region
-            environmentID = config.environmentID
-            tenantID = config.tenantID
-            hasStoredSecret = Keychain.get(config.secretKeychainKey) != nil
         }
     }
 
-    private func save() {
-        guard let index = settings.mdmConnections.firstIndex(where: { $0.id == config.id }) else { return }
-        settings.mdmConnections[index].name = name
-        settings.mdmConnections[index].product = product
-        settings.mdmConnections[index].baseURL = baseURL
-        settings.mdmConnections[index].authMethod = authMethod
-        settings.mdmConnections[index].account = account
-        settings.mdmConnections[index].region = region
-        settings.mdmConnections[index].environmentID = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
-        settings.mdmConnections[index].tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !secret.isEmpty {
-            Keychain.set(secret, for: config.secretKeychainKey)
-            hasStoredSecret = true
-            secret = ""
-        }
-        statusMessage = "Saved."
-    }
-
-    private func test() {
-        save()
-        guard let effectiveSecret = Keychain.get(config.secretKeychainKey), !effectiveSecret.isEmpty else {
-            statusMessage = "Enter the credentials first."
-            return
-        }
-        var current = config
-        current.name = name
-        current.product = product
-        current.baseURL = baseURL
-        current.authMethod = authMethod
-        current.account = account
-        current.region = region
-        current.environmentID = environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
-        current.tenantID = tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
-        if isIntune {
-            guard let client = IntuneClient(config: current, secret: effectiveSecret, log: log) else {
-                statusMessage = "Enter a tenant ID, client ID and client secret first."
-                return
-            }
-            isTesting = true
-            Task {
-                do {
-                    try await client.verify()
-                    statusMessage = "Connected successfully."
-                } catch {
-                    statusMessage = error.localizedDescription
-                }
-                isTesting = false
-            }
-            return
-        }
-        if isSchool {
-            guard let client = JamfSchoolClient(config: current, secret: effectiveSecret, log: log) else {
-                statusMessage = "Enter a valid server URL, Network ID and API key first."
-                return
-            }
-            isTesting = true
-            Task {
-                do {
-                    let locations = try await client.verify()
-                    statusMessage = "Connected successfully. \(locations) location\(locations == 1 ? "" : "s")."
-                } catch {
-                    statusMessage = error.localizedDescription
-                }
-                isTesting = false
-            }
-            return
-        }
-        guard let client = JamfClient(config: current, secret: effectiveSecret, log: log) else {
-            statusMessage = "Enter a valid server URL first."
-            return
-        }
-        isTesting = true
-        Task {
-            do {
-                try await client.verify()
-                statusMessage = "Connected successfully."
-            } catch {
-                statusMessage = error.localizedDescription
-            }
-            isTesting = false
-        }
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

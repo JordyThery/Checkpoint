@@ -19,17 +19,18 @@ import SwiftUI
         }
         .commands {
             AppInfoCommands(appName: "Checkpoint") { updates.checkManually() }
+            // The same items as the two toolbar pickers: Apple, then MDM.
+            ConnectionCommands(store: settings.connections, roles: [model.appleRole, model.mdmRole],
+                               itemTitle: \.displayName)
         }
         // JTKit's General tab starts with Appearance; Checkpoint's own general
         // settings go below it.
-        SettingsWindow(updates: updates) {
+        // Tabs open by name, so "Edit Connections…" opens Connections.
+        SettingsWindow(updates: updates, opensTabsByName: true) {
             GeneralSettingsSection()
                 .environment(settings)
         } tabs: {
-            Group {
-                ABMSettingsTab()
-                MDMSettingsTab()
-            }
+            ConnectionsTab()
             .environment(settings)
             .environment(model)
             .environment(model.log)
