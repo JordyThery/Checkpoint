@@ -1,43 +1,27 @@
+import JTKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-struct SettingsView: View {
-    var body: some View {
-        TabView {
-            GeneralSettingsTab()
-                .tabItem { Label("General", systemImage: "gearshape") }
-            ABMSettingsTab()
-                .tabItem { Label("Apple", systemImage: "apple.logo") }
-            MDMSettingsTab()
-                .tabItem { Label("MDM", systemImage: "server.rack") }
-        }
-        .frame(width: 580, height: 500)
-    }
-}
+// Checkpoint's parts of JTKit's Settings window: a section for its General
+// tab, below JTKit's Appearance, then the Apple and MDM tabs, before Updates.
+
+/// How tall the Apple and MDM tabs are: a list beside an editor has no natural
+/// height, so these two keep the height the whole window used to have.
+private let connectionsTabHeight: CGFloat = 500
 
 // MARK: - General
 
-struct GeneralSettingsTab: View {
+struct GeneralSettingsSection: View {
     @Environment(AppSettings.self) private var settings
 
     var body: some View {
-        @Bindable var settings = settings
-        Form {
-            Picker("Appearance", selection: $settings.appearance) {
-                ForEach(AppAppearance.allCases) { appearance in
-                    Text(appearance.label).tag(appearance)
-                }
-            }
-            .pickerStyle(.segmented)
+        Section {
             Toggle("Warn when a service is not configured", isOn: Binding(
                 get: { !settings.configurationHintDismissed },
                 set: { settings.configurationHintDismissed = !$0 }
             ))
             .help("Show the message above the table when an Apple organization or a device management connection is missing")
-            Toggle("Check for updates automatically", isOn: $settings.checksForUpdates)
-                .help("Ask GitHub once a day whether a newer release exists. Nothing but the request itself is sent.")
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -90,6 +74,8 @@ struct ABMSettingsTab: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .frame(width: SettingsLayout.width, height: connectionsTabHeight)
+        .tabItem { Label("Apple", systemImage: "apple.logo") }
         // The organization in use, for the same reason as the connections.
         // With every organization in scope there is no single one, so the
         // first configured one opens.
@@ -274,6 +260,8 @@ struct MDMSettingsTab: View {
                 .frame(maxWidth: .infinity)
             }
         }
+        .frame(width: SettingsLayout.width, height: connectionsTabHeight)
+        .tabItem { Label("MDM", systemImage: "server.rack") }
         // Opens on the connection the app is using, not the first in the
         // list. Opening on the first made a connection look as though it were
         // configured for the wrong product, and editing it then changed a

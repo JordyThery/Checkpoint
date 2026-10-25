@@ -417,22 +417,6 @@ extension MDMConnection {
     }
 }
 
-nonisolated enum AppAppearance: String, Codable, CaseIterable, Identifiable {
-    case system
-    case light
-    case dark
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .system: "System"
-        case .light: "Light"
-        case .dark: "Dark"
-        }
-    }
-}
-
 /// Which of Apple's two sibling organization services an account belongs to.
 ///
 /// The APIs are the same one with two front doors: identical paths, identical
@@ -528,15 +512,14 @@ final class AppSettings {
 
     var mdmConnections: [MDMConnection] { didSet { save() } }
     var abmOrgs: [ABMConfig] { didSet { save() } }
-    var appearance: AppAppearance { didSet { save() } }
     /// Whether the hint about an unconfigured service has been dismissed.
     /// Kept, rather than shown again each launch, because running against one
     /// service is a deliberate setup for some people.
     var configurationHintDismissed: Bool { didSet { save() } }
-    /// Whether Checkpoint asks GitHub for a newer release once a day. The one
-    /// request the app makes to anything other than a configured service,
-    /// which is why it has an off switch.
-    var checksForUpdates: Bool { didSet { save() } }
+    // The appearance and the daily update check are not stored here: JTKit's
+    // Settings window keeps them under "appearance" and "checksForUpdates",
+    // the keys this class used. Saving a copy here too would overwrite them
+    // whenever another setting changed.
 
     private init() {
         let defaults = UserDefaults.standard
@@ -546,12 +529,7 @@ final class AppSettings {
             .flatMap { try? JSONDecoder().decode([MDMConnection].self, from: $0) } ?? []
         abmOrgs = defaults.data(forKey: "abmOrgs")
             .flatMap { try? JSONDecoder().decode([ABMConfig].self, from: $0) } ?? []
-        appearance = defaults.string(forKey: "appearance")
-            .flatMap(AppAppearance.init(rawValue:)) ?? .system
         configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")
-        // Defaults to on; `bool(forKey:)` alone would read absent as off.
-        checksForUpdates = defaults.object(forKey: "checksForUpdates") == nil
-            || defaults.bool(forKey: "checksForUpdates")
         if abmOrgs.isEmpty { migrateLegacyABMOrg() }
     }
 
@@ -585,8 +563,6 @@ final class AppSettings {
         let defaults = UserDefaults.standard
         if let data = try? JSONEncoder().encode(mdmConnections) { defaults.set(data, forKey: "jamfServers") }
         if let data = try? JSONEncoder().encode(abmOrgs) { defaults.set(data, forKey: "abmOrgs") }
-        defaults.set(appearance.rawValue, forKey: "appearance")
         defaults.set(configurationHintDismissed, forKey: "configurationHintDismissed")
-        defaults.set(checksForUpdates, forKey: "checksForUpdates")
     }
 }
