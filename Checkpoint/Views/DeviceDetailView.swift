@@ -546,16 +546,25 @@ struct DeviceDetailView: View {
         }
     }
 
+    /// A timeline row: the sentence first, the date and actor as a caption.
+    /// Left-aligned on purpose — server names are long, and a trailing
+    /// column wraps them into a ragged block.
     private func historyRow(_ event: ABMAuditEvent, withTime: Bool) -> some View {
-        LabeledContent(withTime ? DateFormatting.short(event.dateTime) : DateFormatting.dateOnly(event.dateTime)) {
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(event.summary + (event.isFailure ? " — failed" : ""))
-                    .foregroundStyle(event.isFailure ? Color.orange : Color.primary)
-                if let actor = event.actorName, !actor.isEmpty {
-                    Text(actor).font(.caption).foregroundStyle(.secondary)
-                }
-            }
+        VStack(alignment: .leading, spacing: 2) {
+            Text(event.summary + (event.isFailure ? " — failed" : ""))
+                .foregroundStyle(event.isFailure ? Color.orange : Color.primary)
+            Text(
+                [
+                    withTime ? DateFormatting.short(event.dateTime) : DateFormatting.dateOnly(event.dateTime),
+                    event.actorName ?? "",
+                ]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · ")
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// The complete timeline, paged backwards through the organization's log.
@@ -580,7 +589,7 @@ struct DeviceDetailView: View {
             }
         }
         .padding(20)
-        .frame(width: 480, height: 440)
+        .frame(width: 480, height: min(max(180 + CGFloat(historyEvents.count) * 56, 280), 560))
     }
 
     private func loadHistory() async {
