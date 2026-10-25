@@ -135,6 +135,12 @@ Reported for Jamf Pro and Intune, which reach it differently.
 
 Neither is filterable. Jamf Pro's is not present until a device is selected, for the same reason warranty coverage is not filterable, and a filter that worked on one product and not the other would be worse than none.
 
+## Device history
+
+Apple Business keeps an audit log, and a device's serial number is a valid subject to ask it about. The inspector's **History** disclosure shows the device's life in the organization — added, assigned, unassigned, released, erased, AppleCare changes — each with the date and the administrator who acted, with failures marked. **Show Full History** opens the complete timeline and pages back as far as the log goes.
+
+The disclosure is collapsed and fetches only when opened: Apple allows an organization roughly twenty requests a minute, and selecting a device already spends two of them. The events come from Apple's own log, so they cover every console and API actor, not just Checkpoint. Apple School Manager's API has no audit endpoint, so the disclosure is absent there. The activity log masks administrator names in recorded responses, as it masks device owners.
+
 ## Hardware identifiers
 
 The Apple record carries more than the table shows: product type, part number, IMEI, MEID, EID, and the Wi-Fi, Bluetooth and Ethernet MAC addresses. They live in an **Identifiers** disclosure in the inspector, collapsed because they are looked up rarely, with the values selectable for copying. The model row names the colour and capacity, the order row the order date, and the purchase source its customer or reseller number. All of it arrives with the record the lookup already reads.

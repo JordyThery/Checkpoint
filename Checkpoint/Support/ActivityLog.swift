@@ -280,7 +280,12 @@ nonisolated enum ActivityRedaction {
     /// department and building identifiers go with it, which is the intended
     /// trade — the names they resolve to are in the inspector. Matching is
     /// exact, so the local administrator `username` key is unaffected.
-    static let personalKeys: Set<String> = ["owner", "notes", "userAndLocation", "location"]
+    /// Apple's audit events name the administrator who acted — an account
+    /// e-mail — and the device's display name, so both go the same way.
+    static let personalKeys: Set<String> = [
+        "owner", "notes", "userAndLocation", "location",
+        "actorName", "actorId", "subjectName",
+    ]
 
     /// Keys holding a device identifier. Not secrets, but they name the
     /// devices a log covers, so a redacted export replaces them.

@@ -54,6 +54,15 @@ struct DeviceDetailView: View {
     /// device list leaves out. Fetched on selection for the same reason
     /// AppleCare coverage is.
     @State private var schoolDetails: JamfSchoolDeviceDetails?
+    /// The device's history from the organization's audit log. Fetched when
+    /// the disclosure opens, not on selection, so showing a device does not
+    /// spend a third Apple request; kept until the selection changes.
+    @State private var historyExpanded = false
+    @State private var historyEvents: [ABMAuditEvent] = []
+    @State private var historyNextCursor: String?
+    @State private var historyLoaded = false
+    @State private var isLoadingHistory = false
+    @State private var showingFullHistory = false
 
     private enum PendingAction {
         case applyMDM
@@ -193,7 +202,17 @@ struct DeviceDetailView: View {
                 await model.loadADEInstances(for: connection)
             }
         }
-        .onChange(of: report.serial) { syncSelections() }
+        .onChange(of: report.serial) {
+            syncSelections()
+            historyExpanded = false
+            historyEvents = []
+            historyNextCursor = nil
+            historyLoaded = false
+        }
+        .onChange(of: historyExpanded) { _, expanded in
+            if expanded, !historyLoaded { Task { await loadHistory() } }
+        }
+        .sheet(isPresented: $showingFullHistory) { fullHistorySheet }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
         .onChange(of: report.mdm.value?.prestageID) { syncSelections() }
         .onChange(of: report.mdm.value?.assetTag) { syncSelections() }
@@ -462,6 +481,81 @@ struct DeviceDetailView: View {
 
     // MARK: ABM
 
+
+    /// The device's life in the organization — added, assigned, released —
+    /// from the audit log. Collapsed until asked: it is the one Apple read
+    /// the inspector does not need for its rows, and the per-minute budget
+    /// is better spent on the reads it does.
+    private var historyDisclosure: some View {
+        DisclosureGroup("History", isExpanded: $historyExpanded) {
+            if isLoadingHistory && historyEvents.isEmpty {
+                ProgressView().controlSize(.small)
+            } else if historyEvents.isEmpty {
+                Text("No events in the organization's audit log for this device.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(historyEvents.prefix(4)) { event in
+                    historyRow(event, withTime: false)
+                }
+                if historyEvents.count > 4 || historyNextCursor != nil {
+                    Button("Show Full History") { showingFullHistory = true }
+                }
+            }
+        }
+    }
+
+    private func historyRow(_ event: ABMAuditEvent, withTime: Bool) -> some View {
+        LabeledContent(withTime ? DateFormatting.short(event.dateTime) : DateFormatting.dateOnly(event.dateTime)) {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(event.summary + (event.isFailure ? " — failed" : ""))
+                    .foregroundStyle(event.isFailure ? Color.orange : Color.primary)
+                if let actor = event.actorName, !actor.isEmpty {
+                    Text(actor).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    /// The complete timeline, paged backwards through the organization's log.
+    private var fullHistorySheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Device History").font(.headline)
+            Text(report.serial).font(.caption).foregroundStyle(.secondary)
+            Form {
+                ForEach(historyEvents) { event in
+                    historyRow(event, withTime: true)
+                }
+                if historyNextCursor != nil {
+                    Button("Load Earlier Events") { Task { await loadHistory() } }
+                        .disabled(isLoadingHistory)
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Done") { showingFullHistory = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 480, height: 440)
+    }
+
+    private func loadHistory() async {
+        guard !isLoadingHistory else { return }
+        isLoadingHistory = true
+        defer { isLoadingHistory = false }
+        if let page = await model.deviceHistory(for: report, cursor: historyLoaded ? historyNextCursor : nil) {
+            if historyLoaded {
+                historyEvents += page.events
+            } else {
+                historyEvents = page.events
+            }
+            historyNextCursor = page.nextCursor
+        }
+        historyLoaded = true
+    }
+
     /// The hardware identifiers Apple reports, folded away because they are
     /// looked up rarely and read like noise beside the status rows. The
     /// disclosure only exists when at least one is present.
@@ -555,6 +649,9 @@ struct DeviceDetailView: View {
             }
         }
         identifiersDisclosure(info.device)
+        if model.supportsDeviceHistory(for: report) {
+            historyDisclosure
+        }
 
         let coverage = loadedCoverage ?? info.coverage
         if !info.coverageLoaded && loadedCoverage == nil {

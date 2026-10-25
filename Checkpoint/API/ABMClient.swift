@@ -63,6 +63,61 @@ struct ABMDevice: Decodable, Sendable {
     }
 }
 
+
+/// One audit event about a device, reduced to what the history shows: when,
+/// what, by whom, and whether it succeeded. The organization records far more
+/// event types; only device events carry a serial as their subject, so only
+/// they ever appear here.
+nonisolated struct ABMAuditEvent: Sendable, Identifiable {
+    let id: String
+    let dateTime: String?
+    let type: String?
+    let actorName: String?
+    let outcome: String?
+    /// Event payload details, each present only on its own event type.
+    let targetServerName: String?
+    let sourceServerName: String?
+    let releaseEntityType: String?
+    let purchaseSourceType: String?
+
+    var isFailure: Bool { outcome?.uppercased() == "FAILURE" }
+
+    /// One sentence, in the app's own voice. The payload names the server or
+    /// source where the event carries one; the type alone still reads as a
+    /// sentence when it does not.
+    var summary: String {
+        switch type?.uppercased() {
+        case "DEVICE_ADDED_TO_ORG":
+            switch purchaseSourceType?.uppercased() {
+            case "RESELLER": "Added from a reseller"
+            case "APPLE": "Added from Apple"
+            case "MANUALLY_ADDED": "Added manually"
+            default: "Added to the organization"
+            }
+        case "DEVICE_ASSIGNED_TO_SERVER":
+            targetServerName.map { "Assigned to \($0)" } ?? "Assigned to a device management service"
+        case "DEVICE_UNASSIGNED_FROM_SERVER":
+            sourceServerName.map { "Unassigned from \($0)" } ?? "Unassigned from device management"
+        case "DEVICE_REMOVED_FROM_ORG":
+            releaseEntityType?.uppercased() == "RESELLER"
+                ? "Released by the reseller" : "Released from the organization"
+        case "DEVICE_IS_ERASED": "Erased"
+        case "SUBJECT_HAS_APPLECARE_PURCHASE_ADDED": "AppleCare coverage added"
+        case "SUBJECT_HAS_APPLECARE_PURCHASE_REMOVED": "AppleCare coverage removed"
+        case "SUBJECT_HAS_ICLOUD_STORAGE_PURCHASE_ADDED": "iCloud storage added"
+        case "SUBJECT_HAS_ICLOUD_STORAGE_PURCHASE_REMOVED": "iCloud storage removed"
+        default:
+            (type ?? "Event").replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+/// A page of a device's history, with the cursor that continues it.
+nonisolated struct ABMAuditPage: Sendable {
+    let events: [ABMAuditEvent]
+    let nextCursor: String?
+}
+
 struct AppleCareCoverage: Sendable, Identifiable, Hashable {
     let id: String
     let description: String?
@@ -324,6 +379,57 @@ actor ABMClient {
         try throwIfError(status: status, data: data)
         let attributes = try JSONDecoder().decode(Response.self, from: data).data.attributes
         return ABMActivationLock(isLocked: attributes.isLocked ?? false, lockType: attributes.lockType)
+    }
+
+
+    /// The device's audit events, newest first, one page at a time.
+    ///
+    /// Apple requires the time window and takes the serial as the event
+    /// subject. The payload shape varies per event type — one `eventData…`
+    /// object keyed by `eventDataPropertyKey` — so this reads the body with
+    /// JSONSerialization rather than modelling every variant.
+    func auditEvents(
+        serial: String,
+        start: Date,
+        end: Date,
+        cursor: String? = nil,
+        limit: Int = 100
+    ) async throws -> ABMAuditPage {
+        let formatter = ISO8601DateFormatter()
+        var query = "filter%5BstartTimestamp%5D=\(formatter.string(from: start))"
+            + "&filter%5BendTimestamp%5D=\(formatter.string(from: end))"
+            + "&filter%5BsubjectId%5D=\(serial)&limit=\(limit)"
+        if let cursor, let encoded = cursor.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            query += "&cursor=\(encoded)"
+        }
+        let (data, status) = try await send(path: "/v1/auditEvents?\(query)")
+        try throwIfError(status: status, data: data)
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ABMAuditPage(events: [], nextCursor: nil)
+        }
+        let events = (root["data"] as? [[String: Any]] ?? []).compactMap { item -> ABMAuditEvent? in
+            guard let id = item["id"] as? String,
+                  let attributes = item["attributes"] as? [String: Any] else { return nil }
+            let payload = (attributes["eventDataPropertyKey"] as? String)
+                .flatMap { attributes[$0] as? [String: Any] } ?? [:]
+            return ABMAuditEvent(
+                id: id,
+                dateTime: attributes["eventDateTime"] as? String,
+                type: attributes["type"] as? String,
+                actorName: attributes["actorName"] as? String,
+                outcome: attributes["outcome"] as? String,
+                targetServerName: payload["targetServerName"] as? String,
+                // The unassignment payload names the server it left; accept
+                // either spelling in case Apple settles on one later.
+                sourceServerName: (payload["serverName"] ?? payload["sourceServerName"]) as? String,
+                releaseEntityType: payload["releaseEntityType"] as? String,
+                purchaseSourceType: payload["purchaseSourceType"] as? String
+            )
+        }
+        let nextCursor = ((root["meta"] as? [String: Any])?["paging"] as? [String: Any])?["nextCursor"] as? String
+        // Newest first, however Apple orders the page.
+        let sorted = events.sorted { ($0.dateTime ?? "") > ($1.dateTime ?? "") }
+        return ABMAuditPage(events: sorted, nextCursor: nextCursor)
     }
 
     /// The ID of the MDM server the device is assigned to, if any.

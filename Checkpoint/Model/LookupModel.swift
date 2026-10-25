@@ -1506,6 +1506,30 @@ final class LookupModel {
         return try? await abm.activationLock(serial: report.serial)
     }
 
+    /// Whether the device's organization serves audit events: Apple Business
+    /// does, Apple School Manager's API has no audit endpoint at all, so the
+    /// history is absent there rather than empty.
+    func supportsDeviceHistory(for report: DeviceReport) -> Bool {
+        guard let id = report.abm.value?.orgID else { return false }
+        return settings.abmOrgs.first { $0.id == id }?.kind == .business
+    }
+
+    /// One page of the device's history, newest first. Nil when the
+    /// organization has no audit endpoint or will not answer. Fetched when
+    /// the inspector's History disclosure opens, never during a lookup: it
+    /// costs one request against the same per-minute budget the coverage and
+    /// Activation Lock reads already draw on.
+    func deviceHistory(for report: DeviceReport, cursor: String? = nil) async -> ABMAuditPage? {
+        guard supportsDeviceHistory(for: report),
+              let info = report.abm.value,
+              let abm = clientForOrg(of: info) else { return nil }
+        // From the day the device joined the organization; a device whose
+        // added date is unknown still gets a year of history.
+        let start = info.device.addedToOrgDateTime.flatMap(DateFormatting.parseISO)
+            ?? Date().addingTimeInterval(-365 * 24 * 3600)
+        return try? await abm.auditEvents(serial: report.serial, start: start, end: Date(), cursor: cursor)
+    }
+
     /// The client for the organization a device was found in, falling back to
     /// the one in scope for a record from before organizations were recorded.
     private func clientForOrg(of info: ABMInfo) -> ABMClient? {
