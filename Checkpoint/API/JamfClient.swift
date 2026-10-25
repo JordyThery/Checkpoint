@@ -49,10 +49,9 @@ struct JamfMobileDeviceRecord: Sendable {
     /// Last contact with the Jamf Pro server (inventory attribute added in Jamf Pro 11.30).
     let lastContactTime: String?
     let mdmProfileExpiration: String?
+    /// "-1" for no site. The list read reports the ID only; the caller
+    /// resolves the name against the server's sites.
     let siteID: String?
-    let siteName: String?
-    /// Escrowed unlock token, required by the ClearPasscode MDM command.
-    let unlockToken: String?
     let security: MobileSecurityState?
     let osVersion: String?
     let osBuild: String?
@@ -61,15 +60,19 @@ struct JamfMobileDeviceRecord: Sendable {
     let buildingID: String?
     let room: String?
     let assetTag: String?
-    /// The detail endpoint words the method as one string, e.g.
-    /// "PreStage enrollment: [token] name (id)".
+    /// True when a PreStage enrolled the record, which is the only route to
+    /// one. The method is then worded as Jamf Pro's detail page words it,
+    /// e.g. "PreStage enrollment: [token] name (id)".
+    let enrolledViaADE: Bool
     let enrollmentMethod: String?
+}
 
-    /// Mobile inventory has no flag for it, so ADE is read off the method's
-    /// wording. Nil when the record reports no method at all.
-    var enrolledViaADE: Bool? {
-        enrollmentMethod.map { $0.hasPrefix("PreStage enrollment") }
-    }
+/// The outcome of a batched read: the records found, keyed by uppercased
+/// serial, and the serials whose request failed, with the reason. A serial
+/// in neither was asked for and is not on the server.
+struct JamfBatch<Record: Sendable>: Sendable {
+    var records: [String: Record] = [:]
+    var failures: [String: String] = [:]
 }
 
 /// A managed local administrator account that Jamf Pro holds a password for.
@@ -621,8 +624,7 @@ struct JamfFileVaultKey: Sendable {
     let configurationName: String?
 }
 
-/// The two PreStage families in Jamf Pro. Endpoint versions differ per family,
-/// and older Jamf Pro versions serve older ones, hence the fallback lists.
+/// The two PreStage families in Jamf Pro. Both list at v3 and scope at v2.
 nonisolated enum JamfPrestageFamily: Sendable {
     case computer
     case mobileDevice
@@ -631,22 +633,6 @@ nonisolated enum JamfPrestageFamily: Sendable {
         switch self {
         case .computer: "computer-prestages"
         case .mobileDevice: "mobile-device-prestages"
-        }
-    }
-
-    var listVersions: [String] {
-        switch self {
-        case .computer: ["v3", "v2"]
-        // v3 is the only mobile PreStage version still in the published spec;
-        // the older ones remain as fallbacks for older servers.
-        case .mobileDevice: ["v3", "v2", "v1"]
-        }
-    }
-
-    var scopeVersions: [String] {
-        switch self {
-        case .computer: ["v2"]
-        case .mobileDevice: ["v2", "v1"]
         }
     }
 }
@@ -695,33 +681,118 @@ actor JamfClient {
         self.connectionName = config.displayName
     }
 
-    // MARK: Computers
+    // MARK: Device records
 
-    func computer(serial: String) async throws -> JamfComputerRecord? {
-        // v4 is current. v3 and v1 are still served but no longer published, so
-        // they remain only as fallbacks for older servers. The first version to
-        // answer cleanly wins, including when it finds no match.
-        var lastError: Error?
-        for version in ["v4", "v3", "v1"] {
-            do {
-                return try await computerLookup(apiVersion: version, serial: serial)
-            } catch {
-                lastError = error
-            }
+    /// Serials per filtered request. Fifty keeps the URL well within what
+    /// servers and proxies accept, and a page holds them all.
+    static let batchSize = 50
+
+    /// Chunked requests in flight at once, per device kind.
+    private static let batchWindow = 4
+
+    /// A 400 to a filtered read: the server refused the filter itself, which
+    /// a value the list syntax cannot carry would cause.
+    private struct FilterRejected: Error {}
+
+    /// The computer records for these serials, a request per fifty rather
+    /// than per device.
+    func computers(serials: [String]) async -> JamfBatch<JamfComputerRecord> {
+        await batched(serials, field: "hardware.serialNumber") { filter in
+            try await self.computerRecords(filter: filter)
         }
-        throw lastError ?? APIError(message: "Could not look up the computer.")
     }
 
-    private func computerLookup(apiVersion: String, serial: String) async throws -> JamfComputerRecord? {
+    /// The mobile device records for these serials. The list read carries
+    /// everything a lookup shows except the escrowed unlock token, which
+    /// Clear Passcode reads for the devices it is sent to.
+    func mobileDevices(serials: [String]) async -> JamfBatch<JamfMobileDeviceRecord> {
+        await batched(serials, field: "serialNumber") { filter in
+            try await self.mobileDeviceRecords(filter: filter)
+        }
+    }
+
+    /// Runs `read` over the serials in chunks. A chunk whose filter is
+    /// refused is asked again one serial at a time, quoted; a chunk that
+    /// fails otherwise marks its serials failed, so none reads as absent.
+    private func batched<Record: Sendable>(
+        _ serials: [String],
+        field: String,
+        read: @escaping @Sendable (String) async throws -> [String: Record]
+    ) async -> JamfBatch<Record> {
+        let chunks = stride(from: 0, to: serials.count, by: Self.batchSize).map {
+            Array(serials[$0..<min($0 + Self.batchSize, serials.count)])
+        }
+        return await withTaskGroup(of: JamfBatch<Record>.self) { group in
+            var pending = chunks.makeIterator()
+            func addNext() {
+                guard let chunk = pending.next() else { return }
+                group.addTask {
+                    var batch = JamfBatch<Record>()
+                    do {
+                        batch.records = try await read("\(field)=in=(\(chunk.joined(separator: ",")))")
+                    } catch is FilterRejected {
+                        for serial in chunk {
+                            do {
+                                batch.records.merge(try await read("\(field)==\"\(serial)\"")) { first, _ in first }
+                            } catch {
+                                batch.failures[serial] = error.localizedDescription
+                            }
+                        }
+                    } catch {
+                        for serial in chunk { batch.failures[serial] = error.localizedDescription }
+                    }
+                    return batch
+                }
+            }
+            for _ in 0..<Self.batchWindow { addNext() }
+            var merged = JamfBatch<Record>()
+            for await batch in group {
+                merged.records.merge(batch.records) { first, _ in first }
+                merged.failures.merge(batch.failures) { first, _ in first }
+                addNext()
+            }
+            return merged
+        }
+    }
+
+    /// Every page of a filtered inventory read. With fifty serials per
+    /// filter one page normally holds the lot; more only when a serial has
+    /// duplicate records.
+    private func filteredPages(path: String, sections: [String], filter: String) async throws -> [Data] {
+        struct Count: Decodable { let totalCount: Int }
+        let pageSize = 100
+        var pages: [Data] = []
+        var page = 0
+        while true {
+            let queryItems = sections.map { URLQueryItem(name: "section", value: $0) } + [
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "page-size", value: String(pageSize)),
+                URLQueryItem(name: "filter", value: filter),
+            ]
+            let (data, status) = try await send(path: path, queryItems: queryItems)
+            if status == 400 { throw FilterRejected() }
+            try throwIfError(status: status, data: data)
+            pages.append(data)
+            let total = try JSONDecoder().decode(Count.self, from: data).totalCount
+            page += 1
+            if page * pageSize >= total { return pages }
+        }
+    }
+
+    private func computerRecords(filter: String) async throws -> [String: JamfComputerRecord] {
         struct Response: Decodable {
             let results: [Item]
             struct Item: Decodable {
                 let id: String
                 let udid: String?
                 let general: General?
+                let hardware: Hardware?
                 let diskEncryption: DiskEncryption?
                 let operatingSystem: OperatingSystem?
                 let userAndLocation: UserAndLocation?
+            }
+            struct Hardware: Decodable {
+                let serialNumber: String?
             }
             struct DiskEncryption: Decodable {
                 let fileVault2Enabled: Bool?
@@ -746,17 +817,13 @@ actor JamfClient {
             }
             struct General: Decodable {
                 let name: String?
-                /// v4 name for the Jamf binary check-in. v1 and v3 call the
-                /// same value lastContactTime.
+                /// The Jamf binary check-in.
                 let lastCheckIn: String?
-                let lastContactTime: String?
-                /// Dedicated Last Contact attribute, present from the v4 schema.
+                /// Last Contact: binary, MDM or DDM, whichever was latest.
                 let lastContact: String?
                 let lastEnrolledDate: String?
                 let reportDate: String?
-                // v1 name / v3+ name for the same value.
                 let mdmProfileExpiration: String?
-                let mdmCertificateExpiration: String?
                 let managementId: String?
                 let assetTag: String?
                 let enrolledViaAutomatedDeviceEnrollment: Bool?
@@ -771,133 +838,88 @@ actor JamfClient {
                 let name: String?
             }
         }
-        // DISK_ENCRYPTION reports FileVault state and costs about 500 bytes.
-        // It deliberately carries no recovery key, so the lookup stays within
-        // Read Computers and the response is safe to record in the log.
-        //
-        // Asked for on v4 only. v3 and v1 are unpublished fallbacks for older
-        // servers, so whether they accept the section cannot be checked; one
-        // rejecting it would fail the whole lookup rather than omit a row.
-        var queryItems = [URLQueryItem(name: "section", value: "GENERAL")]
-        if apiVersion == "v4" {
-            queryItems.append(URLQueryItem(name: "section", value: "DISK_ENCRYPTION"))
-            // Asked for alongside the others rather than in a second request.
-            // Reported as the installed OS, and compared against an enforced
-            // update to tell one the device already has from one it still owes.
-            queryItems.append(URLQueryItem(name: "section", value: "OPERATING_SYSTEM"))
-            // The department, building and room assignment. The section also
-            // carries the assigned user's details, so it is masked in the
-            // activity log; see ActivityRedaction.personalKeys.
-            queryItems.append(URLQueryItem(name: "section", value: "USER_AND_LOCATION"))
-        }
-        queryItems += [
-            URLQueryItem(name: "page-size", value: "10"),
-            URLQueryItem(name: "filter", value: "hardware.serialNumber==\"\(serial)\""),
-        ]
-        let (data, status) = try await send(
-            path: "/api/\(apiVersion)/computers-inventory",
-            queryItems: queryItems
+        // HARDWARE carries the serial, which is how results map back to the
+        // serials asked for. DISK_ENCRYPTION reports FileVault state without
+        // the recovery key, so the read stays within Read Computers and the
+        // response is safe to record. OPERATING_SYSTEM is the installed OS,
+        // compared against an enforced update. USER_AND_LOCATION also
+        // carries the assigned user's details, so it is masked in the
+        // activity log; see ActivityRedaction.personalKeys.
+        let pages = try await filteredPages(
+            path: "/api/v4/computers-inventory",
+            sections: ["GENERAL", "HARDWARE", "DISK_ENCRYPTION", "OPERATING_SYSTEM", "USER_AND_LOCATION"],
+            filter: filter
         )
-        try throwIfError(status: status, data: data)
-        guard let item = try JSONDecoder().decode(Response.self, from: data).results.first else { return nil }
-
-        // v4 has a dedicated Last Contact attribute. v3 and v1 do not, so fall
-        // back to scanning for a "lastContact" key other than the check-in one.
-        var lastContact = item.general?.lastContact
-        if lastContact == nil,
-           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let results = root["results"] as? [[String: Any]],
-           let general = results.first?["general"] as? [String: Any] {
-            lastContact = general.first { key, value in
-                key.lowercased().hasPrefix("lastcontact") && key != "lastContactTime" && value is String
-            }?.value as? String
-        }
-
-        return JamfComputerRecord(
-            id: item.id,
-            udid: item.udid,
-            managementID: item.general?.managementId,
-            name: item.general?.name,
-            lastContactTime: item.general?.lastCheckIn ?? item.general?.lastContactTime,
-            lastContact: lastContact,
-            lastEnrolledDate: item.general?.lastEnrolledDate,
-            reportDate: item.general?.reportDate,
-            mdmProfileExpiration: item.general?.mdmProfileExpiration ?? item.general?.mdmCertificateExpiration,
-            siteID: item.general?.site?.id,
-            siteName: item.general?.site?.name,
-            encryption: item.diskEncryption.map {
-                DiskEncryptionState(
-                    fileVaultEnabled: $0.fileVault2Enabled,
-                    bootPartitionState: $0.bootPartitionEncryptionDetails?.partitionFileVault2State,
-                    bootPartitionPercent: $0.bootPartitionEncryptionDetails?.partitionFileVault2Percent,
-                    recoveryKeyValidity: $0.individualRecoveryKeyValidityStatus
+        var records: [String: JamfComputerRecord] = [:]
+        for data in pages {
+            for item in try JSONDecoder().decode(Response.self, from: data).results {
+                guard let serial = item.hardware?.serialNumber?.uppercased(), !serial.isEmpty,
+                      records[serial] == nil else { continue }
+                records[serial] = JamfComputerRecord(
+                    id: item.id,
+                    udid: item.udid,
+                    managementID: item.general?.managementId,
+                    name: item.general?.name,
+                    lastContactTime: item.general?.lastCheckIn,
+                    lastContact: item.general?.lastContact,
+                    lastEnrolledDate: item.general?.lastEnrolledDate,
+                    reportDate: item.general?.reportDate,
+                    mdmProfileExpiration: item.general?.mdmProfileExpiration,
+                    siteID: item.general?.site?.id,
+                    siteName: item.general?.site?.name,
+                    encryption: item.diskEncryption.map {
+                        DiskEncryptionState(
+                            fileVaultEnabled: $0.fileVault2Enabled,
+                            bootPartitionState: $0.bootPartitionEncryptionDetails?.partitionFileVault2State,
+                            bootPartitionPercent: $0.bootPartitionEncryptionDetails?.partitionFileVault2Percent,
+                            recoveryKeyValidity: $0.individualRecoveryKeyValidityStatus
+                        )
+                    },
+                    osVersion: item.operatingSystem?.version,
+                    osBuild: item.operatingSystem?.build,
+                    departmentID: item.userAndLocation?.departmentId,
+                    buildingID: item.userAndLocation?.buildingId,
+                    room: item.userAndLocation?.room,
+                    assetTag: item.general?.assetTag,
+                    enrolledViaADE: item.general?.enrolledViaAutomatedDeviceEnrollment,
+                    enrollmentMethod: item.general?.enrollmentMethod?.objectType
                 )
-            },
-            osVersion: item.operatingSystem?.version,
-            osBuild: item.operatingSystem?.build,
-            departmentID: item.userAndLocation?.departmentId,
-            buildingID: item.userAndLocation?.buildingId,
-            room: item.userAndLocation?.room,
-            assetTag: item.general?.assetTag,
-            enrolledViaADE: item.general?.enrolledViaAutomatedDeviceEnrollment,
-            enrollmentMethod: item.general?.enrollmentMethod?.objectType
-        )
+            }
+        }
+        return records
     }
 
-    /// Looks up a mobile device (iPhone/iPad/Apple TV) record. The Classic API
-    /// resolves the serial to a record ID; the modern detail endpoint provides
-    /// the timestamps, including Last Contact (Jamf Pro 11.30+).
-    func mobileDevice(serial: String) async throws -> JamfMobileDeviceRecord? {
-        struct ClassicResponse: Decodable {
-            let mobile_device: Device
-            struct Device: Decodable { let general: General }
-            struct General: Decodable {
-                let id: Int
-                let display_name: String?
-                let udid: String?
-                let last_inventory_update_epoch: Int64?
-                let last_enrollment_epoch: Int64?
-            }
-        }
-        let (data, status) = try await send(path: "/JSSResource/mobiledevices/serialnumber/\(serial)")
-        if status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        let general = try JSONDecoder().decode(ClassicResponse.self, from: data).mobile_device.general
-
-        struct Detail: Decodable {
-            let name: String?
-            let udid: String?
-            let managementId: String?
-            let lastInventoryUpdateTimestamp: String?
-            let lastContactTimestamp: String?
-            let lastEnrollmentTimestamp: String?
-            let mdmProfileExpirationTimestamp: String?
-            let osVersion: String?
-            let osBuild: String?
-            let assetTag: String?
-            let enrollmentMethod: String?
-            let site: Site?
-            let location: Location?
-            // The escrowed unlock token lives in the per-OS detail object.
-            let ios: OSDetails?
-            let tvos: OSDetails?
-            let watchos: OSDetails?
-            let visionos: OSDetails?
-            struct Site: Decodable {
-                let id: String?
-                let name: String?
-            }
-            /// The mobile device equivalent of a computer's user and location
-            /// section, already part of this response. Only the assignment is
-            /// read; the user's own details are left alone.
-            struct Location: Decodable {
-                let departmentId: String?
-                let buildingId: String?
-                let room: String?
-            }
-            struct OSDetails: Decodable {
-                let unlockToken: String?
+    private func mobileDeviceRecords(filter: String) async throws -> [String: JamfMobileDeviceRecord] {
+        struct Response: Decodable {
+            let results: [Item]
+            struct Item: Decodable {
+                let mobileDeviceId: String
+                let general: General?
+                let hardware: Hardware?
                 let security: Security?
+                let userAndLocation: UserAndLocation?
+            }
+            struct General: Decodable {
+                let displayName: String?
+                let udid: String?
+                let managementId: String?
+                let lastInventoryUpdateDate: String?
+                let lastContactDate: String?
+                let lastEnrolledDate: String?
+                let mdmProfileExpirationDate: String?
+                let osVersion: String?
+                let osBuild: String?
+                let assetTag: String?
+                let siteId: String?
+                let enrollmentMethodPrestage: Prestage?
+            }
+            /// Set exactly when a PreStage enrolled the record.
+            struct Prestage: Decodable {
+                let mobileDevicePrestageId: String?
+                let profileName: String?
+            }
+            struct Hardware: Decodable {
+                let serialNumber: String?
             }
             struct Security: Decodable {
                 let passcodePresent: Bool?
@@ -905,55 +927,84 @@ actor JamfClient {
                 let passcodeCompliantWithProfile: Bool?
                 let hardwareEncryption: Int?
             }
-            var unlockToken: String? {
-                [ios, tvos, watchos, visionos].compactMap { $0?.unlockToken }.first { !$0.isEmpty }
-            }
-            /// The security block lives under whichever per-OS object applies.
-            var security: Security? {
-                [ios, tvos, watchos, visionos].compactMap { $0?.security }.first
+            /// Only the assignment is read; the user's own details are left
+            /// alone.
+            struct UserAndLocation: Decodable {
+                let departmentId: String?
+                let buildingId: String?
+                let room: String?
             }
         }
-        // Withheld from the activity log because the response carries the
-        // escrowed unlock token, which an ordinary lookup would otherwise
-        // record for every mobile device the user searches for.
-        var detail: Detail?
-        if let (detailData, detailStatus) = try? await send(
-            path: "/api/v2/mobile-devices/\(general.id)/detail",
-            withholdBodies: true
-        ), (200...299).contains(detailStatus) {
-            detail = try? JSONDecoder().decode(Detail.self, from: detailData)
-        }
-
-        return JamfMobileDeviceRecord(
-            id: String(general.id),
-            udid: detail?.udid ?? general.udid,
-            managementID: detail?.managementId,
-            name: detail?.name ?? general.display_name,
-            lastEnrolledDate: detail?.lastEnrollmentTimestamp
-                ?? DateFormatting.isoFromEpochMilliseconds(general.last_enrollment_epoch),
-            lastInventoryDate: detail?.lastInventoryUpdateTimestamp
-                ?? DateFormatting.isoFromEpochMilliseconds(general.last_inventory_update_epoch),
-            lastContactTime: detail?.lastContactTimestamp,
-            mdmProfileExpiration: detail?.mdmProfileExpirationTimestamp,
-            siteID: detail?.site?.id,
-            siteName: detail?.site?.name,
-            unlockToken: detail?.unlockToken,
-            security: detail?.security.map {
-                MobileSecurityState(
-                    passcodePresent: $0.passcodePresent,
-                    passcodeCompliant: $0.passcodeCompliant,
-                    passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
-                    hardwareEncryption: $0.hardwareEncryption
-                )
-            },
-            osVersion: detail?.osVersion,
-            osBuild: detail?.osBuild,
-            departmentID: detail?.location?.departmentId,
-            buildingID: detail?.location?.buildingId,
-            room: detail?.location?.room,
-            assetTag: detail?.assetTag,
-            enrollmentMethod: detail?.enrollmentMethod
+        // SECURITY and USER_AND_LOCATION are only returned when asked for by
+        // name. HARDWARE carries the serial. USER_AND_LOCATION is masked in
+        // the activity log, as for computers.
+        let pages = try await filteredPages(
+            path: "/api/v2/mobile-devices/detail",
+            sections: ["GENERAL", "HARDWARE", "SECURITY", "USER_AND_LOCATION"],
+            filter: filter
         )
+        var records: [String: JamfMobileDeviceRecord] = [:]
+        for data in pages {
+            for item in try JSONDecoder().decode(Response.self, from: data).results {
+                guard let serial = item.hardware?.serialNumber?.uppercased(), !serial.isEmpty,
+                      records[serial] == nil else { continue }
+                let general = item.general
+                let prestage = general?.enrollmentMethodPrestage
+                records[serial] = JamfMobileDeviceRecord(
+                    id: item.mobileDeviceId,
+                    udid: general?.udid,
+                    managementID: general?.managementId,
+                    name: general?.displayName,
+                    lastEnrolledDate: general?.lastEnrolledDate,
+                    lastInventoryDate: general?.lastInventoryUpdateDate,
+                    lastContactTime: general?.lastContactDate,
+                    mdmProfileExpiration: general?.mdmProfileExpirationDate,
+                    siteID: general?.siteId ?? "-1",
+                    security: item.security.map {
+                        MobileSecurityState(
+                            passcodePresent: $0.passcodePresent,
+                            passcodeCompliant: $0.passcodeCompliant,
+                            passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
+                            hardwareEncryption: $0.hardwareEncryption
+                        )
+                    },
+                    osVersion: general?.osVersion,
+                    osBuild: general?.osBuild,
+                    // The list read writes "none" as -1 here.
+                    departmentID: item.userAndLocation?.departmentId.flatMap { $0 == "-1" ? nil : $0 },
+                    buildingID: item.userAndLocation?.buildingId.flatMap { $0 == "-1" ? nil : $0 },
+                    room: item.userAndLocation?.room,
+                    assetTag: general?.assetTag,
+                    enrolledViaADE: prestage != nil,
+                    enrollmentMethod: prestage.map {
+                        "PreStage enrollment: \($0.profileName ?? "") (\($0.mobileDevicePrestageId ?? ""))"
+                    }
+                )
+            }
+        }
+        return records
+    }
+
+    /// A mobile device's escrowed unlock token, which Clear Passcode needs.
+    /// Read when the command is sent rather than during a lookup, and
+    /// withheld from the activity log, which would otherwise record it.
+    func unlockToken(mobileDeviceID id: String) async throws -> String? {
+        struct Detail: Decodable {
+            // The token lives in the per-OS detail object.
+            let ios: OSDetails?
+            let tvos: OSDetails?
+            let watchos: OSDetails?
+            let visionos: OSDetails?
+            struct OSDetails: Decodable {
+                let unlockToken: String?
+            }
+        }
+        let (data, status) = try await send(path: "/api/v2/mobile-devices/\(id)/detail", withholdBodies: true)
+        try throwIfError(status: status, data: data)
+        let detail = try JSONDecoder().decode(Detail.self, from: data)
+        return [detail.ios, detail.tvos, detail.watchos, detail.visionos]
+            .compactMap { $0?.unlockToken }
+            .first { !$0.isEmpty }
     }
 
     func deleteMobileDevice(id: String) async throws {
@@ -1037,18 +1088,6 @@ actor JamfClient {
     // MARK: PreStages
 
     func prestages(family: JamfPrestageFamily) async throws -> [JamfPrestage] {
-        var lastError: Error?
-        for version in family.listVersions {
-            do {
-                return try await prestageList(family: family, apiVersion: version)
-            } catch {
-                lastError = error
-            }
-        }
-        throw lastError ?? APIError(message: "Could not load PreStages.")
-    }
-
-    private func prestageList(family: JamfPrestageFamily, apiVersion: String) async throws -> [JamfPrestage] {
         struct Response: Decodable {
             let totalCount: Int
             let results: [Item]
@@ -1062,7 +1101,7 @@ actor JamfClient {
         var page = 0
         while true {
             let (data, status) = try await send(
-                path: "/api/\(apiVersion)/\(family.pathComponent)",
+                path: "/api/v3/\(family.pathComponent)",
                 queryItems: [
                     URLQueryItem(name: "page", value: String(page)),
                     URLQueryItem(name: "page-size", value: "100"),
@@ -1299,17 +1338,9 @@ actor JamfClient {
     /// Maps serial number → PreStage ID for every scoped device in the family.
     func prestageAssignments(family: JamfPrestageFamily) async throws -> [String: String] {
         struct Response: Decodable { let serialsByPrestageId: [String: String] }
-        var lastError: Error?
-        for version in family.scopeVersions {
-            do {
-                let (data, status) = try await send(path: "/api/\(version)/\(family.pathComponent)/scope")
-                try throwIfError(status: status, data: data)
-                return try JSONDecoder().decode(Response.self, from: data).serialsByPrestageId
-            } catch {
-                lastError = error
-            }
-        }
-        throw lastError ?? APIError(message: "Could not load PreStage assignments.")
+        let (data, status) = try await send(path: "/api/v2/\(family.pathComponent)/scope")
+        try throwIfError(status: status, data: data)
+        return try JSONDecoder().decode(Response.self, from: data).serialsByPrestageId
     }
 
     func addToPrestage(family: JamfPrestageFamily, prestageID: String, serials: [String]) async throws {
@@ -1322,34 +1353,22 @@ actor JamfClient {
 
     private func changeScope(family: JamfPrestageFamily, prestageID: String, serials: [String], deleting: Bool) async throws {
         struct ScopeResponse: Decodable { let versionLock: Int }
-        var lastError: Error?
-        for version in family.scopeVersions {
-            let scopePath = "/api/\(version)/\(family.pathComponent)/\(prestageID)/scope"
-            // Scope writes are optimistic-locked: read the current versionLock first.
-            // A failure here means this API version isn't served, so try the next one.
-            let versionLock: Int
-            do {
-                let (scopeData, scopeStatus) = try await send(path: scopePath)
-                try throwIfError(status: scopeStatus, data: scopeData)
-                versionLock = try JSONDecoder().decode(ScopeResponse.self, from: scopeData).versionLock
-            } catch {
-                lastError = error
-                continue
-            }
+        let scopePath = "/api/v2/\(family.pathComponent)/\(prestageID)/scope"
+        // Scope writes are optimistic-locked: read the current versionLock first.
+        let (scopeData, scopeStatus) = try await send(path: scopePath)
+        try throwIfError(status: scopeStatus, data: scopeData)
+        let versionLock = try JSONDecoder().decode(ScopeResponse.self, from: scopeData).versionLock
 
-            let body = try JSONSerialization.data(withJSONObject: [
-                "serialNumbers": serials,
-                "versionLock": versionLock,
-            ] as [String: Any])
-            let (data, status) = try await send(
-                path: deleting ? "\(scopePath)/delete-multiple" : scopePath,
-                method: "POST",
-                body: body
-            )
-            try throwIfError(status: status, data: data)
-            return
-        }
-        throw lastError ?? APIError(message: "Could not update the PreStage scope.")
+        let body = try JSONSerialization.data(withJSONObject: [
+            "serialNumbers": serials,
+            "versionLock": versionLock,
+        ] as [String: Any])
+        let (data, status) = try await send(
+            path: deleting ? "\(scopePath)/delete-multiple" : scopePath,
+            method: "POST",
+            body: body
+        )
+        try throwIfError(status: status, data: data)
     }
 
     // MARK: Destructive per-device actions

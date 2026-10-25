@@ -8,7 +8,7 @@ import Foundation
 /// capacity, iCloud backup state, network information and an owner; the owner
 /// is a person, and in a school usually a pupil, so it is deliberately not
 /// read into the app at all.
-struct JamfSchoolDevice: Sendable {
+nonisolated struct JamfSchoolDevice: Sendable {
     let udid: String
     let serialNumber: String
     let name: String?

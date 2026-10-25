@@ -380,11 +380,6 @@ nonisolated enum DateFormatting {
         guard date > earliestPlausibleDate else { return "—" }
         return date.formatted(date: .abbreviated, time: .omitted)
     }
-
-    static func isoFromEpochMilliseconds(_ milliseconds: Int64?) -> String? {
-        guard let milliseconds, milliseconds > 0 else { return nil }
-        return ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1000))
-    }
 }
 
 // MARK: - Lookup model
@@ -510,6 +505,9 @@ final class LookupModel {
     /// selection arriving together do not both ask for it. Nil on failure,
     /// which is kept distinct from an instance that has no ADE devices.
     private var adeInstanceReads: [UUID: Task<[String: String]?, Never>] = [:]
+    /// Each connection's target from the last lookup, which the refresh
+    /// after an action reuses rather than re-reading the server's lists.
+    private var lookupTargets: [UUID: MDMTargetContext] = [:]
 
     /// Above this many devices, Apple Business is read in bulk rather than
     /// one device at a time. Apple allows roughly twenty requests a minute
@@ -848,16 +846,15 @@ final class LookupModel {
         totalLookups = serials.count
         defer { totalLookups = 0 }
 
-        let context = await makeContext(deviceCount: serials.count)
+        let context = await makeContext(serials: serials)
         typealias RowResult = (String, FetchState<ABMInfo>, FetchState<ManagedDeviceInfo>, [ManagedDeviceInfo], MDMVerdict?)
         await withTaskGroup(of: RowResult.self) { group in
             var pending = serials.makeIterator()
             func addNext() {
                 guard let serial = pending.next() else { return }
                 group.addTask {
-                    async let abm = Self.fetchABM(context: context, serial: serial)
-                    async let states = Self.fetchMDMStates(context: context, serial: serial)
-                    let (abmState, mdmStates) = await (abm, states)
+                    let abmState = await Self.fetchABM(context: context, serial: serial)
+                    let mdmStates = Self.fetchMDMStates(context: context, serial: serial)
                     let resolved = Self.resolveRecords(serial: serial, abm: abmState, states: mdmStates, context: context)
                     return (serial, abmState, resolved.mdm, resolved.others, resolved.verdict)
                 }
@@ -879,7 +876,11 @@ final class LookupModel {
     /// Passes the row count so a refresh after a bulk change rebuilds the
     /// organization snapshot instead of asking Apple per device, which the
     /// request quota would stretch to hours.
-    func refreshRows(_ serials: [String]) async {
+    ///
+    /// The devices' records are read again; the servers' lists are reused
+    /// from the lookup, since no action changes them. The one exception is
+    /// PreStage scope, which `prestageScopeChanged` re-reads.
+    func refreshRows(_ serials: [String], prestageScopeChanged: Bool = false) async {
         // The organizations those devices were found in. A refresh after an
         // action need not search the others: nothing happened to them, and
         // re-reading one costs a minute of its quota.
@@ -887,11 +888,16 @@ final class LookupModel {
             reports.first { $0.serial == serial }?.abm.value?.orgID
         })
         let orgs = affected.isEmpty ? nil : settings.abmOrgs.filter { affected.contains($0.id) }
-        let context = await makeContext(deviceCount: serials.count, orgs: orgs)
+        let context = await makeContext(
+            serials: serials,
+            orgs: orgs,
+            refreshing: true,
+            prestageScopeChanged: prestageScopeChanged
+        )
         for serial in serials {
             guard let index = reports.firstIndex(where: { $0.serial == serial }) else { continue }
             let abmState = await Self.fetchABM(context: context, serial: serial)
-            let states = await Self.fetchMDMStates(context: context, serial: serial)
+            let states = Self.fetchMDMStates(context: context, serial: serial)
             let resolved = Self.resolveRecords(serial: serial, abm: abmState, states: states, context: context)
             reports[index].abm = abmState
             reports[index].mdm = resolved.mdm
@@ -1907,7 +1913,7 @@ final class LookupModel {
                 try await jamf.addToPrestage(family: family, prestageID: newID, serials: affected)
             }
         }
-        await refreshRows(affected)
+        await refreshRows(affected, prestageScopeChanged: true)
     }
 
     /// Sets or clears one device's asset tag, on whichever Jamf product holds
@@ -2226,11 +2232,14 @@ final class LookupModel {
                     failures.append("\(target.serial): the record has no management ID. Run a fresh lookup first.")
                     continue
                 }
-                guard let unlockToken = target.info.unlockToken, !unlockToken.isEmpty else {
-                    failures.append("\(target.serial): Jamf Pro has no escrowed unlock token for this device, so the passcode cannot be cleared.")
-                    continue
-                }
                 do {
+                    // Read now rather than carried from the lookup: the
+                    // token is a secret, needed only for the devices the
+                    // command goes to.
+                    guard let unlockToken = try await jamf.unlockToken(mobileDeviceID: target.info.recordID) else {
+                        failures.append("\(target.serial): Jamf Pro has no escrowed unlock token for this device, so the passcode cannot be cleared.")
+                        continue
+                    }
                     try await jamf.sendModernCommand(
                         commandData: ["commandType": "CLEAR_PASSCODE", "unlockToken": unlockToken],
                         managementIDs: [managementID]
@@ -2460,6 +2469,11 @@ final class LookupModel {
         var mobilePrestageNames: [String: String] = [:]
         var departmentNames: [String: String] = [:]
         var buildingNames: [String: String] = [:]
+        var siteNames: [String: String] = [:]
+        /// The lookup's serials, read from Jamf Pro in chunks before the
+        /// rows rather than a request or three per device.
+        var proComputers = JamfBatch<JamfComputerRecord>()
+        var proMobileDevices = JamfBatch<JamfMobileDeviceRecord>()
         /// Every device in the Jamf School instance, keyed by serial. Read in
         /// one request whatever the size of the lookup, because Jamf School
         /// serves the whole fleet at once and per-device lookups would only
@@ -2509,8 +2523,15 @@ final class LookupModel {
     /// `orgs` narrows the Apple side to particular organizations, which is
     /// what a refresh after an action passes: the devices it is refreshing
     /// are known to belong to one organization, and the others have not
-    /// changed.
-    private func makeContext(deviceCount: Int = 0, orgs: [ABMConfig]? = nil) async -> LookupContext {
+    /// changed. `refreshing` reuses the last lookup's per-connection lists
+    /// for the same reason.
+    private func makeContext(
+        serials: [String],
+        orgs: [ABMConfig]? = nil,
+        refreshing: Bool = false,
+        prestageScopeChanged: Bool = false
+    ) async -> LookupContext {
+        let deviceCount = serials.count
         var context = LookupContext()
         // One entry per organization being read. A snapshot already in hand
         // answers instantly, so it is used whatever the size of the lookup.
@@ -2562,7 +2583,12 @@ final class LookupModel {
             context.abmOrgs.append(entry)
         }
         for connection in mdmConnectionsInScope {
-            if let target = await makeMDMTarget(for: connection) {
+            var target = refreshing
+                ? await refreshedMDMTarget(for: connection, serials: serials, prestageScopeChanged: prestageScopeChanged)
+                : nil
+            if target == nil { target = await makeMDMTarget(for: connection, serials: serials) }
+            if let target {
+                lookupTargets[connection.id] = target
                 context.mdmTargets.append(target)
                 context.connectionNames[connection.id] = connection.displayName
             }
@@ -2655,9 +2681,10 @@ final class LookupModel {
     }
 
     /// Builds one connection's target: its client plus the per-server data a
-    /// lookup consults per device. Nil when the connection has no usable
-    /// credentials, which reads as not configured.
-    private func makeMDMTarget(for connection: MDMConnection) async -> MDMTargetContext? {
+    /// lookup consults per device, and on Jamf Pro the records for `serials`.
+    /// Nil when the connection has no usable credentials, which reads as not
+    /// configured.
+    private func makeMDMTarget(for connection: MDMConnection, serials: [String]) async -> MDMTargetContext? {
         var target = MDMTargetContext(
             connectionID: connection.id,
             connectionName: connection.displayName,
@@ -2668,10 +2695,10 @@ final class LookupModel {
         case .jamfPro:
             guard let jamf = makeJamfClient(for: connection) else { return nil }
             target.proClient = jamf
-            // Started together rather than one after another. All seven are
-            // independent, and every one has to finish before the first
-            // device is looked up, so serially they were seven round trips of
-            // dead time at the head of every lookup.
+            // Started together rather than one after another. All are
+            // independent, and every one has to finish before the first row
+            // is filled, so serially they were a round trip each of dead
+            // time at the head of every lookup.
             async let computerPrestages = try? jamf.prestages(family: .computer)
             async let mobileDevicePrestages = try? jamf.prestages(family: .mobileDevice)
             async let siteList = try? jamf.sites()
@@ -2679,6 +2706,8 @@ final class LookupModel {
             async let mobileScope = try? jamf.prestageAssignments(family: .mobileDevice)
             async let departmentList = try? jamf.departmentNames()
             async let buildingList = try? jamf.buildingNames()
+            async let computers = jamf.computers(serials: serials)
+            async let mobileDevices = jamf.mobileDevices(serials: serials)
             // Stored even when a read fails: an empty entry for this server
             // beats keeping an older one, and the keying per connection is
             // what stops one server's taxonomy from serving another's pickers.
@@ -2693,6 +2722,9 @@ final class LookupModel {
             target.mobilePrestageBySerial = await mobileScope ?? [:]
             target.departmentNames = await departmentList ?? [:]
             target.buildingNames = await buildingList ?? [:]
+            target.siteNames = Dictionary(taxonomy.sites.map { ($0.id, $0.name) }) { first, _ in first }
+            target.proComputers = await computers
+            target.proMobileDevices = await mobileDevices
         case .jamfSchool:
             guard let school = makeJamfSchoolClient(for: connection) else { return nil }
             target.schoolClient = school
@@ -2721,6 +2753,40 @@ final class LookupModel {
             // handful of requests against a per-device cost of one each.
             target.intuneFleet = (try? await intune.fleet()) ?? [:]
             taxonomyByConnection[connection.id] = ConnectionTaxonomy()
+        }
+        return target
+    }
+
+    /// The last lookup's target for a connection with its records read
+    /// again, or nil when there is none to reuse — including when the
+    /// connection's credentials changed since, which gives it a new client.
+    /// Jamf School and Intune records come from the fleet read, so the
+    /// fleet is what is read again there.
+    private func refreshedMDMTarget(
+        for connection: MDMConnection,
+        serials: [String],
+        prestageScopeChanged: Bool
+    ) async -> MDMTargetContext? {
+        guard var target = lookupTargets[connection.id] else { return nil }
+        switch connection.product {
+        case .jamfPro:
+            guard let jamf = makeJamfClient(for: connection), jamf === target.proClient else { return nil }
+            async let computers = jamf.computers(serials: serials)
+            async let mobileDevices = jamf.mobileDevices(serials: serials)
+            if prestageScopeChanged {
+                async let computerScope = try? jamf.prestageAssignments(family: .computer)
+                async let mobileScope = try? jamf.prestageAssignments(family: .mobileDevice)
+                target.computerPrestageBySerial = await computerScope ?? [:]
+                target.mobilePrestageBySerial = await mobileScope ?? [:]
+            }
+            target.proComputers = await computers
+            target.proMobileDevices = await mobileDevices
+        case .jamfSchool:
+            guard let school = makeJamfSchoolClient(for: connection), school === target.schoolClient else { return nil }
+            target.schoolFleet = (try? await school.fleet()) ?? [:]
+        case .intune:
+            guard let intune = makeIntuneClient(for: connection), intune === target.intuneClient else { return nil }
+            target.intuneFleet = (try? await intune.fleet()) ?? [:]
         }
         return target
     }
@@ -2823,7 +2889,7 @@ final class LookupModel {
     /// Passcode state is absent, because it is not on the list endpoint. It is
     /// read per device when one is selected, the same way AppleCare coverage
     /// is on the Apple side.
-    private static func fetchJamfSchool(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
+    nonisolated private static func fetchJamfSchool(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
         guard let device = target.schoolFleet[serial.uppercased()] else { return .notFound }
         return .found(ManagedDeviceInfo(
             recordID: device.udid,
@@ -2864,7 +2930,7 @@ final class LookupModel {
     /// No UDID and no management ID: Graph populates `udid` only on a
     /// single-device request, and every Intune action is addressed by the
     /// managed device ID instead, so neither is needed.
-    private static func fetchIntune(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
+    nonisolated private static func fetchIntune(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
         guard let device = target.intuneFleet[serial.uppercased()] else { return .notFound }
         return .found(ManagedDeviceInfo(
             recordID: device.id,
@@ -2913,12 +2979,16 @@ final class LookupModel {
         ))
     }
 
-    /// Reads every connection in scope for one serial, in configured order.
+    /// Every connection in scope's record for one serial, in configured
+    /// order. Nothing is requested here: each connection's records were read
+    /// when the context was made.
     nonisolated private static func fetchMDMStates(
         context: LookupContext,
         serial: String
-    ) async -> [(connectionID: UUID, state: FetchState<ManagedDeviceInfo>)] {
-        var states = await fetchConnectionStates(context: context, serial: serial)
+    ) -> [(connectionID: UUID, state: FetchState<ManagedDeviceInfo>)] {
+        var states = context.mdmTargets.map {
+            (connectionID: $0.connectionID, state: fetchMDM(target: $0, serial: serial))
+        }
         // Apple's built-in management contributes a record like any other
         // source, in every scope; being read-only, it never contributes an
         // action.
@@ -2937,25 +3007,6 @@ final class LookupModel {
             ))))
         }
         return states
-    }
-
-    /// The configured connections' half of the states, in configured order.
-    nonisolated private static func fetchConnectionStates(
-        context: LookupContext,
-        serial: String
-    ) async -> [(connectionID: UUID, state: FetchState<ManagedDeviceInfo>)] {
-        guard context.mdmTargets.count > 1 else {
-            guard let target = context.mdmTargets.first else { return [] }
-            return [(target.connectionID, await fetchMDM(target: target, serial: serial))]
-        }
-        return await withTaskGroup(of: (Int, FetchState<ManagedDeviceInfo>).self) { group in
-            for (index, target) in context.mdmTargets.enumerated() {
-                group.addTask { (index, await fetchMDM(target: target, serial: serial)) }
-            }
-            var states = [FetchState<ManagedDeviceInfo>?](repeating: nil, count: context.mdmTargets.count)
-            for await (index, state) in group { states[index] = state }
-            return zip(context.mdmTargets, states).map { ($0.connectionID, $1 ?? .notFound) }
-        }
     }
 
     /// Chooses a device's working record and classifies the rest.
@@ -3091,83 +3142,84 @@ final class LookupModel {
         return .unverified("Records on \(records.map { name($0.connectionID) }.formatted(.list(type: .and))); the assignment cannot settle which is current")
     }
 
-    /// Reads one connection for one serial.
-    private static func fetchMDM(target: MDMTargetContext, serial: String) async -> FetchState<ManagedDeviceInfo> {
+    /// One connection's record for one serial, from what the context read.
+    nonisolated private static func fetchMDM(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
         if target.schoolClient != nil {
             return fetchJamfSchool(target: target, serial: serial)
         }
         if target.intuneClient != nil {
             return fetchIntune(target: target, serial: serial)
         }
-        guard let client = target.proClient else { return .notConfigured }
-        do {
-            if let record = try await client.computer(serial: serial) {
-                let prestageID = target.computerPrestageBySerial[serial]
-                let webURL = target.consoleBaseURL.flatMap { URL(string: "\($0)/computers.html?id=\(record.id)&o=r") }
-                return .found(ManagedDeviceInfo(
-                    recordID: record.id,
-                    connectionID: target.connectionID,
-                    kind: .computer,
-                    udid: record.udid,
-                    managementID: record.managementID,
-                    name: record.name,
-                    siteID: record.siteID,
-                    siteName: record.siteName,
-                    department: record.departmentID.flatMap { target.departmentNames[$0] },
-                    building: record.buildingID.flatMap { target.buildingNames[$0] },
-                    room: record.room,
-                    assetTag: record.assetTag?.isEmpty == false ? record.assetTag : nil,
-                    enrolledViaADE: record.enrolledViaADE,
-                    enrollmentMethod: record.enrollmentMethod,
-                    encryption: record.encryption,
-                    osVersion: record.osVersion,
-                    osBuild: record.osBuild,
-                    lastEnrolledDate: record.lastEnrolledDate,
-                    reportDate: record.reportDate,
-                    lastContactTime: record.lastContactTime,
-                    lastContact: record.lastContact,
-                    mdmProfileExpiration: record.mdmProfileExpiration,
-                    prestageID: prestageID,
-                    prestageName: prestageID.map { target.computerPrestageNames[$0] ?? "PreStage \($0)" },
-                    webURL: webURL
-                ))
-            }
-            if let record = try await client.mobileDevice(serial: serial) {
-                let prestageID = target.mobilePrestageBySerial[serial]
-                let webURL = target.consoleBaseURL.flatMap { URL(string: "\($0)/mobileDevices.html?id=\(record.id)&o=r") }
-                return .found(ManagedDeviceInfo(
-                    recordID: record.id,
-                    connectionID: target.connectionID,
-                    kind: .mobileDevice,
-                    udid: record.udid,
-                    managementID: record.managementID,
-                    name: record.name,
-                    siteID: record.siteID,
-                    siteName: record.siteName,
-                    department: record.departmentID.flatMap { target.departmentNames[$0] },
-                    building: record.buildingID.flatMap { target.buildingNames[$0] },
-                    room: record.room,
-                    assetTag: record.assetTag?.isEmpty == false ? record.assetTag : nil,
-                    enrolledViaADE: record.enrolledViaADE,
-                    enrollmentMethod: record.enrollmentMethod,
-                    unlockToken: record.unlockToken,
-                    security: record.security,
-                    osVersion: record.osVersion,
-                    osBuild: record.osBuild,
-                    lastEnrolledDate: record.lastEnrolledDate,
-                    reportDate: record.lastInventoryDate,
-                    lastContactTime: nil,
-                    lastContact: record.lastContactTime,
-                    mdmProfileExpiration: record.mdmProfileExpiration,
-                    prestageID: prestageID,
-                    prestageName: prestageID.map { target.mobilePrestageNames[$0] ?? "PreStage \($0)" },
-                    webURL: webURL
-                ))
-            }
-            return .notFound
-        } catch {
-            return .failed(error.localizedDescription)
+        guard target.proClient != nil else { return .notConfigured }
+        let upper = serial.uppercased()
+        // A computer record wins, as it did when each serial was asked for
+        // in turn. A failed read is reported rather than passed over, so a
+        // serial is only called absent once both reads have answered.
+        if let failure = target.proComputers.failures[upper] { return .failed(failure) }
+        if let record = target.proComputers.records[upper] {
+            let prestageID = target.computerPrestageBySerial[serial]
+            let webURL = target.consoleBaseURL.flatMap { URL(string: "\($0)/computers.html?id=\(record.id)&o=r") }
+            return .found(ManagedDeviceInfo(
+                recordID: record.id,
+                connectionID: target.connectionID,
+                kind: .computer,
+                udid: record.udid,
+                managementID: record.managementID,
+                name: record.name,
+                siteID: record.siteID,
+                siteName: record.siteName,
+                department: record.departmentID.flatMap { target.departmentNames[$0] },
+                building: record.buildingID.flatMap { target.buildingNames[$0] },
+                room: record.room,
+                assetTag: record.assetTag?.isEmpty == false ? record.assetTag : nil,
+                enrolledViaADE: record.enrolledViaADE,
+                enrollmentMethod: record.enrollmentMethod,
+                encryption: record.encryption,
+                osVersion: record.osVersion,
+                osBuild: record.osBuild,
+                lastEnrolledDate: record.lastEnrolledDate,
+                reportDate: record.reportDate,
+                lastContactTime: record.lastContactTime,
+                lastContact: record.lastContact,
+                mdmProfileExpiration: record.mdmProfileExpiration,
+                prestageID: prestageID,
+                prestageName: prestageID.map { target.computerPrestageNames[$0] ?? "PreStage \($0)" },
+                webURL: webURL
+            ))
         }
+        if let failure = target.proMobileDevices.failures[upper] { return .failed(failure) }
+        if let record = target.proMobileDevices.records[upper] {
+            let prestageID = target.mobilePrestageBySerial[serial]
+            let webURL = target.consoleBaseURL.flatMap { URL(string: "\($0)/mobileDevices.html?id=\(record.id)&o=r") }
+            return .found(ManagedDeviceInfo(
+                recordID: record.id,
+                connectionID: target.connectionID,
+                kind: .mobileDevice,
+                udid: record.udid,
+                managementID: record.managementID,
+                name: record.name,
+                siteID: record.siteID,
+                siteName: record.siteID.flatMap { $0 == "-1" ? nil : target.siteNames[$0] ?? "Site \($0)" },
+                department: record.departmentID.flatMap { target.departmentNames[$0] },
+                building: record.buildingID.flatMap { target.buildingNames[$0] },
+                room: record.room,
+                assetTag: record.assetTag?.isEmpty == false ? record.assetTag : nil,
+                enrolledViaADE: record.enrolledViaADE,
+                enrollmentMethod: record.enrollmentMethod,
+                security: record.security,
+                osVersion: record.osVersion,
+                osBuild: record.osBuild,
+                lastEnrolledDate: record.lastEnrolledDate,
+                reportDate: record.lastInventoryDate,
+                lastContactTime: nil,
+                lastContact: record.lastContactTime,
+                mdmProfileExpiration: record.mdmProfileExpiration,
+                prestageID: prestageID,
+                prestageName: prestageID.map { target.mobilePrestageNames[$0] ?? "PreStage \($0)" },
+                webURL: webURL
+            ))
+        }
+        return .notFound
     }
 
 }

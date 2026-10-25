@@ -47,8 +47,6 @@ struct ManagedDeviceInfo: Sendable {
     /// device is still there is what the activity fields say.
     var enrolledViaADE: Bool?
     var enrollmentMethod: String?
-    /// Escrowed unlock token (mobile devices), needed for Clear Passcode.
-    var unlockToken: String?
     /// Encryption state, from the inventory record rather than the
     /// recovery-key endpoint, so an ordinary lookup can show it. FileVault on
     /// the computers Jamf Pro reports it for; Intune fills only the flag, for

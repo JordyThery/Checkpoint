@@ -73,6 +73,8 @@ Above 15 devices the Apple organization is read in bulk instead of one device at
 
 **AppleCare coverage** is the one thing not available in bulk, because Apple serves it only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device. **Passcode state on Jamf School** works the same way, for the same reason: it appears only in that product's per-device record, not in its device list.
 
+**Jamf Pro is read fifty serials per request**, computers and mobile devices side by side, so a lookup of 600 devices costs about thirty requests rather than a thousand and takes seconds. Clear Passcode reads the escrowed unlock token for the devices it is sent to, when it is sent; a lookup never carries it. The refresh after an action reads the devices' records again and reuses the server's lists — PreStages, sites, departments and buildings — from the lookup, re-reading PreStage scope only after a PreStage change.
+
 Jamf School has no request quota and no pagination, and serves the whole instance in one request, so a lookup of any size costs one request there whatever its size.
 
 **Intune is read the same way**, for a different reason: Microsoft Graph documents which properties `$filter` accepts and the serial number is not among them, so there is no per-serial query to make. The tenant is read once per lookup, a thousand devices per page, and matched locally. Graph throttles per application, and a throttled request is retried once its `Retry-After` has passed.
