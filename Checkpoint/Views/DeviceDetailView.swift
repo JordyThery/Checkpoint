@@ -63,6 +63,9 @@ struct DeviceDetailView: View {
     @State private var historyLoaded = false
     @State private var isLoadingHistory = false
     @State private var showingFullHistory = false
+    /// Management state from Apple's built-in device management, for records
+    /// it holds. Fetched on selection like the other per-device reads.
+    @State private var appleDetail: ABMManagedDeviceDetail?
 
     private enum PendingAction {
         case applyMDM
@@ -117,10 +120,44 @@ struct DeviceDetailView: View {
         }
     }
 
+
+    /// What Apple's built-in management reports about the device. Read on
+    /// selection; read-only by nature of the API.
+    @ViewBuilder
+    private var appleManagementRows: some View {
+        if let detail = appleDetail {
+            if let os = detail.osVersion, !os.isEmpty {
+                LabeledContent("OS Version", value: os)
+            }
+            LabeledContent("Last Check-in", value: DateFormatting.short(detail.lastCheckInDateTime))
+            if let fileVault = detail.isFileVaultEnabled {
+                LabeledContent("FileVault") {
+                    Text(fileVault ? "Enabled" : "Not enabled")
+                        .foregroundStyle(fileVault ? Color.primary : Color.orange)
+                }
+            }
+            if let firewall = detail.isFirewallEnabled {
+                LabeledContent("Firewall", value: firewall ? "Enabled" : "Not enabled")
+            }
+            if detail.deviceLockStatus?.uppercased() == "LOCKED" {
+                LabeledContent("Locked") { Text("Yes").foregroundStyle(.orange) }
+            }
+            if detail.lostModeStatus?.uppercased() == "ENABLED" {
+                LabeledContent("Lost Mode") { Text("Enabled").foregroundStyle(.orange) }
+            }
+            if detail.deviceEraseStatus?.uppercased() == "ERASED" {
+                LabeledContent("Erased") { Text("Yes").foregroundStyle(.orange) }
+            }
+        } else {
+            LabeledContent("Management State") { ProgressView().controlSize(.small) }
+        }
+    }
+
     /// The MDM section is titled for the record's product once there is a
     /// record, and for the scope before there is one.
     private var mdmSectionTitle: String {
-        report.mdm.value != nil ? model.product(for: report).label : model.mdmScopeLabel
+        if report.mdm.value?.managedByApple == true { return "Apple Device Management" }
+        return report.mdm.value != nil ? model.product(for: report).label : model.mdmScopeLabel
     }
 
     private var missingConnectionHint: String {
@@ -163,7 +200,10 @@ struct DeviceDetailView: View {
                 }
             }
             Section(mdmSectionTitle) { mdmContent }
-            if let info = report.mdm.value {
+            // Apple's built-in management takes no commands and no record
+            // changes, so its records get the reporting section alone; the
+            // Apple actions above are the ones that apply.
+            if let info = report.mdm.value, !info.managedByApple {
                 Section { mdmActions(info) }
                 if !localAdmins.isEmpty {
                     Section("Managed Local Administrator Accounts") { localAdminRows }
@@ -822,6 +862,9 @@ struct DeviceDetailView: View {
         if let room = info.room, !room.isEmpty {
             LabeledContent("Room", value: room)
         }
+        if info.managedByApple {
+            appleManagementRows
+        }
         // No read-only asset tag row: the editable field among the actions
         // shows the current value, and one label should not appear twice.
         if capabilities.contains(.enrollmentDate) {
@@ -1313,6 +1356,8 @@ struct DeviceDetailView: View {
             schoolDetails = await model.jamfSchoolDetails(for: report)
             return
         }
+        appleDetail = report.mdm.value?.managedByApple == true
+            ? await model.appleManagementDetail(for: report) : nil
         compliance = await model.deviceCompliance(for: report)
         // Gated rather than left to the client factory to refuse: a product
         // with no declarative reporting should not be asked in the first

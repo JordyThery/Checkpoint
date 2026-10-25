@@ -17,8 +17,14 @@ struct ManagedDeviceInfo: Sendable {
     /// device ID. Opaque here — only that product's client interprets it.
     var recordID: String
     /// The configured connection the record came from, which is what routes
-    /// an action on it back to the right server.
+    /// an action on it back to the right server. For a record from Apple's
+    /// built-in device management this is the Apple organization's ID, and
+    /// `managedByApple` says so.
     var connectionID: UUID?
+    /// True for a record from Apple's built-in device management, which is
+    /// read-only: no commands, no removal, and the Apple actions are the only
+    /// ones that apply to it.
+    var managedByApple: Bool = false
     var kind: DeviceKind
     var udid: String?
     /// UUID used by the modern /v2/mdm/commands endpoint.

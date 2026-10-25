@@ -503,6 +503,9 @@ final class LookupModel {
     /// combined lookup's classification. Session caches, like the above.
     private var adeSerialsCache: [UUID: Set<String>] = [:]
     private var adeServerUUIDsCache: [UUID: Set<String>] = [:]
+    /// Apple's built-in device management fleet, per Business organization.
+    /// Session cache like the ADE sets; nil entry means not read yet.
+    private var appleManagedFleetCache: [UUID: [String: ABMManagedDevice]] = [:]
     /// One read in flight per server, so a device selection and a bulk
     /// selection arriving together do not both ask for it. Nil on failure,
     /// which is kept distinct from an instance that has no ADE devices.
@@ -747,12 +750,23 @@ final class LookupModel {
         readsAllConnections ? "Device Name" : "\(mdmProduct.label) Device Name"
     }
 
-    /// The connection a record came from, else the selected one.
+    /// The connection a record came from, else the selected one. A record
+    /// from Apple's built-in management has no connection at all: it must
+    /// never inherit the selected one, or its record would be offered
+    /// another product's actions.
     func connection(for info: ManagedDeviceInfo?) -> MDMConnection? {
+        if info?.managedByApple == true { return nil }
         if let id = info?.connectionID, let match = settings.mdmConnections.first(where: { $0.id == id }) {
             return match
         }
         return selectedConnection
+    }
+
+    /// What to call the place a record lives, for sentences and cells:
+    /// the connection's name, or Apple's built-in management.
+    func sourceName(for info: ManagedDeviceInfo?) -> String? {
+        if info?.managedByApple == true { return "Apple Device Management" }
+        return connection(for: info)?.displayName
     }
 
     func connection(for report: DeviceReport) -> MDMConnection? {
@@ -767,7 +781,10 @@ final class LookupModel {
     }
 
     func capabilities(for report: DeviceReport) -> MDMCapabilities {
-        connection(for: report)?.capabilities ?? mdmCapabilities
+        // Apple's built-in management is read-only reporting: none of the
+        // capability-gated rows, pickers or commands apply to its records.
+        if report.mdm.value?.managedByApple == true { return [] }
+        return connection(for: report)?.capabilities ?? mdmCapabilities
     }
 
     /// The one connection an MDM action can act through for these reports, or
@@ -777,7 +794,10 @@ final class LookupModel {
     func mdmActionConnection(for reports: [DeviceReport]) -> MDMConnection? {
         let ids = Set(reports.compactMap { $0.mdm.value?.connectionID })
         if ids.count == 1, let id = ids.first {
-            return settings.mdmConnections.first { $0.id == id } ?? selectedConnection
+            // An identifier no configured connection matches — a record from
+            // Apple's built-in management, or a connection since removed —
+            // must not quietly act through the selected connection instead.
+            return settings.mdmConnections.first { $0.id == id }
         }
         return ids.isEmpty ? selectedConnection : nil
     }
@@ -785,7 +805,10 @@ final class LookupModel {
     /// Why the MDM actions are unavailable for this selection, or nil.
     func mdmActionUnavailableReason(for reports: [DeviceReport]) -> String? {
         guard mdmActionConnection(for: reports) == nil else { return nil }
-        let names = Set(reports.compactMap { connection(for: $0)?.displayName }).sorted()
+        if reports.allSatisfy({ $0.mdm.value?.managedByApple != false }) {
+            return "These devices are enrolled in Apple's built-in device management, which takes no MDM commands. The Apple actions above still apply."
+        }
+        let names = Set(reports.compactMap { sourceName(for: $0.mdm.value) }).sorted()
         return "The selected records are on \(names.formatted(.list(type: .and))). "
             + "MDM actions work through one connection at a time, so narrow the selection to one of them."
     }
@@ -1530,6 +1553,16 @@ final class LookupModel {
         return try? await abm.auditEvents(serial: report.serial, start: start, end: Date(), cursor: cursor)
     }
 
+    /// The management state of a device under Apple's built-in management,
+    /// read on selection — the per-device detail is where check-in, FileVault
+    /// and the lock, Lost Mode and erase statuses live.
+    func appleManagementDetail(for report: DeviceReport) async -> ABMManagedDeviceDetail? {
+        guard let info = report.mdm.value, info.managedByApple,
+              let abmInfo = report.abm.value,
+              let abm = clientForOrg(of: abmInfo) else { return nil }
+        return try? await abm.appleManagedDeviceDetails(id: info.recordID)
+    }
+
     /// The client for the organization a device was found in, falling back to
     /// the one in scope for a record from before organizations were recorded.
     private func clientForOrg(of info: ABMInfo) -> ABMClient? {
@@ -1705,7 +1738,9 @@ final class LookupModel {
     func staleRecords(in reports: [DeviceReport]) -> [(serial: String, info: ManagedDeviceInfo)] {
         reports.flatMap { report -> [(String, ManagedDeviceInfo)] in
             guard case .staleElsewhere = report.mdmVerdict else { return [] }
-            return report.otherRecords.map { (report.serial, $0) }
+            // A record in Apple's built-in management cannot be removed by
+            // API, so it is never a cleanup candidate.
+            return report.otherRecords.filter { !$0.managedByApple }.map { (report.serial, $0) }
         }
     }
 
@@ -1752,6 +1787,10 @@ final class LookupModel {
         _ entries: [(serial: String, info: ManagedDeviceInfo)],
         connection: MDMConnection
     ) async -> [String] {
+        // Defence in depth: nothing routes these here, and nothing may.
+        if let appleManaged = entries.first(where: { $0.info.managedByApple }) {
+            return ["\(appleManaged.serial): records in Apple's built-in device management cannot be removed by API."]
+        }
         let product = connection.product
         let school = makeJamfSchoolClient(for: connection)
         let intune = makeIntuneClient(for: connection)
@@ -2455,9 +2494,14 @@ final class LookupModel {
         /// assigned connection — allowing for sync lag after a reassignment.
         var adeSerialsByConnection: [UUID: Set<String>] = [:]
         /// Apple service ID → the connection whose token carries it. Jamf Pro
-        /// publishes the ID on its tokens; the other products do not.
+        /// publishes the ID on its tokens; the other products do not. Apple's
+        /// built-in service maps to its organization's ID, exactly.
         var connectionIDByServerUUID: [String: UUID] = [:]
         var connectionNames: [UUID: String] = [:]
+        /// Devices enrolled in Apple's built-in device management, per
+        /// Business organization that has the service. Read once per session;
+        /// contributes records in combined lookups only.
+        var appleManagedByOrg: [UUID: [String: ABMManagedDevice]] = [:]
     }
 
     /// Builds the clients and snapshots a lookup reads from.
@@ -2534,8 +2578,31 @@ final class LookupModel {
                     context.connectionIDByServerUUID[uuid] = connection.id
                 }
             }
+            // Apple's built-in device management joins as a source of its
+            // own wherever a Business organization in scope carries the
+            // service — automatically, because the service's existence is
+            // the whole answer. The service ID maps to the organization
+            // exactly, so classification needs no inference here.
+            for org in context.abmOrgs where org.kind == .business {
+                guard let service = (mdmServersByOrg[org.id] ?? []).first(where: \.isAppleManagement) else { continue }
+                let fleet = await appleManagedFleet(for: org)
+                context.appleManagedByOrg[org.id] = fleet
+                context.connectionNames[org.id] = "Apple Device Management"
+                context.connectionIDByServerUUID[Self.normalizedServiceID(service.id)] = org.id
+                context.adeSerialsByConnection[org.id] = Set(fleet.keys)
+            }
         }
         return context
+    }
+
+    /// The built-in management fleet of one organization, read once per
+    /// session. Empty both for an organization without the service and for
+    /// one whose service has no enrolled devices.
+    private func appleManagedFleet(for org: ABMOrgContext) async -> [String: ABMManagedDevice] {
+        if let cached = appleManagedFleetCache[org.id] { return cached }
+        let fleet = (try? await org.client.appleManagedDevices()) ?? [:]
+        appleManagedFleetCache[org.id] = fleet
+        return fleet
     }
 
     /// ADE serial membership for one connection, read once per session. The
@@ -2853,7 +2920,7 @@ final class LookupModel {
             guard let target = context.mdmTargets.first else { return [] }
             return [(target.connectionID, await fetchMDM(target: target, serial: serial))]
         }
-        return await withTaskGroup(of: (Int, FetchState<ManagedDeviceInfo>).self) { group in
+        var states = await withTaskGroup(of: (Int, FetchState<ManagedDeviceInfo>).self) { group in
             for (index, target) in context.mdmTargets.enumerated() {
                 group.addTask { (index, await fetchMDM(target: target, serial: serial)) }
             }
@@ -2861,6 +2928,23 @@ final class LookupModel {
             for await (index, state) in group { states[index] = state }
             return zip(context.mdmTargets, states).map { ($0.connectionID, $1 ?? .notFound) }
         }
+        // Apple's built-in management contributes a record like any other
+        // source; being read-only, it never contributes an action.
+        for (orgID, fleet) in context.appleManagedByOrg {
+            guard let device = fleet[serial.uppercased()] else { continue }
+            states.append((orgID, .found(ManagedDeviceInfo(
+                recordID: device.id,
+                connectionID: orgID,
+                managedByApple: true,
+                kind: device.kind,
+                name: device.deviceName,
+                // Enrollment into the built-in service only happens through
+                // Apple's own assignment, so membership is the method.
+                enrolledViaADE: true,
+                isManaged: true
+            ))))
+        }
+        return states
     }
 
     /// Chooses a device's working record and classifies the rest.

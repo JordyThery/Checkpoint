@@ -58,6 +58,10 @@ struct ContentView: View {
             capabilities: model.mdmCapabilities,
             connectionNames: Dictionary(
                 settings.mdmConnections.map { ($0.id, $0.displayName) }
+                    // Apple's built-in management records carry their
+                    // organization's ID; name them for the filter.
+                    + settings.abmOrgs.filter { $0.kind == .business }
+                        .map { ($0.id, "Apple Device Management") }
             ) { first, _ in first },
             combinedLookup: model.readsAllConnections
         )
@@ -618,7 +622,7 @@ struct ContentView: View {
         if model.readsAllConnections {
             TableColumn("Connection", value: \.connectionText) { (report: DeviceReport) in
                 FetchText(state: report.mdm) { info in
-                    model.connection(for: info)?.displayName ?? "—"
+                    model.sourceName(for: info) ?? "—"
                 }
             }
             .customizationID("mdmConnection")

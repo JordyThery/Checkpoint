@@ -64,6 +64,36 @@ struct ABMDevice: Decodable, Sendable {
 }
 
 
+
+/// A device enrolled in Apple's built-in device management, as its list
+/// reports it. The interesting state lives on the per-device detail.
+nonisolated struct ABMManagedDevice: Sendable {
+    /// The opaque resource ID the detail endpoint is addressed by — not the
+    /// serial number.
+    let id: String
+    let serialNumber: String
+    let deviceName: String?
+    let productFamily: String?
+
+    var kind: DeviceKind {
+        productFamily?.uppercased() == "MAC" ? .computer : .mobileDevice
+    }
+}
+
+/// The management state of one device under Apple's built-in management.
+/// Read-only throughout: the API publishes no commands for these devices,
+/// so this is reporting, never control.
+nonisolated struct ABMManagedDeviceDetail: Sendable, Decodable {
+    let lastCheckInDateTime: String?
+    let osVersion: String?
+    let platform: String?
+    let isFileVaultEnabled: Bool?
+    let isFirewallEnabled: Bool?
+    let deviceLockStatus: String?
+    let deviceEraseStatus: String?
+    let lostModeStatus: String?
+}
+
 /// One audit event about a device, reduced to what the history shows: when,
 /// what, by whom, and whether it succeeded. The organization records far more
 /// event types; only device events carry a serial as their subject, so only
@@ -169,6 +199,12 @@ nonisolated struct ABMActivationLock: Sendable {
 struct MDMServer: Sendable, Identifiable, Hashable {
     let id: String
     let name: String
+    /// MDM, APPLE_CONFIGURATOR or APPLE_MDM — the last is Apple's built-in
+    /// device management. Nil on entries read before the field existed.
+    let serverType: String?
+    let status: String?
+
+    var isAppleManagement: Bool { serverType?.uppercased() == "APPLE_MDM" }
 }
 
 nonisolated enum ABMSnapshotProgress: Sendable {
@@ -382,6 +418,57 @@ actor ABMClient {
     }
 
 
+
+    /// Every device enrolled in Apple's built-in device management, keyed by
+    /// serial. The endpoint offers no filters, so the list is read whole and
+    /// matched locally — these fleets are small by nature.
+    func appleManagedDevices() async throws -> [String: ABMManagedDevice] {
+        struct Response: Decodable {
+            let data: [Item]
+            let links: Links?
+            struct Item: Decodable {
+                let id: String
+                let attributes: Attributes
+            }
+            struct Attributes: Decodable {
+                let serialNumber: String?
+                let deviceName: String?
+                let productFamily: String?
+            }
+            struct Links: Decodable { let next: String? }
+        }
+        var devices: [String: ABMManagedDevice] = [:]
+        var nextURL: URL? = URL(string: "/v1/mdmDevices?limit=100", relativeTo: baseURL)?.absoluteURL
+        while let url = nextURL {
+            let (data, status) = try await send(url: url)
+            try throwIfError(status: status, data: data)
+            let page = try JSONDecoder().decode(Response.self, from: data)
+            for item in page.data {
+                guard let serial = item.attributes.serialNumber, !serial.isEmpty else { continue }
+                devices[serial.uppercased()] = ABMManagedDevice(
+                    id: item.id,
+                    serialNumber: serial,
+                    deviceName: item.attributes.deviceName,
+                    productFamily: item.attributes.productFamily
+                )
+            }
+            nextURL = page.links?.next.flatMap { URL(string: $0) }
+        }
+        return devices
+    }
+
+    /// The management state of one enrolled device, read on selection.
+    func appleManagedDeviceDetails(id: String) async throws -> ABMManagedDeviceDetail? {
+        struct Response: Decodable {
+            let data: Item
+            struct Item: Decodable { let attributes: ABMManagedDeviceDetail }
+        }
+        let (data, status) = try await send(path: "/v1/mdmDevices/\(id)/details")
+        if status == 404 { return nil }
+        try throwIfError(status: status, data: data)
+        return try JSONDecoder().decode(Response.self, from: data).data.attributes
+    }
+
     /// The device's audit events, newest first, one page at a time.
     ///
     /// Apple requires the time window and takes the serial as the event
@@ -454,6 +541,8 @@ actor ABMClient {
             }
             struct Attributes: Decodable {
                 let serverName: String?
+                let serverType: String?
+                let status: String?
             }
             struct Links: Decodable { let next: String? }
         }
@@ -465,7 +554,12 @@ actor ABMClient {
             try throwIfError(status: status, data: data)
             let page = try JSONDecoder().decode(Response.self, from: data)
             servers += page.data.map {
-                MDMServer(id: $0.id, name: $0.attributes.serverName ?? $0.id)
+                MDMServer(
+                    id: $0.id,
+                    name: $0.attributes.serverName ?? $0.id,
+                    serverType: $0.attributes.serverType,
+                    status: $0.attributes.status
+                )
             }
             nextURL = page.links?.next.flatMap { URL(string: $0) }
         }

@@ -135,6 +135,12 @@ Reported for Jamf Pro and Intune, which reach it differently.
 
 Neither is filterable. Jamf Pro's is not present until a device is selected, for the same reason warranty coverage is not filterable, and a filter that worked on one product and not the other would be worse than none.
 
+## Apple's built-in device management
+
+Apple Business can manage devices itself, and its API reports on them: which devices are enrolled, when each last checked in, its OS, FileVault and firewall state, and whether it is locked, in Lost Mode or erased. When a Business organization carries the service, Checkpoint treats it as a device source automatically — nothing to configure, since the service's existence in the organization is the whole answer.
+
+In a lookup across [several connections](#several-mdm-connections-at-once) it appears as **Apple Device Management** in the Connection column and participates in the findings with an exact link: the assigned service *is* the source. The inspector shows the management state for its devices. What it never shows is commands or record changes: Apple's API is read-only there, so the only actions that apply are the Apple ones — assign, unassign, release — which Checkpoint already has. Apple School Manager's API has no such service.
+
 ## Device history
 
 Apple Business keeps an audit log, and a device's serial number is a valid subject to ask it about. The inspector's **History** disclosure shows the device's life in the organization — added, assigned, unassigned, released, erased, AppleCare changes — each with the date and the administrator who acted, with failures marked. **Show Full History** opens the complete timeline and pages back as far as the log goes.
