@@ -130,14 +130,18 @@ struct DeviceDetailView: View {
                 LabeledContent("OS Version", value: os)
             }
             LabeledContent("Last Check-in", value: DateFormatting.short(detail.lastCheckInDateTime))
-            if let fileVault = detail.isFileVaultEnabled {
-                LabeledContent("FileVault") {
-                    Text(fileVault ? "Enabled" : "Not enabled")
-                        .foregroundStyle(fileVault ? Color.primary : Color.orange)
+            // Apple reports the flags as false on devices that have no such
+            // feature, so both rows are for Macs only.
+            if report.mdm.value?.kind == .computer {
+                if let fileVault = detail.isFileVaultEnabled {
+                    LabeledContent("FileVault") {
+                        Text(fileVault ? "Enabled" : "Not enabled")
+                            .foregroundStyle(fileVault ? Color.primary : Color.orange)
+                    }
                 }
-            }
-            if let firewall = detail.isFirewallEnabled {
-                LabeledContent("Firewall", value: firewall ? "Enabled" : "Not enabled")
+                if let firewall = detail.isFirewallEnabled {
+                    LabeledContent("Firewall", value: firewall ? "Enabled" : "Not enabled")
+                }
             }
             if detail.deviceLockStatus?.uppercased() == "LOCKED" {
                 LabeledContent("Locked") { Text("Yes").foregroundStyle(.orange) }
