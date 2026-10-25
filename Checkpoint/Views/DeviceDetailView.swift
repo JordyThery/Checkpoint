@@ -541,9 +541,7 @@ struct DeviceDetailView: View {
                 ForEach(historyEvents.prefix(4)) { event in
                     historyRow(event, withTime: false)
                 }
-                if historyEvents.count > 4 || historyNextCursor != nil {
-                    Button("Show Full History") { showingFullHistory = true }
-                }
+                Button("Show Full History") { showingFullHistory = true }
             }
         }
     }
@@ -895,7 +893,7 @@ struct DeviceDetailView: View {
                 }
             }
         }
-        if info.kind == .mobileDevice || info.lastContact != nil {
+        if !info.managedByApple, info.kind == .mobileDevice || info.lastContact != nil {
             LabeledContent(model.product(for: report).lastContactLabel, value: DateFormatting.short(info.lastContact))
         }
         if capabilities.contains(.inventoryDates), info.kind == .computer {

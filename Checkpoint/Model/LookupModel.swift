@@ -2578,19 +2578,21 @@ final class LookupModel {
                     context.connectionIDByServerUUID[uuid] = connection.id
                 }
             }
-            // Apple's built-in device management joins as a source of its
-            // own wherever a Business organization in scope carries the
-            // service — automatically, because the service's existence is
-            // the whole answer. The service ID maps to the organization
-            // exactly, so classification needs no inference here.
-            for org in context.abmOrgs where org.kind == .business {
-                guard let service = (mdmServersByOrg[org.id] ?? []).first(where: \.isAppleManagement) else { continue }
-                let fleet = await appleManagedFleet(for: org)
-                context.appleManagedByOrg[org.id] = fleet
-                context.connectionNames[org.id] = "Apple Device Management"
-                context.connectionIDByServerUUID[Self.normalizedServiceID(service.id)] = org.id
-                context.adeSerialsByConnection[org.id] = Set(fleet.keys)
-            }
+        }
+        // Apple's built-in device management joins as a source of its own
+        // wherever a Business organization in scope carries the service —
+        // automatically, because the service's existence is the whole
+        // answer, and in every scope, because it belongs to the Apple
+        // organization rather than to the connection picker. The service ID
+        // maps to the organization exactly, so classification needs no
+        // inference here.
+        for org in context.abmOrgs where org.kind == .business {
+            guard let service = (mdmServersByOrg[org.id] ?? []).first(where: \.isAppleManagement) else { continue }
+            let fleet = await appleManagedFleet(for: org)
+            context.appleManagedByOrg[org.id] = fleet
+            context.connectionNames[org.id] = "Apple Device Management"
+            context.connectionIDByServerUUID[Self.normalizedServiceID(service.id)] = org.id
+            context.adeSerialsByConnection[org.id] = Set(fleet.keys)
         }
         return context
     }
@@ -2916,20 +2918,10 @@ final class LookupModel {
         context: LookupContext,
         serial: String
     ) async -> [(connectionID: UUID, state: FetchState<ManagedDeviceInfo>)] {
-        guard context.mdmTargets.count > 1 else {
-            guard let target = context.mdmTargets.first else { return [] }
-            return [(target.connectionID, await fetchMDM(target: target, serial: serial))]
-        }
-        var states = await withTaskGroup(of: (Int, FetchState<ManagedDeviceInfo>).self) { group in
-            for (index, target) in context.mdmTargets.enumerated() {
-                group.addTask { (index, await fetchMDM(target: target, serial: serial)) }
-            }
-            var states = [FetchState<ManagedDeviceInfo>?](repeating: nil, count: context.mdmTargets.count)
-            for await (index, state) in group { states[index] = state }
-            return zip(context.mdmTargets, states).map { ($0.connectionID, $1 ?? .notFound) }
-        }
+        var states = await fetchConnectionStates(context: context, serial: serial)
         // Apple's built-in management contributes a record like any other
-        // source; being read-only, it never contributes an action.
+        // source, in every scope; being read-only, it never contributes an
+        // action.
         for (orgID, fleet) in context.appleManagedByOrg {
             guard let device = fleet[serial.uppercased()] else { continue }
             states.append((orgID, .found(ManagedDeviceInfo(
@@ -2945,6 +2937,25 @@ final class LookupModel {
             ))))
         }
         return states
+    }
+
+    /// The configured connections' half of the states, in configured order.
+    nonisolated private static func fetchConnectionStates(
+        context: LookupContext,
+        serial: String
+    ) async -> [(connectionID: UUID, state: FetchState<ManagedDeviceInfo>)] {
+        guard context.mdmTargets.count > 1 else {
+            guard let target = context.mdmTargets.first else { return [] }
+            return [(target.connectionID, await fetchMDM(target: target, serial: serial))]
+        }
+        return await withTaskGroup(of: (Int, FetchState<ManagedDeviceInfo>).self) { group in
+            for (index, target) in context.mdmTargets.enumerated() {
+                group.addTask { (index, await fetchMDM(target: target, serial: serial)) }
+            }
+            var states = [FetchState<ManagedDeviceInfo>?](repeating: nil, count: context.mdmTargets.count)
+            for await (index, state) in group { states[index] = state }
+            return zip(context.mdmTargets, states).map { ($0.connectionID, $1 ?? .notFound) }
+        }
     }
 
     /// Chooses a device's working record and classifies the rest.
@@ -2972,7 +2983,14 @@ final class LookupModel {
             return (states.first?.state ?? .notConfigured, [], nil)
         }
         guard context.readsAllConnections else {
-            return (.found(records[0]), [], nil)
+            // One connection in scope: its record stays the row's record, and
+            // Apple's built-in management fills in only where the connection
+            // has none — it belongs to the organization, so hiding it behind
+            // a connection choice would misreport a managed device as
+            // recordless. No verdicts here; findings are the combined
+            // lookup's job.
+            let primary = records.first { !$0.managedByApple } ?? records[0]
+            return (.found(primary), [], nil)
         }
 
         let name = { (id: UUID?) in id.flatMap { context.connectionNames[$0] } ?? "another connection" }
