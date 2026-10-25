@@ -1,0 +1,15 @@
+{
+  "originHash" : "625e8b345b6810b8ebdb10059cad49ff654e2c1a8d5d314465b1664bfeb55731",
+  "pins" : [
+    {
+      "identity" : "jtkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/JordyThery/JTKit.git",
+      "state" : {
+        "revision" : "c63780afe2fe6bf9fd97752b9aa9aff14a1f3e50",
+        "version" : "0.2.0"
+      }
+    }
+  ],
+  "version" : 3
+}
