@@ -12,7 +12,22 @@ struct ABMDevice: Decodable, Sendable {
     let addedToOrgDateTime: String?
     let releasedFromOrgDateTime: String?
     let orderNumber: String?
+    let orderDateTime: String?
     let purchaseSourceType: String?
+    /// Apple Customer Number or Reseller Number, depending on the source type.
+    let purchaseSourceId: String?
+    let color: String?
+    let deviceCapacity: String?
+    /// The product type identifier, e.g. iPad14,1.
+    let productType: String?
+    let partNumber: String?
+    /// Cellular identifiers; arrays because a device can hold more than one.
+    let imei: [String]?
+    let meid: [String]?
+    let eid: String?
+    let wifiMacAddress: String?
+    let bluetoothMacAddress: String?
+    let ethernetMacAddress: [String]?
     /// Whether the device can be moved between device management services with
     /// a deadline instead of being reassigned outright. Absent on tenants that
     /// do not serve the migration release.
@@ -21,6 +36,13 @@ struct ABMDevice: Decodable, Sendable {
     /// been requested for the device.
     let mdmMigrationStatus: String?
     let mdmMigrationDeadlineDateTime: String?
+
+    /// The IMEI list as one value, nil when Apple sends none — it sends an
+    /// empty array rather than omitting the field.
+    var imeiDisplay: String? {
+        guard let imei, !imei.isEmpty else { return nil }
+        return imei.joined(separator: ", ")
+    }
 
     /// A migration Apple has accepted but not yet completed.
     var hasActiveMigration: Bool {
@@ -351,7 +373,11 @@ actor ABMClient {
     private static let deviceFields = [
         "serialNumber", "deviceModel", "productFamily", "status",
         "addedToOrgDateTime", "releasedFromOrgDateTime", "orderNumber",
-        "purchaseSourceType", "isMdmMigrationCapable",
+        "orderDateTime", "purchaseSourceType", "purchaseSourceId",
+        "color", "deviceCapacity", "productType", "partNumber",
+        "imei", "meid", "eid",
+        "wifiMacAddress", "bluetoothMacAddress", "ethernetMacAddress",
+        "isMdmMigrationCapable",
         "mdmMigrationStatus", "mdmMigrationDeadlineDateTime",
     ].joined(separator: ",")
 

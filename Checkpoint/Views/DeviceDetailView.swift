@@ -462,6 +462,32 @@ struct DeviceDetailView: View {
 
     // MARK: ABM
 
+    /// The hardware identifiers Apple reports, folded away because they are
+    /// looked up rarely and read like noise beside the status rows. The
+    /// disclosure only exists when at least one is present.
+    @ViewBuilder
+    private func identifiersDisclosure(_ device: ABMDevice) -> some View {
+        let rows: [(String, String)] = [
+            ("Product Type", device.productType ?? ""),
+            ("Part Number", device.partNumber ?? ""),
+            ("IMEI", device.imeiDisplay ?? ""),
+            ("MEID", device.meid?.joined(separator: ", ") ?? ""),
+            ("EID", device.eid ?? ""),
+            ("Wi-Fi MAC", device.wifiMacAddress ?? ""),
+            ("Bluetooth MAC", device.bluetoothMacAddress ?? ""),
+            ("Ethernet MAC", device.ethernetMacAddress?.joined(separator: ", ") ?? ""),
+        ].filter { !$0.1.isEmpty }
+        if !rows.isEmpty {
+            DisclosureGroup("Identifiers") {
+                ForEach(rows, id: \.0) { row in
+                    LabeledContent(row.0) {
+                        Text(row.1).monospaced().textSelection(.enabled)
+                    }
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var abmContent: some View {
         switch report.abm {
@@ -495,13 +521,40 @@ struct DeviceDetailView: View {
         if model.readsAllABMOrgs, let org = info.orgName {
             LabeledContent("Organization", value: org)
         }
-        LabeledContent("Model", value: info.device.deviceModel ?? "—")
+        // Colour and capacity belong to the model rather than to rows of
+        // their own, so the model row carries them.
+        LabeledContent("Model") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(info.device.deviceModel ?? "—")
+                if let detail = [info.device.color, info.device.deviceCapacity]
+                    .compactMap({ $0?.isEmpty == false ? $0 : nil })
+                    .joined(separator: " · ") as String?, !detail.isEmpty {
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
         if !info.isReleased {
             activationLockRow
         }
         LabeledContent("Date added", value: DateFormatting.short(info.device.addedToOrgDateTime))
-        LabeledContent("Order", value: info.device.orderNumber ?? "—")
-        LabeledContent("Purchase Source", value: info.device.purchaseSourceType ?? "—")
+        LabeledContent("Order") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(info.device.orderNumber ?? "—")
+                if let ordered = info.device.orderDateTime, !ordered.isEmpty {
+                    Text("Ordered \(DateFormatting.dateOnly(ordered))")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        LabeledContent("Purchase Source") {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(info.device.purchaseSourceType ?? "—")
+                if let id = info.device.purchaseSourceId, !id.isEmpty {
+                    Text(id).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        identifiersDisclosure(info.device)
 
         let coverage = loadedCoverage ?? info.coverage
         if !info.coverageLoaded && loadedCoverage == nil {

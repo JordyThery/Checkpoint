@@ -91,7 +91,7 @@ Hiding a device also deselects it, so an action can never reach a device you can
 
 **Sort** by clicking a column header, and reverse it by clicking again. Rows stay in the order the serials were entered until you do. Columns sort by the text they show, so statuses group as they read and version numbers order numerically; the date columns sort by the date itself, treating a device that has never reported one as the least recently seen. Sorting is display only — it changes neither the filter nor the selection.
 
-**Choose columns** by right-clicking the header row, and drag headers to reorder them. Beyond the defaults, more are available hidden: model, order number, purchase source and date added from the Apple side; site and [department, building and room](#department-and-building) from Jamf Pro; the asset tag from Jamf Pro and Jamf School; and FileVault, passcode, managed, supervised and compliance state where the product reports them. A lookup across [several connections](#several-mdm-connections-at-once) adds the Connection and Finding columns. Every hidden column reads what the lookup already fetched, so showing one costs nothing, and the arrangement is kept across launches. Serial Number cannot be hidden — it is what identifies the rows — and, as everywhere, a column the connected product has no source for is not offered at all.
+**Choose columns** by right-clicking the header row, and drag headers to reorder them. Beyond the defaults, more are available hidden: model, order number, purchase source, date added, Wi-Fi MAC address and IMEI from the Apple side; site and [department, building and room](#department-and-building) from Jamf Pro; the asset tag from Jamf Pro and Jamf School; and FileVault, passcode, managed, supervised and compliance state where the product reports them. A lookup across [several connections](#several-mdm-connections-at-once) adds the Connection and Finding columns. Every hidden column reads what the lookup already fetched, so showing one costs nothing, and the arrangement is kept across launches. Serial Number cannot be hidden — it is what identifies the rows — and, as everywhere, a column the connected product has no source for is not offered at all.
 
 ## Activation Lock
 
@@ -134,6 +134,10 @@ Reported for Jamf Pro and Intune, which reach it differently.
 **Jamf Pro** does not evaluate compliance — it relays a verdict from the vendor its Device Compliance integration points at, one device at a time. Both a direct connection and a [Platform API](platform-api.md) one can read it. Checkpoint therefore reads it when a device is selected, and names the vendor alongside the verdict, because that is who to ask when the verdict is not what you expect. It checks once per server whether the integration is switched on at all, so a fleet without it never pays a request per device. A device outside the integration's scope reports nothing rather than reporting as non-compliant.
 
 Neither is filterable. Jamf Pro's is not present until a device is selected, for the same reason warranty coverage is not filterable, and a filter that worked on one product and not the other would be worse than none.
+
+## Hardware identifiers
+
+The Apple record carries more than the table shows: product type, part number, IMEI, MEID, EID, and the Wi-Fi, Bluetooth and Ethernet MAC addresses. They live in an **Identifiers** disclosure in the inspector, collapsed because they are looked up rarely, with the values selectable for copying. The model row names the colour and capacity, the order row the order date, and the purchase source its customer or reseller number. All of it arrives with the record the lookup already reads.
 
 ## Department and building
 

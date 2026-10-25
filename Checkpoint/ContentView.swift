@@ -496,6 +496,7 @@ struct ContentView: View {
         Table(sortedReports, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columnArrangement) {
             leadingColumns
             appleColumns
+            appleIdentifierColumns
             mdmRecordColumns
             mdmStateColumns
             // No customization ID, so the link stays where it is: a column
@@ -595,6 +596,23 @@ struct ContentView: View {
 
     /// What the MDM record says the device is: name, OS, and where it is
     /// assigned.
+    /// Hardware identifiers worth a column: the Wi-Fi MAC for network
+    /// allow-lists and the IMEI for carrier work. The rest stay in the
+    /// inspector's Identifiers disclosure.
+    @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
+    private var appleIdentifierColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
+        TableColumn("Wi-Fi MAC", value: \.wifiMacText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { $0.device.wifiMacAddress ?? "—" }
+        }
+        .customizationID("wifiMac")
+        .defaultVisibility(.hidden)
+        TableColumn("IMEI", value: \.imeiText) { (report: DeviceReport) in
+            FetchText(state: report.abm) { $0.device.imeiDisplay ?? "—" }
+        }
+        .customizationID("imei")
+        .defaultVisibility(.hidden)
+    }
+
     @TableColumnBuilder<DeviceReport, KeyPathComparator<DeviceReport>>
     private var mdmRecordColumns: some TableColumnContent<DeviceReport, KeyPathComparator<DeviceReport>> {
         if model.readsAllConnections {
@@ -941,6 +959,14 @@ private extension DeviceReport {
 
     var assetTagText: String {
         mdm.sortText { $0.assetTag ?? "—" }
+    }
+
+    var wifiMacText: String {
+        abm.sortText { $0.device.wifiMacAddress ?? "—" }
+    }
+
+    var imeiText: String {
+        abm.sortText { $0.device.imeiDisplay ?? "—" }
     }
 
     /// Sorting only; the cell resolves the display name through the model.
