@@ -1,9 +1,12 @@
+import JTKit
 import SwiftUI
 
 @main struct CheckpointApp: App {
     private let settings = AppSettings.shared
     @State private var model = LookupModel(settings: AppSettings.shared)
-    @State private var updates = UpdateChecker()
+    @State private var updates = UpdateChecker(
+        configuration: UpdateConfiguration(owner: "JordyThery", repository: "Checkpoint", appName: "Checkpoint")
+    )
 
     private var colorScheme: ColorScheme? {
         switch settings.appearance {

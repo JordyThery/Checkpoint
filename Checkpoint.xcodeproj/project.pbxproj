@@ -6,6 +6,10 @@
 	objectVersion = 90;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		087B3063308E3BFA00D0CB8A /* JTKit in Frameworks */ = {isa = PBXBuildFile; productRef = 087B3062308E3BFA00D0CB8A /* JTKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Checkpoint.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Checkpoint.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -35,6 +39,7 @@
 		000000000000000130000000 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				087B3063308E3BFA00D0CB8A /* JTKit in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -73,6 +78,9 @@
 				000000000000000000000010 /* Checkpoint */,
 			);
 			name = Checkpoint;
+			packageProductDependencies = (
+				087B3062308E3BFA00D0CB8A /* JTKit */,
+			);
 			productName = Checkpoint;
 			productReference = 000000000000000000000120 /* Checkpoint.app */;
 			productType = "com.apple.product-type.application";
@@ -101,6 +109,9 @@
 			);
 			mainGroup = 000000000000000000000001;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */,
+			);
 			preferredProjectObjectVersion = 90;
 			productRefGroup = 000000000000000000000020 /* Products */;
 			projectDirPath = "";
@@ -386,6 +397,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/JordyThery/JTKit.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.2.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		087B3062308E3BFA00D0CB8A /* JTKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */;
+			productName = JTKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 000000000000000000000000 /* Project object */;
 }
