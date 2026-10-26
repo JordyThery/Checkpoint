@@ -531,15 +531,26 @@ final class AppSettings {
     // the keys this class used. Saving a copy here too would overwrite them
     // whenever another setting changed.
 
+    /// Told when a connection or its secret is saved or deleted (the lookup
+    /// model drops that connection's client).
+    let edits: ConnectionEdits
+    /// The same Keychain items `connections` uses, readable off the main
+    /// actor, for the Jamf Pro client's sign-in.
+    nonisolated let secretStore: any SecretStore
+
     @ObservationIgnored private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard, secrets: any SecretStore = CheckpointSecrets.keychain) {
         self.defaults = defaults
+        let edits = ConnectionEdits()
+        let reporting = ReportingSecretStore(base: secrets, edits: edits)
+        self.edits = edits
+        self.secretStore = reporting
         // Before the list is read, so a carried-over organization is in it.
         LegacyABMMigration.run(defaults: defaults, secrets: secrets)
         connections = ConnectionStore(
-            storage: CheckpointConnectionStorage(defaults: defaults),
-            secrets: [.main: SecretLocation(store: secrets, account: CheckpointSecrets.account(for:))])
+            storage: CheckpointConnectionStorage(defaults: defaults, edits: edits),
+            secrets: [.main: SecretLocation(store: reporting, account: CheckpointSecrets.account(for:))])
         appleChoiceID = defaults.string(forKey: ConnectionChoiceKeys.apple).flatMap(UUID.init(uuidString:))
         mdmChoiceID = defaults.string(forKey: ConnectionChoiceKeys.mdm).flatMap(UUID.init(uuidString:))
         configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")

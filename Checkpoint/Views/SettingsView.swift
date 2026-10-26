@@ -76,7 +76,7 @@ struct ConnectionsTab: View {
             let locations = try await client.verify()
             return "Connected · \(locations) location\(locations == 1 ? "" : "s")"
         case .mdm(let server):
-            guard let client = JamfClient(config: server, secret: secret, log: log) else {
+            guard let client = JamfClient(config: server, secret: { secret }, log: log) else {
                 throw ConnectionTestError("Enter a valid server URL first.")
             }
             try await client.verify()

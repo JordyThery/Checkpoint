@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 
 // MARK: - Models
 
@@ -147,20 +148,20 @@ actor JamfSchoolClient {
 
     private let baseURL: URL
     private let authorization: String
-    private let log: ActivityLog?
-    /// Server name, recorded with each entry so a log covering several
-    /// connections says which one it went to.
-    private let connectionName: String
+    /// Sends each request and records it in the activity log (JTKit), with
+    /// the server's name so a log covering several says which one. The
+    /// Authorization header shows as "Basic <redacted>".
+    private let recorder: RequestRecorder
 
-    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil) {
+    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil, session: URLSession = .shared) {
         guard let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         let networkID = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
         let apiKey = secret.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !networkID.isEmpty, !apiKey.isEmpty else { return nil }
         self.baseURL = url
         self.authorization = "Basic " + Data("\(networkID):\(apiKey)".utf8).base64EncodedString()
-        self.log = log
-        self.connectionName = config.displayName
+        self.recorder = RequestRecorder(session: session, log: log,
+                                        service: ActivityService.jamfSchool.rawValue, connection: config.displayName)
     }
 
     // MARK: Devices
@@ -217,7 +218,7 @@ actor JamfSchoolClient {
                 let version: String?
             }
         }
-        let (data, status) = try await send(path: "/api/devices", queryItems: queryItems)
+        let (data, status) = try await send(path: "/api/devices", queryItems: queryItems, recordsBodies: true)
         try throwIfError(status: status, data: data)
         let items = try JSONDecoder().decode(Response.self, from: data).devices ?? []
         return items.compactMap { item in
@@ -259,7 +260,7 @@ actor JamfSchoolClient {
                 let timezone: String?
             }
         }
-        let (data, status) = try await send(path: "/api/devices/\(udid)")
+        let (data, status) = try await send(path: "/api/devices/\(udid)", recordsBodies: true)
         try throwIfError(status: status, data: data)
         guard let item = try JSONDecoder().decode(Response.self, from: data).device else { return nil }
         return JamfSchoolDeviceDetails(
@@ -473,7 +474,8 @@ actor JamfSchoolClient {
         queryItems: [URLQueryItem] = [],
         body: Data? = nil,
         contentType: String = "application/x-www-form-urlencoded; charset=utf-8",
-        protocolVersion: String? = nil
+        protocolVersion: String? = nil,
+        recordsBodies: Bool = false
     ) async throws -> (Data, Int) {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw APIError(message: "Invalid Jamf School URL")
@@ -498,34 +500,10 @@ actor JamfSchoolClient {
             request.setValue(protocolVersion, forHTTPHeaderField: "X-Server-Protocol-Version")
         }
 
-        let loggedPath = [components.path, components.query].compactMap { $0 }.joined(separator: "?")
-        let started = Date()
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            log?.recordRequest(
-                service: .jamfSchool,
-                connection: connectionName,
-                method: method,
-                path: loggedPath,
-                status: status,
-                duration: Date().timeIntervalSince(started),
-                requestBody: body,
-                responseBody: data,
-                withholdBodies: false
-            )
-            return (data, status)
-        } catch {
-            log?.recordFailure(
-                service: .jamfSchool,
-                connection: connectionName,
-                method: method,
-                path: loggedPath,
-                duration: Date().timeIntervalSince(started),
-                message: error.localizedDescription
-            )
-            throw error
-        }
+        // `recordsBodies` records a successful answer too; only for the
+        // device lookups (ROADMAP step 5, "Checkpoint").
+        let (data, response) = try await recorder.send(request, recordsBodies: recordsBodies)
+        return (data, response.statusCode)
     }
 
     /// Messages that mean the request did not do what was asked.

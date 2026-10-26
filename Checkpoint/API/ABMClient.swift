@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 import CryptoKit
 
 // MARK: - Models
@@ -330,10 +331,9 @@ actor ABMClient {
     private var cachedToken: (value: String, expiry: Date)?
     /// The sign-in in flight, so concurrent callers share one.
     private var signIn: Task<String, any Error>?
-    private let log: ActivityLog?
-    /// Organization name, recorded with each entry so a log covering several
-    /// organizations says which one it went to.
-    private let connectionName: String
+    /// Sends each request and records it in the activity log (JTKit), with
+    /// the organization's name so a log covering several says which one.
+    private let recorder: RequestRecorder
 
     init(
         clientID: String,
@@ -341,15 +341,16 @@ actor ABMClient {
         privateKeyPEM: String,
         kind: AppleOrgKind = .business,
         connectionName: String = "",
-        log: ActivityLog? = nil
+        log: ActivityLog? = nil,
+        session: URLSession = .shared
     ) {
         self.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.keyID = keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.privateKeyPEM = privateKeyPEM
         self.kind = kind
         self.baseURL = kind.host
-        self.connectionName = connectionName
-        self.log = log
+        self.recorder = RequestRecorder(session: session, log: log, service: kind.activityService.rawValue,
+                                        connection: connectionName.isEmpty ? nil : connectionName)
     }
 
     // MARK: Devices
@@ -361,7 +362,7 @@ actor ABMClient {
             let data: Item
             struct Item: Decodable { let attributes: ABMDevice }
         }
-        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)")
+        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)", recordsBodies: true)
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
         return try JSONDecoder().decode(Response.self, from: data).data.attributes
@@ -381,7 +382,7 @@ actor ABMClient {
                 let status: String?
             }
         }
-        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/appleCareCoverage")
+        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/appleCareCoverage", recordsBodies: true)
         if status == 404 { return [] }
         try throwIfError(status: status, data: data)
         return try JSONDecoder().decode(Response.self, from: data).data.map {
@@ -410,7 +411,7 @@ actor ABMClient {
                 let lockType: String?
             }
         }
-        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/activationLockStatus")
+        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/activationLockStatus", recordsBodies: true)
         if status == 404 || status >= 500 { return nil }
         try throwIfError(status: status, data: data)
         let attributes = try JSONDecoder().decode(Response.self, from: data).data.attributes
@@ -463,7 +464,7 @@ actor ABMClient {
             let data: Item
             struct Item: Decodable { let attributes: ABMManagedDeviceDetail }
         }
-        let (data, status) = try await send(path: "/v1/mdmDevices/\(id)/details")
+        let (data, status) = try await send(path: "/v1/mdmDevices/\(id)/details", recordsBodies: true)
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
         return try JSONDecoder().decode(Response.self, from: data).data.attributes
@@ -525,7 +526,7 @@ actor ABMClient {
             let data: Ref?
             struct Ref: Decodable { let id: String }
         }
-        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/relationships/assignedServer")
+        let (data, status) = try await send(path: "/v1/orgDevices/\(serial)/relationships/assignedServer", recordsBodies: true)
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
         return try JSONDecoder().decode(Response.self, from: data).data?.id
@@ -728,11 +729,14 @@ actor ABMClient {
 
     // MARK: Plumbing
 
-    private func send(path: String, method: String = "GET", body: Data? = nil) async throws -> (Data, Int) {
+    /// - Parameter recordsBodies: record a successful answer too; only for
+    ///   the read-only device lookups (ROADMAP step 5, "Checkpoint").
+    private func send(path: String, method: String = "GET", body: Data? = nil,
+                      recordsBodies: Bool = false) async throws -> (Data, Int) {
         guard let url = URL(string: path, relativeTo: baseURL) else {
             throw APIError(message: "Invalid URL for path \(path)")
         }
-        return try await send(url: url.absoluteURL, method: method, body: body)
+        return try await send(url: url.absoluteURL, method: method, body: body, recordsBodies: recordsBodies)
     }
 
     // Apple limits how many requests an organization may make per minute. It
@@ -773,11 +777,11 @@ actor ABMClient {
         }
     }
 
-    /// The single point every Apple Business request goes through, and so the
-    /// single point the activity log is fed from. Request headers are
-    /// deliberately never recorded, which keeps the bearer token out of the log
-    /// by construction rather than by filtering.
-    private func send(url: URL, method: String = "GET", body: Data? = nil) async throws -> (Data, Int) {
+    /// The single point every Apple Business request goes through. JTKit's
+    /// recorder records each attempt (the bearer token redacted, request
+    /// bodies never); the pacing and retries are Apple's own, below.
+    private func send(url: URL, method: String = "GET", body: Data? = nil,
+                      recordsBodies: Bool = false) async throws -> (Data, Int) {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(try await bearerToken())", forHTTPHeaderField: "Authorization")
@@ -787,31 +791,23 @@ actor ABMClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        let loggedPath = [url.path(), url.query()].compactMap { $0 }.joined(separator: "?")
         var lastError: Error?
         for attempt in 0..<Self.maximumAttempts {
             await reserveRequestSlot()
-            let started = Date()
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                let (data, response) = try await recorder.send(request, attempt: attempt + 1, of: Self.maximumAttempts,
+                                                               recordsBodies: recordsBodies)
+                let status = response.statusCode
                 // 429 and 503 are retried on the same terms as a dropped
                 // connection, in case Apple starts answering properly.
                 if (status == 429 || status == 503), attempt < Self.maximumAttempts - 1 {
-                    log?.recordRequest(
-                        service: kind.activityService, connection: connectionName, method: method,
-                        path: loggedPath, status: status, duration: Date().timeIntervalSince(started),
-                        requestBody: body, responseBody: data, withholdBodies: false
-                    )
+                    await noteWait(attempt, reason: "HTTP \(status)", method: method, url: url)
                     try? await Task.sleep(for: .seconds(Self.backoff(attempt)))
                     continue
                 }
-                log?.recordRequest(
-                    service: kind.activityService, connection: connectionName, method: method,
-                    path: loggedPath, status: status, duration: Date().timeIntervalSince(started),
-                    requestBody: body, responseBody: data, withholdBodies: false
-                )
                 return (data, status)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 lastError = error
                 // A lost connection is ambiguous: Apple may have processed the
@@ -820,23 +816,24 @@ actor ABMClient {
                 // surface the error instead. (429 and 503 above are different:
                 // they mean the request was not processed.)
                 let willRetry = method == "GET" && attempt < Self.maximumAttempts - 1
-                log?.recordFailure(
-                    service: kind.activityService, connection: connectionName, method: method,
-                    path: loggedPath, duration: Date().timeIntervalSince(started),
-                    message: willRetry
-                        ? "\(error.localizedDescription) Retrying."
-                        : error.localizedDescription
-                )
                 guard willRetry else { break }
+                await noteWait(attempt, reason: "Network error", method: method, url: url)
                 try? await Task.sleep(for: .seconds(Self.backoff(attempt)))
             }
         }
         throw lastError ?? APIError(message: "\(kind.label) did not answer.")
     }
 
+    /// Writes the wait before the next attempt to the activity log.
+    private func noteWait(_ attempt: Int, reason: String, method: String, url: URL) async {
+        await recorder.note(method, url.path(),
+                            note: "\(reason): waiting \(Int(Self.backoff(attempt))) s, attempt \(attempt + 2) of \(Self.maximumAttempts).",
+                            category: "Retry", isWarning: true)
+    }
+
     /// 5s, 15s, 45s. Once the quota is spent Apple stays quiet for a while,
     /// so a short retry only wastes another request.
-    private nonisolated static func backoff(_ attempt: Int) -> Double {
+    nonisolated static func backoff(_ attempt: Int) -> Double {
         [5, 15, 45][min(attempt, 2)]
     }
 
@@ -874,28 +871,11 @@ actor ABMClient {
         return try await task.value
     }
 
+    /// Recorded as a "Sign-in" request, but never with its bodies: the
+    /// request carries the signed client assertion, which is itself a
+    /// credential, and the response carries the access token.
     private func signingIn() async throws -> String {
-        // Recorded, but never with its bodies: the request carries the signed
-        // client assertion, which is itself a credential, and the response
-        // carries the access token.
-        do {
-            let token = try await fetchToken()
-            log?.recordSignIn(
-                service: kind.activityService,
-                connection: connectionName,
-                summary: "Signed in to \(kind.label)",
-                outcome: .succeeded
-            )
-            return token
-        } catch {
-            log?.recordSignIn(
-                service: kind.activityService,
-                connection: connectionName,
-                summary: "Sign-in failed: \(error.localizedDescription)",
-                outcome: .failed
-            )
-            throw error
-        }
+        try await fetchToken()
     }
 
     private func fetchToken() async throws -> String {
@@ -912,9 +892,9 @@ actor ABMClient {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.httpBody = FormURLEncoding.body(params)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            let body = String(data: data, encoding: .utf8) ?? ""
+        let (data, response) = try await recorder.send(request, category: "Sign-in")
+        guard response.statusCode == 200 else {
+            let body = Redaction.text(String(data: data, encoding: .utf8) ?? "")
             throw APIError(message: "\(kind.label) sign-in failed: \(body.prefix(300))")
         }
         struct TokenResponse: Decodable {

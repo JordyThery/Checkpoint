@@ -513,14 +513,20 @@ final class LookupModel {
     func sites(for report: DeviceReport) -> [JamfSite] { taxonomy(for: report).sites }
     func locations(for report: DeviceReport) -> [JamfSchoolLocation] { taxonomy(for: report).locations }
 
-    // One client per configuration, reused across lookups and actions. Each new
-    // ABMClient requests a fresh OAuth token and Apple rate-limits that endpoint
-    // hard (HTTP 429 after a few sign-ins), so switching organization or server
-    // must not cost a re-authentication.
-    private var abmClients: [String: ABMClient] = [:]
-    private var jamfClients: [String: JamfClient] = [:]
-    private var jamfSchoolClients: [String: JamfSchoolClient] = [:]
-    private var intuneClients: [String: IntuneClient] = [:]
+    // One client per connection ID, with the connection as it was when the
+    // client was made, reused across lookups and actions. Each new ABMClient
+    // requests a fresh OAuth token and Apple rate-limits that endpoint hard
+    // (HTTP 429 after a few sign-ins), so switching organization or server
+    // must not cost a re-authentication. No secret is part of a key: when a
+    // connection or its secret is saved or deleted, its client is dropped and
+    // forgets its token (`forgetClients(for:)`), so the next request signs in
+    // with what is saved now.
+    private var abmClients: [UUID: (config: ABMConfig, client: ABMClient)] = [:]
+    private var jamfClients: [UUID: (config: MDMConnection, client: JamfClient)] = [:]
+    private var jamfSchoolClients: [UUID: (config: MDMConnection, client: JamfSchoolClient)] = [:]
+    private var intuneClients: [UUID: (config: MDMConnection, client: IntuneClient)] = [:]
+    /// Where the clients send; replaced in tests.
+    private let session: URLSession
     /// LAPS rotation time per server, cached because it is server-wide.
     private var rotationTimes: [UUID: TimeInterval] = [:]
     /// Blueprint names per server, cached for the same reason.
@@ -563,15 +569,32 @@ final class LookupModel {
     private(set) var snapshotStatus: String?
     private(set) var isBuildingSnapshot = false
 
-    init(settings: AppSettings, log: ActivityLog? = nil) {
+    init(settings: AppSettings, log: ActivityLog? = nil, session: URLSession = .shared) {
         self.settings = settings
         self.log = log ?? ActivityLog()
+        self.session = session
         // One organization and one connection at launch: the last single
         // ones chosen. Searching them all is a choice per session rather than
         // the default: most fleets are served by one organization at a time
         // — an MSP works per customer — and a combined read should never be
         // the surprise. JTKit's "All" is never saved, which guarantees it.
+        settings.edits.onChange = { [weak self] id in self?.forgetClients(for: id) }
     }
+
+    /// Drops the connection's client after it was edited (its secret
+    /// included) or deleted. A Jamf Pro client still in use by a running
+    /// lookup forgets its token too, so its next request signs in with the
+    /// secret saved now.
+    func forgetClients(for id: UUID) {
+        abmClients[id] = nil
+        jamfSchoolClients[id] = nil
+        intuneClients[id] = nil
+        guard let jamf = jamfClients.removeValue(forKey: id)?.client else { return }
+        pendingForget = Task { await jamf.forgetToken() }
+    }
+
+    /// The last Jamf Pro client's forgetting, for tests to wait on.
+    @ObservationIgnored private(set) var pendingForget: Task<Void, Never>?
 
     /// Records the outcome of a user-requested action, alongside the individual
     /// requests the clients log. This tier is what makes the log readable:
@@ -2392,20 +2415,20 @@ final class LookupModel {
         referenceABMOrg.flatMap { makeABMClient(for: $0) }
     }
 
-    private func makeABMClient(for config: ABMConfig) -> ABMClient? {
+    func makeABMClient(for config: ABMConfig) -> ABMClient? {
         guard config.isConfigured,
               let pem = settings.secret(for: .apple(config)), !pem.isEmpty else { return nil }
-        let key = [config.id.uuidString, config.clientID, config.keyID, pem].joined(separator: "|")
-        if let cached = abmClients[key] { return cached }
+        if let kept = abmClients[config.id], kept.config == config { return kept.client }
         let client = ABMClient(
             clientID: config.clientID,
             keyID: config.keyID,
             privateKeyPEM: pem,
             kind: config.kind,
             connectionName: config.displayName,
-            log: log
+            log: log,
+            session: session
         )
-        abmClients[key] = client
+        abmClients[config.id] = (config, client)
         return client
     }
 
@@ -2428,13 +2451,22 @@ final class LookupModel {
         selectedConnection.flatMap { makeJamfClient(for: $0) }
     }
 
-    private func makeJamfClient(for config: MDMConnection) -> JamfClient? {
+    func makeJamfClient(for config: MDMConnection) -> JamfClient? {
         guard config.product == .jamfPro,
-              let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
-        let key = [config.id.uuidString, config.normalizedBaseURL, config.authMethod.rawValue, config.account, secret].joined(separator: "|")
-        if let cached = jamfClients[key] { return cached }
-        guard let client = JamfClient(config: config, secret: secret, log: log) else { return nil }
-        jamfClients[key] = client
+              let saved = settings.secret(for: .mdm(config)), !saved.isEmpty else { return nil }
+        if let kept = jamfClients[config.id], kept.config == config { return kept.client }
+        // Read from the Keychain at each sign-in, so a changed secret is used
+        // at the next one.
+        let store = settings.secretStore
+        let account = CheckpointSecrets.account(for: CheckpointConnection.mdm(config).connection)
+        let name = config.displayName
+        guard let client = JamfClient(config: config, secret: {
+            guard let secret = store.secret(for: account), !secret.isEmpty else {
+                throw JamfClient.APIError(message: "No secret is saved for “\(name)”.")
+            }
+            return secret
+        }, log: log, session: session) else { return nil }
+        jamfClients[config.id] = (config, client)
         return client
     }
 
@@ -2442,13 +2474,12 @@ final class LookupModel {
         selectedConnection.flatMap { makeIntuneClient(for: $0) }
     }
 
-    private func makeIntuneClient(for config: MDMConnection) -> IntuneClient? {
+    func makeIntuneClient(for config: MDMConnection) -> IntuneClient? {
         guard config.product == .intune,
               let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
-        let key = [config.id.uuidString, config.tenantID, config.account, secret].joined(separator: "|")
-        if let cached = intuneClients[key] { return cached }
-        guard let client = IntuneClient(config: config, secret: secret, log: log) else { return nil }
-        intuneClients[key] = client
+        if let kept = intuneClients[config.id], kept.config == config { return kept.client }
+        guard let client = IntuneClient(config: config, secret: secret, log: log, session: session) else { return nil }
+        intuneClients[config.id] = (config, client)
         return client
     }
 
@@ -2456,13 +2487,12 @@ final class LookupModel {
         selectedConnection.flatMap { makeJamfSchoolClient(for: $0) }
     }
 
-    private func makeJamfSchoolClient(for config: MDMConnection) -> JamfSchoolClient? {
+    func makeJamfSchoolClient(for config: MDMConnection) -> JamfSchoolClient? {
         guard config.product == .jamfSchool,
               let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
-        let key = [config.id.uuidString, config.normalizedBaseURL, config.account, secret].joined(separator: "|")
-        if let cached = jamfSchoolClients[key] { return cached }
-        guard let client = JamfSchoolClient(config: config, secret: secret, log: log) else { return nil }
-        jamfSchoolClients[key] = client
+        if let kept = jamfSchoolClients[config.id], kept.config == config { return kept.client }
+        guard let client = JamfSchoolClient(config: config, secret: secret, log: log, session: session) else { return nil }
+        jamfSchoolClients[config.id] = (config, client)
         return client
     }
 

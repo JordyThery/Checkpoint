@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 
 // MARK: - Models
 
@@ -656,29 +657,56 @@ actor JamfClient {
         var errorDescription: String? { message }
     }
 
-    private let baseURL: URL
     private let authMethod: MDMAuthMethod
-    private let account: String
-    private let secret: String
-    /// Platform API only: sent as `X-Environment-Id` on every request.
-    private let environmentID: String
-    private var cachedToken: (value: String, expiry: Date)?
-    /// The sign-in in flight, so concurrent callers share one.
-    private var signIn: Task<String, any Error>?
-    private let log: ActivityLog?
-    /// Server name, recorded with each entry so a log covering several
-    /// connections says which one it went to.
-    private let connectionName: String
+    /// JTKit's sign-in: renews the token 60 s early, shares one sign-in
+    /// between simultaneous requests, and reads the secret only when it
+    /// signs in.
+    private let tokens: JamfTokenProvider
+    /// JTKit's sending: the token, `X-Environment-Id` on the Platform API,
+    /// the shared retry rules, and an activity log entry for every attempt.
+    private let http: HTTPClient
 
-    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil) {
+    /// - Parameters:
+    ///   - secret: the client secret or password, read at each sign-in.
+    ///   - log: where requests are recorded; nil records nothing.
+    ///   - session: replaced in tests.
+    init?(config: MDMConnection, secret: @escaping @Sendable () throws -> String,
+          log: ActivityLog? = nil, session: URLSession = .shared) {
         guard let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
-        self.baseURL = url
+        let account = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokenURL: URL
+        let method: JamfTokenProvider.Method
+        switch config.authMethod {
+        case .apiClient:
+            (tokenURL, method) = (url.appending(path: "/api/oauth/token"), .apiClient(clientID: account))
+        // Same client-credentials form as the Jamf Pro API client flow, so
+        // only the URL differs. Tokens are region-locked, hence the same
+        // regional host the requests go to.
+        case .platformGateway:
+            (tokenURL, method) = (url.appending(path: "/auth/token"), .apiClient(clientID: account))
+        case .usernamePassword:
+            (tokenURL, method) = (url.appending(path: "/api/v1/auth/token"), .usernamePassword(username: account))
+        case .entraApp:
+            // An Entra app registration can't sign in to Jamf Pro; the editor
+            // offers it only for Intune.
+            return nil
+        }
+        let recorder = RequestRecorder(session: session, log: log,
+                                       service: ActivityService.jamfPro.rawValue, connection: config.displayName)
+        let environmentID = config.environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
         self.authMethod = config.authMethod
-        self.account = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.secret = secret
-        self.environmentID = config.environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.log = log
-        self.connectionName = config.displayName
+        self.tokens = JamfTokenProvider(tokenURL: tokenURL, method: method, secret: secret, recorder: recorder)
+        self.http = HTTPClient(
+            baseURL: url, tokens: tokens, recorder: recorder,
+            headers: config.authMethod == .platformGateway && !environmentID.isEmpty
+                ? ["X-Environment-Id": environmentID] : [:]
+        )
+    }
+
+    /// Drops the token, so the next request signs in again with the secret
+    /// saved now. Called when the connection or its secret is edited.
+    func forgetToken() async {
+        await tokens.forgetToken()
     }
 
     // MARK: Device records
@@ -769,7 +797,10 @@ actor JamfClient {
                 URLQueryItem(name: "page-size", value: String(pageSize)),
                 URLQueryItem(name: "filter", value: filter),
             ]
-            let (data, status) = try await send(path: path, queryItems: queryItems)
+            // A device lookup: its answer is recorded, trimmed to the
+            // sections asked for (InventoryRecording).
+            let (data, status) = try await send(path: path, queryItems: queryItems, recordsBodies: true,
+                                                recordedJSON: InventoryRecording.keeping(sections: sections))
             if status == 400 { throw FilterRejected() }
             try throwIfError(status: status, data: data)
             pages.append(data)
@@ -844,7 +875,7 @@ actor JamfClient {
         // response is safe to record. OPERATING_SYSTEM is the installed OS,
         // compared against an enforced update. USER_AND_LOCATION also
         // carries the assigned user's details, so it is masked in the
-        // activity log; see ActivityRedaction.personalKeys.
+        // activity log (JTKit's personal blocks).
         let pages = try await filteredPages(
             path: "/api/v4/computers-inventory",
             sections: ["GENERAL", "HARDWARE", "DISK_ENCRYPTION", "OPERATING_SYSTEM", "USER_AND_LOCATION"],
@@ -999,7 +1030,7 @@ actor JamfClient {
                 let unlockToken: String?
             }
         }
-        let (data, status) = try await send(path: "/api/v2/mobile-devices/\(id)/detail", withholdBodies: true)
+        let (data, status) = try await send(path: "/api/v2/mobile-devices/\(id)/detail")
         try throwIfError(status: status, data: data)
         let detail = try JSONDecoder().decode(Detail.self, from: data)
         return [detail.ios, detail.tvos, detail.watchos, detail.visionos]
@@ -1167,7 +1198,8 @@ actor JamfClient {
                 // No paging: a device carries a few dozen declarations at
                 // most, so one page holds them all.
                 URLQueryItem(name: "size", value: "200"),
-            ]
+            ],
+            recordsBodies: true
         )
         if status == 403 || status == 404 { return nil }
         try throwIfError(status: status, data: data)
@@ -1223,7 +1255,8 @@ actor JamfClient {
         }
         let family = kind == .computer ? "computer" : "mobile"
         let (data, status) = try await send(
-            path: "/api/v1/conditional-access/device-compliance-information/\(family)/\(deviceID)"
+            path: "/api/v1/conditional-access/device-compliance-information/\(family)/\(deviceID)",
+            recordsBodies: true
         )
         try throwIfError(status: status, data: data)
         // An array by contract; a single object is accepted too, in case the
@@ -1378,14 +1411,13 @@ actor JamfClient {
     // which is why these work over the Platform API.
 
     /// Erases a Mac. `pin` is the six digits needed to unlock it afterwards,
-    /// and is the reason this call keeps its bodies out of the activity log.
+    /// and is the reason JTKit records this call without its contents.
     func eraseComputer(computerID: String, pin: String?) async throws {
         let body = try JSONSerialization.data(withJSONObject: pin.map { ["pin": $0] } ?? [:])
         let (data, status) = try await send(
             path: "/api/v4/computers-inventory/\(computerID)/erase",
             method: "POST",
-            body: body,
-            withholdBodies: true
+            body: body
         )
         try throwIfError(status: status, data: data)
     }
@@ -1439,7 +1471,8 @@ actor JamfClient {
         }
         let (data, status) = try await send(
             path: "/devices/v1/devices",
-            queryItems: [URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\"")]
+            queryItems: [URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\"")],
+            recordsBodies: true
         )
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
@@ -1486,8 +1519,7 @@ actor JamfClient {
             let diskEncryptionConfigurationName: String?
         }
         let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/filevault",
-            withholdBodies: true
+            path: "/api/v4/computers-inventory/\(computerID)/filevault"
         )
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
@@ -1507,8 +1539,7 @@ actor JamfClient {
     func deviceLockPIN(computerID: String) async throws -> String? {
         struct Response: Decodable { let pin: String? }
         let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin",
-            withholdBodies: true
+            path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin"
         )
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
@@ -1522,8 +1553,7 @@ actor JamfClient {
     func recoveryLockPassword(computerID: String) async throws -> String? {
         struct Response: Decodable { let recoveryLockPassword: String? }
         let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/view-recovery-lock-password",
-            withholdBodies: true
+            path: "/api/v4/computers-inventory/\(computerID)/view-recovery-lock-password"
         )
         if status == 404 { return nil }
         try throwIfError(status: status, data: data)
@@ -1578,7 +1608,7 @@ actor JamfClient {
         let path = account.guid.isEmpty
             ? "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/password"
             : "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/\(account.guid)/password"
-        let (data, status) = try await send(path: path, withholdBodies: true)
+        let (data, status) = try await send(path: path)
         if status == 404 || (status == 400 && Self.isNotFound(data)) { return nil }
         try throwIfError(status: status, data: data)
         let password = try JSONDecoder().decode(Response.self, from: data).password
@@ -1689,7 +1719,7 @@ actor JamfClient {
                 let lastUpdateTime: String?
             }
         }
-        let (data, status) = try await send(path: "/api/v1/ddm/\(managementID)/status-items")
+        let (data, status) = try await send(path: "/api/v1/ddm/\(managementID)/status-items", recordsBodies: true)
         if status == 403 || status == 404 { return nil }
         try throwIfError(status: status, data: data)
         let items = try JSONDecoder().decode(Response.self, from: data).statusItems ?? []
@@ -1983,75 +2013,68 @@ actor JamfClient {
 
     /// Cheap connectivity/credentials check.
     func verify() async throws {
-        _ = try await bearerToken()
+        do {
+            _ = try await tokens.token()
+        } catch {
+            throw signInError(error)
+        }
     }
 
     // MARK: Plumbing
 
-    /// The single point every Jamf Pro request goes through, and so the single
-    /// point the activity log is fed from. Request headers are deliberately
-    /// never recorded: nothing needs them, and leaving them out keeps the
-    /// bearer token out of the log by construction rather than by filtering.
+    /// The single point every Jamf Pro request goes through. JTKit's client
+    /// adds the token, retries by the shared rules (429 for every request,
+    /// server errors for reads, one new sign-in after a 401) and records each
+    /// attempt in the activity log. The calls that carry a device secret
+    /// (unlock token, erase PIN, FileVault key, lock PIN, Recovery Lock and
+    /// LAPS passwords) are recognised by JTKit and recorded without contents.
     ///
-    /// `withholdBodies` drops both bodies, for the endpoints that carry a
-    /// secret in either direction.
+    /// An error answer comes back as its status, as before, so the callers
+    /// keep their own handling (a 400 to a filter, a 404 for "none").
+    ///
+    /// - Parameters:
+    ///   - recordsBodies: record a successful answer too; only for the
+    ///     read-only device lookups (ROADMAP step 5, "Checkpoint").
+    ///   - recordedJSON: what of a recorded answer may be kept.
     private func send(
         path: String,
         method: String = "GET",
         queryItems: [URLQueryItem] = [],
         body: Data? = nil,
-        withholdBodies: Bool = false
+        recordsBodies: Bool = false,
+        recordedJSON: RecordedJSONFilter? = nil
     ) async throws -> (Data, Int) {
-        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
-            throw APIError(message: "Invalid Jamf Pro server URL")
-        }
-        components.path = authMethod == .platformGateway ? Self.gatewayPath(for: path) : path
-        if !queryItems.isEmpty { components.queryItems = queryItems }
-        guard let url = components.url else {
+        let mapped = authMethod == .platformGateway ? Self.gatewayPath(for: path) : path
+        // Encoded as URLComponents encoded a path, so the address is unchanged.
+        guard let encoded = mapped.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
             throw APIError(message: "Invalid Jamf Pro request URL")
         }
-        var request = URLRequest(url: url)
-        request.httpMethod = method
-        request.setValue("Bearer \(try await bearerToken())", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if authMethod == .platformGateway, !environmentID.isEmpty {
-            request.setValue(environmentID, forHTTPHeaderField: "X-Environment-Id")
-        }
-        if let body {
-            request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        }
-
-        // Logged with the query string, since a filter that the server ignored
-        // is exactly the kind of thing a log has to be able to show.
-        let loggedPath = [components.path, components.query].compactMap { $0 }.joined(separator: "?")
-        let started = Date()
+        let request = HTTPRequest(
+            method: method, path: encoded, query: queryItems, body: body,
+            // JSON throughout, the Classic API included
+            accept: "application/json", contentType: body == nil ? nil : "application/json",
+            recordsBodies: recordsBodies, recordedJSON: recordedJSON
+        )
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            log?.recordRequest(
-                service: .jamfPro,
-                connection: connectionName,
-                method: method,
-                path: loggedPath,
-                status: status,
-                duration: Date().timeIntervalSince(started),
-                requestBody: body,
-                responseBody: data,
-                withholdBodies: withholdBodies
-            )
-            return (data, status)
+            let response = try await http.send(request)
+            return (response.data, response.status)
+        } catch HTTPError.status(let response, _, _, duringSignIn: false) {
+            return (response.data, response.status)
         } catch {
-            log?.recordFailure(
-                service: .jamfPro,
-                connection: connectionName,
-                method: method,
-                path: loggedPath,
-                duration: Date().timeIntervalSince(started),
-                message: error.localizedDescription
-            )
-            throw error
+            throw signInError(error)
         }
+    }
+
+    /// A refused sign-in, with the hint Checkpoint has always given; other
+    /// errors unchanged.
+    private func signInError(_ error: any Error) -> any Error {
+        guard case HTTPError.status(let response, _, _, duringSignIn: true) = error else { return error }
+        let hint = switch authMethod {
+        case .usernamePassword: "Check the username and password."
+        case .platformGateway: "Check the Platform API client ID and secret, and that the region matches your environment."
+        case .apiClient, .entraApp: "Check the API client ID and secret."
+        }
+        return APIError(message: "Jamf Pro sign-in failed (HTTP \(response.status)). \(hint)")
     }
 
     /// Maps a Jamf Pro path onto the Platform API gateway, which fronts the
@@ -2087,118 +2110,38 @@ actor JamfClient {
         }
         throw APIError(message: "Jamf Pro: HTTP \(status)\(detail.isEmpty ? "" : " – \(detail)")")
     }
+}
 
-    // MARK: Auth
+/// What of a Jamf Pro inventory answer may be recorded in the activity log:
+/// per record, its identity and the sections Checkpoint asked for, nothing
+/// else. So a server that sends more than was asked (local user accounts,
+/// certificates, the per-OS detail that carries the unlock token) never has
+/// it recorded. Extension attributes and the user and location block are
+/// then hidden whole by JTKit's redaction.
+nonisolated enum InventoryRecording {
+    /// The fields that say which record it is.
+    static let identityKeys: Set<String> = ["id", "udid", "mobileDeviceId", "deviceType"]
 
-    /// One token request at a time.
-    ///
-    /// A lookup starts several reads at once, and each would otherwise find
-    /// no cached token and ask for its own — five sign-ins in the same
-    /// second, four of them wasted. Callers arriving while one is in flight
-    /// wait for it instead.
-    private func bearerToken() async throws -> String {
-        if let cachedToken, cachedToken.expiry > Date() { return cachedToken.value }
-        if let signIn { return try await signIn.value }
-        let task = Task { try await signingIn() }
-        signIn = task
-        defer { signIn = nil }
-        return try await task.value
+    /// `USER_AND_LOCATION` → `userAndLocation`, as the answer names it.
+    static func key(forSection section: String) -> String {
+        let words = section.lowercased().split(separator: "_")
+        guard let first = words.first else { return "" }
+        return String(first) + words.dropFirst().map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined()
     }
 
-    private func signingIn() async throws -> String {
-        // Sign-ins are recorded, but never their bodies: the request carries
-        // the client secret or password, the response carries the token.
-        do {
-            let token = try await fetchToken()
-            log?.recordSignIn(
-                service: .jamfPro,
-                connection: connectionName,
-                summary: "Signed in with \(authMethod.label)",
-                outcome: .succeeded
-            )
-            return token
-        } catch {
-            log?.recordSignIn(
-                service: .jamfPro,
-                connection: connectionName,
-                summary: "Sign-in failed: \(error.localizedDescription)",
-                outcome: .failed
-            )
-            throw error
+    static func keeping(sections: [String]) -> RecordedJSONFilter {
+        let allowed = identityKeys.union(sections.map(key(forSection:)))
+        return { object in
+            guard let page = object as? [String: Any] else { return object }
+            var kept: [String: Any] = [:]
+            if let total = page["totalCount"] { kept["totalCount"] = total }
+            if let results = page["results"] as? [Any] {
+                kept["results"] = results.map { item -> Any in
+                    guard let record = item as? [String: Any] else { return item }
+                    return record.filter { allowed.contains($0.key) }
+                }
+            }
+            return kept
         }
-    }
-
-    private func fetchToken() async throws -> String {
-        switch authMethod {
-        case .apiClient:
-            return try await fetchOAuthToken()
-        case .usernamePassword:
-            return try await fetchBasicAuthToken()
-        case .platformGateway:
-            return try await fetchGatewayToken()
-        case .entraApp:
-            // Not reachable: this client is only built for a Jamf Pro
-            // connection, and the editor offers Entra only for Intune.
-            throw APIError(message: "An Entra app registration cannot sign in to Jamf Pro.")
-        }
-    }
-
-    private func fetchOAuthToken() async throws -> String {
-        try await fetchClientCredentialsToken(
-            url: baseURL.appending(path: "/api/oauth/token"),
-            hint: "Check the API client ID and secret."
-        )
-    }
-
-    /// Same client-credentials form and response fields as the Jamf Pro API
-    /// client flow, so only the URL differs. Tokens are region-locked, hence
-    /// the same regional host the requests go to.
-    private func fetchGatewayToken() async throws -> String {
-        try await fetchClientCredentialsToken(
-            url: baseURL.appending(path: "/auth/token"),
-            hint: "Check the Platform API client ID and secret, and that the region matches your environment."
-        )
-    }
-
-    private func fetchClientCredentialsToken(url: URL, hint: String) async throws -> String {
-        struct TokenResponse: Decodable {
-            let access_token: String
-            let expires_in: Int
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = FormURLEncoding.body([
-            ("client_id", account),
-            ("client_secret", secret),
-            ("grant_type", "client_credentials"),
-        ])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw APIError(message: "Jamf Pro sign-in failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)). \(hint)")
-        }
-        let token = try JSONDecoder().decode(TokenResponse.self, from: data)
-        cachedToken = (token.access_token, Date().addingTimeInterval(TimeInterval(max(token.expires_in - 60, 60))))
-        return token.access_token
-    }
-
-    private func fetchBasicAuthToken() async throws -> String {
-        struct TokenResponse: Decodable {
-            let token: String
-            let expires: String?
-        }
-        var request = URLRequest(url: baseURL.appending(path: "/api/v1/auth/token"))
-        request.httpMethod = "POST"
-        let credentials = Data("\(account):\(secret)".utf8).base64EncodedString()
-        request.setValue("Basic \(credentials)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else {
-            throw APIError(message: "Jamf Pro sign-in failed (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)). Check the username and password.")
-        }
-        let token = try JSONDecoder().decode(TokenResponse.self, from: data)
-        let expiry = token.expires.flatMap(DateFormatting.parseISO)?.addingTimeInterval(-60)
-            ?? Date().addingTimeInterval(15 * 60)
-        cachedToken = (token.token, expiry)
-        return token.token
     }
 }

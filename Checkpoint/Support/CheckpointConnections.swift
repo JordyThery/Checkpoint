@@ -196,10 +196,13 @@ final class CheckpointConnectionStorage: ConnectionStorage {
 
     private let apple: UserDefaultsConnectionStorage<ABMConfig>
     private let mdm: UserDefaultsConnectionStorage<MDMConnection>
+    /// Told which connections a save added, changed or removed.
+    private let edits: ConnectionEdits?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, edits: ConnectionEdits? = nil) {
         apple = UserDefaultsConnectionStorage(key: Self.appleKey, defaults: defaults)
         mdm = UserDefaultsConnectionStorage(key: Self.mdmKey, defaults: defaults)
+        self.edits = edits
     }
 
     func load() throws -> [CheckpointConnection] {
@@ -217,8 +220,16 @@ final class CheckpointConnectionStorage: ConnectionStorage {
             case .mdm(let server): servers.append(server)
             }
         }
-        if (try? apple.load()) != orgs { try apple.save(orgs) }
-        if (try? mdm.load()) != servers { try mdm.save(servers) }
+        let savedOrgs = try? apple.load()
+        let savedServers = try? mdm.load()
+        if savedOrgs != orgs { try apple.save(orgs) }
+        if savedServers != servers { try mdm.save(servers) }
+
+        let before = (savedOrgs ?? []).map(CheckpointConnection.apple) + (savedServers ?? []).map(CheckpointConnection.mdm)
+        let ids = Set(before.map(\.id) + records.map(\.id))
+        for id in ids where before.first(where: { $0.id == id }) != records.first(where: { $0.id == id }) {
+            edits?.changed(id)
+        }
     }
 
     func backUpOnce() throws {
@@ -232,6 +243,52 @@ final class CheckpointConnectionStorage: ConnectionStorage {
         if (try? apple.load()) == nil, let copy = apple.keepUnreadableCopy() { copies.append(copy) }
         if (try? mdm.load()) == nil, let copy = mdm.keepUnreadableCopy() { copies.append(copy) }
         return copies.isEmpty ? nil : copies.joined(separator: " and ")
+    }
+}
+
+// MARK: - Edits
+
+/// Tells the lookup model that a saved connection changed: edited, deleted,
+/// or only its secret replaced. The model then drops that connection's
+/// client and makes it forget its token, so the next request signs in again
+/// with what is saved now. Clients are kept per connection ID, never under
+/// a key holding the secret.
+@MainActor
+final class ConnectionEdits {
+    var onChange: ((UUID) -> Void)?
+
+    func changed(_ id: UUID) {
+        onChange?(id)
+    }
+
+    /// A Keychain item was written: `jamf.<UUID>` or `abm.<UUID>`.
+    nonisolated func secretChanged(account: String) {
+        guard let id = account.split(separator: ".", maxSplits: 1).last.flatMap({ UUID(uuidString: String($0)) })
+        else { return }
+        // The Connections tab saves on the main actor; told at once, so the
+        // token is forgotten before Save returns.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { changed(id) }
+        } else {
+            Task { @MainActor in self.changed(id) }
+        }
+    }
+}
+
+/// The app's Keychain items, reporting every write and delete to `edits`.
+nonisolated struct ReportingSecretStore: SecretStore {
+    let base: any SecretStore
+    let edits: ConnectionEdits
+
+    func secret(for account: String) -> String? {
+        base.secret(for: account)
+    }
+
+    @discardableResult
+    func setSecret(_ secret: String?, for account: String) -> Bool {
+        let saved = base.setSecret(secret, for: account)
+        edits.secretChanged(account: account)
+        return saved
     }
 }
 

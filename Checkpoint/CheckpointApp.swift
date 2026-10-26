@@ -36,13 +36,9 @@ import SwiftUI
             .environment(model.log)
         }
         AboutWindow(configuration: .checkpoint)
-        // A single window rather than a group: one log, brought forward again
-        // when the shortcut is used a second time.
-        Window("Activity Log", id: "activity-log") {
-            ActivityLogView()
-                .environment(model.log)
-        }
-        .keyboardShortcut("l", modifiers: [.command, .option])
+        // JTKit's activity log window (⇧⌘L), the same in every app.
+        ActivityLogWindow(log: model.log,
+                          emptyDescription: "Requests to Apple, Jamf and Intune appear here as they happen.")
     }
 }
 

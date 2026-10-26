@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 
 // MARK: - Models
 
@@ -105,15 +106,14 @@ actor IntuneClient {
     private let tenantID: String
     private let clientID: String
     private let secret: String
-    private let log: ActivityLog?
-    /// Connection name, recorded with each entry so a log covering several
-    /// connections says which one it went to.
-    private let connectionName: String
+    /// Sends each request and records it in the activity log (JTKit), with
+    /// the connection's name so a log covering several says which one.
+    private let recorder: RequestRecorder
     private var cachedToken: (value: String, expiry: Date)?
     /// The sign-in in flight, so concurrent callers share one.
     private var signIn: Task<String, any Error>?
 
-    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil) {
+    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil, session: URLSession = .shared) {
         let tenant = config.tenantID.trimmingCharacters(in: .whitespacesAndNewlines)
         let client = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = secret.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -121,8 +121,8 @@ actor IntuneClient {
         self.tenantID = tenant
         self.clientID = client
         self.secret = key
-        self.log = log
-        self.connectionName = config.displayName
+        self.recorder = RequestRecorder(session: session, log: log,
+                                        service: ActivityService.intune.rawValue, connection: config.displayName)
     }
 
     // MARK: Devices
@@ -204,14 +204,16 @@ actor IntuneClient {
 
         let (data, status): (Data, Int)
         if let url {
-            (data, status) = try await send(absolute: url)
+            (data, status) = try await send(absolute: url, recordsBodies: true)
         } else {
+            // A device lookup: its answer is recorded.
             (data, status) = try await send(
                 path: "/v1.0/deviceManagement/managedDevices",
                 queryItems: [
                     URLQueryItem(name: "$select", value: Self.deviceFields),
                     URLQueryItem(name: "$top", value: "1000"),
-                ]
+                ],
+                recordsBodies: true
             )
         }
         try throwIfError(status: status, data: data)
@@ -317,7 +319,8 @@ actor IntuneClient {
         path: String,
         method: String = "GET",
         queryItems: [URLQueryItem] = [],
-        body: Data? = nil
+        body: Data? = nil,
+        recordsBodies: Bool = false
     ) async throws -> (Data, Int) {
         guard var components = URLComponents(url: Self.graphHost, resolvingAgainstBaseURL: false) else {
             throw APIError(message: "Invalid Microsoft Graph URL")
@@ -327,18 +330,21 @@ actor IntuneClient {
         guard let url = components.url else {
             throw APIError(message: "Invalid Microsoft Graph request URL")
         }
-        return try await perform(url: url, method: method, body: body)
+        return try await perform(url: url, method: method, body: body, recordsBodies: recordsBodies)
     }
 
     /// For a URL Graph handed back, such as a paging continuation.
-    private func send(absolute url: URL) async throws -> (Data, Int) {
-        try await perform(url: url, method: "GET", body: nil)
+    private func send(absolute url: URL, recordsBodies: Bool = false) async throws -> (Data, Int) {
+        try await perform(url: url, method: "GET", body: nil, recordsBodies: recordsBodies)
     }
 
+    /// - Parameter recordsBodies: record a successful answer too; only for
+    ///   the device lookup (ROADMAP step 5, "Checkpoint").
     private func perform(
         url: URL,
         method: String,
-        body: Data?
+        body: Data?,
+        recordsBodies: Bool
     ) async throws -> (Data, Int) {
         let token = try await bearerToken()
         var attempt = 0
@@ -352,41 +358,20 @@ actor IntuneClient {
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             }
 
-            let loggedPath = [url.path(), url.query()].compactMap { $0 }.joined(separator: "?")
-            let started = Date()
-            do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                let http = response as? HTTPURLResponse
-                let status = http?.statusCode ?? 0
-                log?.recordRequest(
-                    service: .intune,
-                    connection: connectionName,
-                    method: method,
-                    path: loggedPath,
-                    status: status,
-                    duration: Date().timeIntervalSince(started),
-                    requestBody: body,
-                    responseBody: data,
-                    withholdBodies: false
-                )
-                // Graph throttles per app per tenant and says how long to wait.
-                // Retried a bounded number of times: a fleet read of several
-                // pages, or a bulk command, can cross the limit legitimately.
-                guard status == 429, attempt < Self.maximumRetries else { return (data, status) }
-                attempt += 1
-                let retryAfter = http?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
-                try await Task.sleep(for: .seconds(min(retryAfter ?? 5, 30)))
-            } catch {
-                log?.recordFailure(
-                    service: .intune,
-                    connection: connectionName,
-                    method: method,
-                    path: loggedPath,
-                    duration: Date().timeIntervalSince(started),
-                    message: error.localizedDescription
-                )
-                throw error
-            }
+            let (data, http) = try await recorder.send(request, attempt: attempt + 1, of: Self.maximumRetries + 1,
+                                                       recordsBodies: recordsBodies)
+            let status = http.statusCode
+            // Graph throttles per app per tenant and says how long to wait.
+            // Retried a bounded number of times: a fleet read of several
+            // pages, or a bulk command, can cross the limit legitimately.
+            guard status == 429, attempt < Self.maximumRetries else { return (data, status) }
+            attempt += 1
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+            let wait = min(retryAfter ?? 5, 30)
+            await recorder.note(method, url.path(),
+                                note: "HTTP 429: waiting \(Int(wait.rounded())) s, attempt \(attempt + 1) of \(Self.maximumRetries + 1).",
+                                category: "Retry", isWarning: true)
+            try await Task.sleep(for: .seconds(wait))
         }
     }
 
@@ -445,27 +430,10 @@ actor IntuneClient {
         return try await task.value
     }
 
+    /// The sign-in is recorded as a "Sign-in" request, never with its
+    /// bodies: the request carries the client secret, the response the token.
     private func signingIn() async throws -> String {
-        // Sign-ins are recorded, never their bodies: the request carries the
-        // client secret and the response carries the token.
-        do {
-            let token = try await fetchToken()
-            log?.recordSignIn(
-                service: .intune,
-                connection: connectionName,
-                summary: "Signed in with the Entra app registration",
-                outcome: .succeeded
-            )
-            return token
-        } catch {
-            log?.recordSignIn(
-                service: .intune,
-                connection: connectionName,
-                summary: "Sign-in failed: \(error.localizedDescription)",
-                outcome: .failed
-            )
-            throw error
-        }
+        try await fetchToken()
     }
 
     /// Entra client credentials. `.default` asks for every application
@@ -490,8 +458,8 @@ actor IntuneClient {
             ("grant_type", "client_credentials"),
             ("scope", "https://graph.microsoft.com/.default"),
         ])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let (data, response) = try await recorder.send(request, category: "Sign-in")
+        let status = response.statusCode
         guard status == 200 else {
             // Entra's error_description is long and starts with its own error
             // code, but its first line names the real fault, which is usually
@@ -501,7 +469,7 @@ actor IntuneClient {
                 .split(separator: "\n", maxSplits: 1).first
                 .map(String.init)
             throw APIError(message: "Intune sign-in failed (HTTP \(status)). "
-                + (first ?? "Check the tenant ID, client ID and client secret."))
+                + (first.map(Redaction.text) ?? "Check the tenant ID, client ID and client secret."))
         }
         let token = try JSONDecoder().decode(TokenResponse.self, from: data)
         // Refreshed a minute early, so a long bulk action cannot have a token
