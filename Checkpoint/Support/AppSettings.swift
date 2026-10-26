@@ -263,27 +263,6 @@ nonisolated enum MDMAuthMethod: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// Regions the Platform API gateway is hosted in. Gateway tokens are
-/// region-locked: a token must be requested from the same host the subsequent
-/// requests are sent to.
-nonisolated enum JamfRegion: String, Codable, CaseIterable, Identifiable {
-    case us
-    case eu
-    case apac
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .us: "United States (us)"
-        case .eu: "Europe (eu)"
-        case .apac: "Asia Pacific (apac)"
-        }
-    }
-
-    var gatewayHost: String { "https://\(rawValue).api.jamfcloud.com" }
-}
-
 /// One configured device management connection.
 ///
 /// Fields only one product uses are kept rather than split into per-product
@@ -308,6 +287,7 @@ nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
     /// (client secret or password) lives in the keychain under `secretKeychainKey`.
     var account = ""
     /// Platform API only: which regional gateway to talk to.
+    /// JTKit's region; the saved values (us, eu, apac) are the same.
     var region: JamfRegion = .us
     /// Platform API only: the environment to act on, sent as `X-Environment-Id`.
     /// Environment scope is required rather than tenant scope, because the
@@ -342,7 +322,7 @@ nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
         // Jamf School has no gateway, so the server URL is always the host,
         // whatever an authentication method left over from Jamf Pro says.
         guard product == .jamfPro else { return normalizedBaseURL }
-        return authMethod == .platformGateway ? region.gatewayHost : normalizedBaseURL
+        return authMethod == .platformGateway ? region.gatewayURL.absoluteString : normalizedBaseURL
     }
 
     /// What this connection can do, which is the product's capabilities plus

@@ -57,8 +57,9 @@ nonisolated enum ActivityOutcome: String, Sendable {
 }
 
 extension ActivityLog {
-    /// Records an action the user asked for, with its overall result. The
-    /// serials it concerns are collected so the bug-report export masks them.
+    /// Records an action the user asked for, with its overall result, as
+    /// JTKit's shared Action entry. The serials it concerns are masked in the
+    /// bug-report export. Commands are recorded by `recordCommand`.
     func recordAction(
         service: ActivityService,
         connection: String?,
@@ -66,14 +67,7 @@ extension ActivityLog {
         outcome: ActivityOutcome,
         serials: [String] = []
     ) {
-        append(ActivityLogEntry(
-            category: "Action",
-            operation: "",
-            detail: summary,
-            failedWithoutStatus: outcome == .failed,
-            service: service.rawValue,
-            connection: connection,
-            identifiers: serials.map { FoundIdentifier(.device, $0) } + IdentifierMasker.identifiers(inText: summary)
-        ))
+        recordAction(summary, failed: outcome == .failed, service: service.rawValue,
+                     connection: connection, devices: serials)
     }
 }

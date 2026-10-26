@@ -141,8 +141,7 @@ extension MDMConnection {
             }
             shared.serverURL = baseURL
             shared.jamfProWebURL = baseURL
-            // JTKit's region, named by inference: Checkpoint has its own `JamfRegion`
-            shared.region = .init(rawValue: region.rawValue) ?? .us
+            shared.region = region
             shared.environmentID = environmentID
             shared.clientID = account
             shared.username = account
@@ -158,7 +157,7 @@ extension MDMConnection {
                 authMethod = .platformGateway
                 baseURL = newValue.jamfProWebURL
                 account = newValue.clientID
-                region = JamfRegion(rawValue: newValue.region.rawValue) ?? .us
+                region = newValue.region
                 environmentID = newValue.environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
             case .jamfSchool:
                 product = .jamfSchool

@@ -159,10 +159,12 @@ struct JamfProTests {
         #expect(server.requests.last?.url.host() == "jamf.example.com")
     }
 
-    @Test("A refused sign-in keeps Checkpoint's hint",
-          arguments: [(MDMAuthMethod.apiClient, "Check the API client ID and secret."),
+    // Step 7: JTKit's format and hints replace Checkpoint's (decided by
+    // Jordy); a direct Jamf Pro server's hint names no region.
+    @Test("A refused sign-in shows JTKit's format and hint",
+          arguments: [(MDMAuthMethod.apiClient, "Check the client ID and client secret, and that the API client is enabled in Jamf Pro under Settings › API Roles and Clients."),
                       (.usernamePassword, "Check the username and password."),
-                      (.platformGateway, "and that the region matches your environment.")])
+                      (.platformGateway, "Check the client ID, client secret and region.")])
     func refusedSignIn(method: MDMAuthMethod, hint: String) async throws {
         let server = jamfServer(signInStatus: 401)
         let jamf = try makeJamf(server, method, log: ActivityLog())
@@ -170,8 +172,25 @@ struct JamfProTests {
             try await jamf.verify()
             Issue.record("signed in")
         } catch {
-            #expect(error.localizedDescription.hasPrefix("Jamf Pro sign-in failed (HTTP 401)."))
+            #expect(error.localizedDescription.hasPrefix("Sign-in failed: HTTP 401 Unauthorized"))
             #expect(error.localizedDescription.contains(hint))
+            if method != .platformGateway {
+                #expect(!error.localizedDescription.contains("region"))
+            }
+        }
+    }
+
+    @Test("A refused request names the missing privilege")
+    func privilegeHint() async throws {
+        let server = MockServer { request in
+            request.path.hasSuffix("/oauth/token") ? .json(200, #"{"access_token":"t","expires_in":1200}"#) : .json(403, "{}")
+        }
+        do {
+            _ = try await makeJamf(server, log: ActivityLog()).sites()
+            Issue.record("read")
+        } catch {
+            #expect(error.localizedDescription.hasPrefix("HTTP 403 Forbidden"))
+            #expect(error.localizedDescription.contains("The API role is missing the “Read Sites” privilege."))
         }
     }
 
@@ -251,6 +270,10 @@ struct RecordedBodyTests {
         "/api/v4/computers-inventory/7/view-recovery-lock-password",
         "/api/v2/local-admin-password/M-7/account/admin/password",
         "/api/v2/local-admin-password/M-7/account/admin/guid-1/password",
+        // step 7: the command addresses
+        "/api/v2/mdm/commands",
+        "/api/v2/mobile-devices/12/erase",
+        "/JSSResource/mobiledevicecommands/command/UpdateInventory/id/12",
     ]
 
     @Test("The sensitive calls are recognised, directly and through the Platform API")
@@ -270,13 +293,16 @@ struct RecordedBodyTests {
         _ = try? await jamf.deviceCompliance(kind: .computer, deviceID: "7")
         _ = try? await jamf.platformDeviceID(serial: "C02XK1JHJG5H")
         _ = try? await jamf.platformDeclarations(serial: "C02XK1JHJG5H")
-        _ = try? await jamf.unlockToken(mobileDeviceID: "12")
+        let iPad = MDMCommand.Target(serial: "DMPXK1JHJG5H", recordID: "12", kind: .mobileDevice, managementID: "M-12")
+        _ = try? await jamf.send(.clearPasscode, to: [iPad], pin: nil)
         _ = try? await jamf.fileVaultRecoveryKey(computerID: "7")
         _ = try? await jamf.deviceLockPIN(computerID: "7")
         _ = try? await jamf.recoveryLockPassword(computerID: "7")
         _ = try? await jamf.localAdminPassword(managementID: "M-7",
                                                account: JamfLocalAdminAccount(username: "admin", guid: "", source: "MDM"))
-        try? await jamf.eraseComputer(computerID: "7", pin: "SECRET-erase-request")
+        let mac = MDMCommand.Target(serial: "C02XK1JHJG5H", recordID: "7", kind: .computer, managementID: "M-7")
+        _ = try? await jamf.send(.wipeComputer, to: [mac], pin: "246813")
+        _ = try? await jamf.send(.lockComputer, to: [mac], pin: "246813")
         _ = try? await jamf.sites()
     }
 
@@ -289,6 +315,7 @@ struct RecordedBodyTests {
 
         let recorded = everything(log)
         #expect(!recorded.contains("SECRET-"), "\(recorded)")
+        #expect(!recorded.contains("246813"))
         // the lookups did record their answers
         #expect(recorded.contains("Lab Mac"))
         #expect(recorded.contains("Lab iPad"))
@@ -349,8 +376,9 @@ struct RecordedBodyTests {
     @Test("The mobile device detail with the unlock token is recorded without contents")
     func unlockTokenCallIsWithheld() async throws {
         let log = ActivityLog()
-        let token = try await makeJamf(jamfServer(), log: log).unlockToken(mobileDeviceID: "12")
-        #expect(token == "SECRET-device-unlock")
+        let iPad = MDMCommand.Target(serial: "DMPXK1JHJG5H", recordID: "12", kind: .mobileDevice, managementID: "M-12")
+        // Clear Passcode reads the token, then sends it (both withheld)
+        _ = try await makeJamf(jamfServer(), log: log).send(.clearPasscode, to: [iPad], pin: nil)
 
         let entry = try #require(log.entries.first { $0.detail.hasSuffix("/mobile-devices/12/detail") })
         let details = try #require(entry.request)
@@ -370,18 +398,6 @@ struct RecordedBodyTests {
         #expect(sites.request?.responseBody == nil)
         #expect(sites.request?.bodyNote == "Response body not recorded.")
         #expect(sites.request?.requestHeaders.first { $0.name == "Authorization" }?.value == "Bearer \(Redaction.placeholder)")
-    }
-
-    @Test("Inventory trimming keeps the identity and the requested sections only")
-    func inventoryRecordingRule() throws {
-        #expect(InventoryRecording.key(forSection: "USER_AND_LOCATION") == "userAndLocation")
-        #expect(InventoryRecording.key(forSection: "GENERAL") == "general")
-        let keep = InventoryRecording.keeping(sections: ["GENERAL"])
-        let trimmed = keep(["totalCount": 1, "next": "x",
-                            "results": [["id": "1", "general": [:], "localUserAccounts": [], "certificates": []]]])
-        let page = try #require(trimmed as? [String: Any])
-        #expect(Set(page.keys) == ["totalCount", "results"])
-        #expect(Set(((page["results"] as? [[String: Any]])?.first ?? [:]).keys) == ["id", "general"])
     }
 }
 
@@ -487,8 +503,10 @@ struct ClientCacheTests {
         let (_, model, config) = try setUp(server)
         let first = try #require(model.makeJamfClient(for: config))
         #expect(model.makeJamfClient(for: config) === first)
-        try await first.verify()
-        try await first.verify()
+        // Two reads, one sign-in. (Test Connection, `verify`, always signs in
+        // afresh since step 7, as JTKit's does.)
+        _ = try await first.sites()
+        _ = try await first.sites()
         #expect(signIns(server).count == 1)
     }
 

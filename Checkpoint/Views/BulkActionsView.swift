@@ -1,3 +1,4 @@
+import JTKit
 import SwiftUI
 
 /// Inspector pane shown when several devices are selected: runs the same
@@ -19,8 +20,8 @@ struct BulkActionsView: View {
     @State private var errorMessage: String?
     @State private var infoMessage: String?
     @State private var pending: PendingAction?
-    @State private var pinCommand: MDMCommand?
-    @State private var pin = ""
+    /// A confirmation with something to type (a PIN, the number of devices).
+    @State private var typed: TypedConfirmation?
 
     /// A picker value for a mixed selection: a concrete target, explicitly
     /// none, or "Multiple" when the selected devices currently differ.
@@ -292,8 +293,15 @@ struct BulkActionsView: View {
         Button(
             "\(actionProduct.removeRecordAction) for \(count(managedCount))",
             role: .destructive
-        ) { pending = .deleteRecord }
-            .disabled(managedCount == 0)
+        ) {
+            guard let confirmation = model.deleteConfirmation(reports: reports) else { return }
+            if confirmation.needsTyping {
+                typed = TypedConfirmation(confirmation: confirmation, action: .deleteRecord)
+            } else {
+                pending = .deleteRecord
+            }
+        }
+        .disabled(managedCount == 0)
     }
 
     @ViewBuilder
@@ -302,9 +310,9 @@ struct BulkActionsView: View {
         let unavailable = model.mdmActionUnavailableReason(for: reports)
             ?? model.unavailabilityReason(for: command, reports: reports)
         Button("\(command.title) (\(commandCount(command)))", role: command.isDestructive ? .destructive : nil) {
-            if command.needsPIN(product: product) {
-                pin = ""
-                pinCommand = command
+            guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
+            if confirmation.needsTyping {
+                typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
             } else {
                 pending = .command(command)
             }
@@ -341,7 +349,12 @@ struct BulkActionsView: View {
                     // Deliberately not gated on a single connection: removal
                     // follows each record home, which is the point.
                     Button("Remove \(staleEntries.count) Stale Record\(staleEntries.count == 1 ? "" : "s")", role: .destructive) {
-                        pending = .removeStaleRecords
+                        let confirmation = model.staleRemovalConfirmation(reports: reports)
+                        if confirmation.needsTyping {
+                            typed = TypedConfirmation(confirmation: confirmation, action: .removeStaleRecords)
+                        } else {
+                            pending = .removeStaleRecords
+                        }
                     }
                 }
             }
@@ -386,17 +399,10 @@ struct BulkActionsView: View {
         } message: {
             Text(infoMessage ?? "")
         }
-        .alert(
-            pinCommand.map { "\($0.title) — \(count(commandCount($0)))" } ?? "",
-            isPresented: Binding(get: { pinCommand != nil }, set: { if !$0 { pinCommand = nil } })
-        ) {
-            TextField("6-digit PIN", text: $pin)
-            Button("Cancel", role: .cancel) {}
-            Button(pinCommand?.title ?? "Send", role: .destructive) {
-                if let command = pinCommand { executeWithPIN(command) }
+        .sheet(item: $typed) { item in
+            CommandConfirmationSheet(confirmation: item.confirmation) { pin in
+                perform(item.action, pin: pin)
             }
-        } message: {
-            Text("Enter the 6-digit PIN that will be required to unlock the Macs afterwards. The same PIN is used for every selected computer. \(pinCommand?.message(for: actionProduct) ?? "")")
         }
         .confirmationDialog(
             pendingTitle,
@@ -510,7 +516,7 @@ struct BulkActionsView: View {
         case .removeStaleRecords:
             "Remove \(staleEntries.count) stale record\(staleEntries.count == 1 ? "" : "s")?"
         case .command(let command):
-            "\(command.title) — \(count(commandCount(command)))?"
+            (model.commandConfirmation(command, reports: reports)?.title ?? command.title) + "?"
         case nil:
             ""
         }
@@ -545,11 +551,11 @@ struct BulkActionsView: View {
         case .applyLocation:
             "The device records move to the other location. Their groups and the profiles scoped to them are re-evaluated for the new location. Jamf School accepts twenty devices per request, so a larger selection is sent in batches."
         case .deleteRecord:
-            actionProduct.removeRecordConsequence
+            model.deleteConfirmation(reports: reports)?.dialogMessage ?? actionProduct.removeRecordConsequence
         case .removeStaleRecords:
-            "Removes \(model.staleRecordSummary(in: reports)). Each goes the way its product removes records — deleted from Jamf Pro and Intune, moved to the trash in Jamf School. The working records are untouched."
+            model.staleRemovalConfirmation(reports: reports).dialogMessage
         case .command(let command):
-            command.message(for: actionProduct)
+            model.commandConfirmation(command, reports: reports)?.dialogMessage ?? command.message(for: actionProduct)
         case nil:
             ""
         }
@@ -639,27 +645,36 @@ struct BulkActionsView: View {
         locationSelection = currentLocationState
     }
 
-    private func executeWithPIN(_ command: MDMCommand) {
-        let enteredPIN = pin
-        guard enteredPIN.count == 6, enteredPIN.allSatisfy(\.isNumber) else {
-            errorMessage = "The PIN must be exactly 6 digits."
-            return
+    /// What a typed confirmation confirmed.
+    private func perform(_ action: TypedConfirmation.Action, pin: String?) {
+        switch action {
+        case .command(let command): execute(command, pin: pin)
+        case .deleteRecord: run { try await model.deleteMDMRecord(reports: reports) }
+        case .removeStaleRecords: run { try await model.removeStaleRecords(reports: reports) }
         }
-        execute(command, pin: enteredPIN)
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued for \(count(commandCount(command))) in \(actionProduct.label).") {
-            try await model.sendCommand(command, reports: reports, passcode: pin)
+        let product = actionProduct
+        runReporting {
+            let sent = try await model.sendCommand(command, reports: reports, passcode: pin)
+            return "\(command.title) was queued for \(count(sent)) in \(product.label)."
         }
     }
 
-    private func run(successMessage: String? = nil, _ operation: @escaping () async throws -> Void) {
+    private func run(_ operation: @escaping () async throws -> Void) {
+        runReporting {
+            try await operation()
+            return nil
+        }
+    }
+
+    /// Runs an action; a message it returns is shown when it succeeds.
+    private func runReporting(_ operation: @escaping () async throws -> String?) {
         isWorking = true
         Task {
             do {
-                try await operation()
-                if let successMessage { infoMessage = successMessage }
+                if let message = try await operation() { infoMessage = message }
             } catch {
                 errorMessage = error.localizedDescription
             }

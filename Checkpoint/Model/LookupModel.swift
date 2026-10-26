@@ -114,22 +114,11 @@ struct DeviceReport: Identifiable, Sendable {
     }
 }
 
-/// Jamf Pro MDM remote commands offered by the app, with the device kinds
-/// each one applies to.
-nonisolated enum MDMCommand: Hashable, Sendable {
-    case lockComputer
-    case wipeComputer
-    case blankPush
-    case renewProfile
-    case redeployFramework
-    case updateInventory
-    case lockMobile
-    case clearPasscode
-    case restartMobile
-    case wipeMobile
-    case unmanage
-    case shutDownMobile
-
+/// The commands Checkpoint offers, on JTKit's command list (ROADMAP step 7):
+/// JTKit has the titles, consequences, PIN and confirmation rules and the
+/// routing; which commands each product offers, and in which order, is
+/// Checkpoint's.
+extension MDMCommand {
     /// Commands offered for a device kind, in the order they are shown.
     ///
     /// Shut Down is mobile only, because Jamf Pro has no computer privilege
@@ -153,7 +142,7 @@ nonisolated enum MDMCommand: Hashable, Sendable {
     /// Adding or removing a command means a row in the privileges table in
     /// `docs/permissions.md`, and one in `docs/platform-api.md` if the gateway
     /// cannot carry it.
-    static func commands(for kind: DeviceKind, product: MDMProduct = .jamfPro) -> [MDMCommand] {
+    static func commands(for kind: Checkpoint.DeviceKind, product: MDMProduct = .jamfPro) -> [MDMCommand] {
         switch (product, kind) {
         case (.jamfPro, .computer):
             [.lockComputer, .renewProfile, .redeployFramework, .wipeComputer, .blankPush, .unmanage]
@@ -177,16 +166,17 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         .unmanage, .wipeComputer, .wipeMobile,
     ]
 
-    func applies(to kind: DeviceKind, product: MDMProduct = .jamfPro) -> Bool {
+    func applies(to kind: Checkpoint.DeviceKind, product: MDMProduct = .jamfPro) -> Bool {
         Self.commands(for: kind, product: product).contains(self)
     }
 
     /// Why this command cannot be sent over the given connection, or nil when
-    /// it can be. The wording is the same for every blocked command: the
-    /// reasons differ but the remedy does not.
+    /// it can be. The list of what the gateway cannot carry is repeated for
+    /// users in `docs/platform-api.md`, and in the warning shown when a
+    /// Platform API connection is chosen in Settings; change them together.
     func unavailabilityReason(via authMethod: MDMAuthMethod) -> String? {
-        guard authMethod == .platformGateway, !worksOverGateway else { return nil }
-        return "This command is currently unavailable over the Platform API and requires an API client connection."
+        guard authMethod == .platformGateway, !worksOverPlatformAPI else { return nil }
+        return Self.unavailableOverPlatformAPI
     }
 
     /// Why this command would do nothing to this particular device, or nil.
@@ -197,105 +187,44 @@ nonisolated enum MDMCommand: Hashable, Sendable {
         return "This device has no passcode set."
     }
 
-    /// Whether the Platform API gateway can carry this command.
-    ///
-    /// Renew profile is the one exception: the gateway accepts it but renews
-    /// nothing, returning every UDID under `udidsNotProcessed`, confirmed for
-    /// both device kinds against an instance that renews them over a direct
-    /// connection. Lock and clear passcode, command types on
-    /// `POST /v2/mdm/commands`, joined the rest in October 2026, when the
-    /// gateway began publishing that route; both were verified on a device.
-    /// Everything else reaches the gateway through a per-device Jamf Pro
-    /// endpoint or the platform device actions API.
-    ///
-    /// The single place to revisit when Jamf widens gateway coverage. The list
-    /// of what the gateway cannot carry is repeated for users in
-    /// `docs/platform-api.md`, and in the warning shown when a Platform API
-    /// connection is chosen in Settings; change all three together.
-    private var worksOverGateway: Bool {
-        switch self {
-        case .renewProfile: false
-        case .lockComputer, .lockMobile, .clearPasscode,
-             .restartMobile, .shutDownMobile, .wipeComputer, .wipeMobile, .unmanage,
-             .blankPush, .redeployFramework, .updateInventory: true
-        }
-    }
-
-    /// Body for the modern /v2/mdm/commands endpoint. Nil when the command is
-    /// served by a Classic or dedicated endpoint instead.
-    func modernCommandData(for kind: DeviceKind, passcode: String?) -> [String: any Sendable]? {
-        guard applies(to: kind) else { return nil }
-        switch self {
-        case .lockComputer:
-            var data: [String: any Sendable] = ["commandType": "DEVICE_LOCK"]
-            if let passcode { data["pin"] = passcode }
-            return data
-        case .lockMobile:
-            return ["commandType": "DEVICE_LOCK"]
-        case .restartMobile:
-            return ["commandType": "RESTART_DEVICE"]
-        case .shutDownMobile:
-            return ["commandType": "SHUT_DOWN_DEVICE"]
-        case .wipeComputer, .wipeMobile, .unmanage, .clearPasscode,
-             .blankPush, .updateInventory, .renewProfile, .redeployFramework:
-            // Each of these has its own endpoint, or needs per-device data that
-            // cannot share one batched body. sendCommand routes them.
-            return nil
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .lockComputer: "Lock Computer"
-        case .wipeComputer: "Wipe Computer"
-        case .blankPush: "Send Blank Push"
-        case .renewProfile: "Renew MDM Profile"
-        case .redeployFramework: "Redeploy Jamf Framework"
-        case .updateInventory: "Update Inventory"
-        case .lockMobile: "Lock Device"
-        case .unmanage: "Remove MDM Profile"
-        case .clearPasscode: "Clear Passcode"
-        case .restartMobile: "Restart Device"
-        case .shutDownMobile: "Shut Down Device"
-        case .wipeMobile: "Wipe Device"
-        }
-    }
-
-    var isDestructive: Bool {
-        switch self {
-        case .wipeComputer, .wipeMobile, .lockComputer, .lockMobile, .unmanage: true
-        default: false
-        }
-    }
-
-    /// Computer lock and wipe require a 6-digit PIN.
-    ///
-    /// Jamf Pro only. Jamf School's wipe endpoint takes no PIN, so asking for
-    /// one there would collect a code that went nowhere.
+    /// Computer lock and wipe require a 6-digit PIN, on Jamf Pro only: Jamf
+    /// School's wipe takes no PIN.
     func needsPIN(product: MDMProduct = .jamfPro) -> Bool {
-        guard product == .jamfPro else { return false }
-        return self == .lockComputer || self == .wipeComputer
+        product.commandProduct.map { needsPIN(on: $0) } ?? false
     }
 
     func message(for product: MDMProduct = .jamfPro) -> String {
+        if self == .unmanage, product == .intune {
+            return "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Unlike the Jamf products, the record goes too once the device acknowledges."
+        }
+        return consequence(on: product.commandProduct ?? .jamfPro)
+    }
+}
+
+extension MDMProduct {
+    /// The product in JTKit's command list; nil for Intune, whose commands
+    /// stay Checkpoint's until step 8.
+    nonisolated var commandProduct: MDMCommand.Product? {
         switch self {
-        case .lockComputer: "The Mac will lock immediately and require the PIN to be used again."
-        case .wipeComputer: "All data on the Mac will be erased. This cannot be undone."
-        case .blankPush: "The device will be asked to check in with MDM and process any pending commands."
-        case .renewProfile: "The MDM enrollment profile will be renewed on the device."
-        case .redeployFramework: "Reinstalls the Jamf management framework (jamf binary) on the Mac through MDM. Use when a Mac has stopped checking in but still responds to MDM."
-        case .updateInventory: "The device will be asked to submit a fresh inventory report."
-        case .lockMobile: "The device will lock immediately; the owner's passcode unlocks it."
-        case .unmanage:
-            switch product {
-            case .jamfPro: "The MDM profile is removed, so Jamf Pro can no longer manage the device. Its inventory record stays until you delete it."
-            case .jamfSchool: "The MDM profile is removed, so Jamf School can no longer manage the device. Its record stays until you move it to the trash."
-            case .intune: "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Unlike the Jamf products, the record goes too once the device acknowledges."
-            }
-        case .clearPasscode: "The device passcode will be removed."
-        case .restartMobile: "The device will restart immediately."
-        case .shutDownMobile: "The device will shut down immediately and stay off until someone powers it back on."
-        case .wipeMobile: "All data on the device will be erased. This cannot be undone."
+        case .jamfPro: .jamfPro
+        case .jamfSchool: .jamfSchool
+        case .intune: nil
+        }
+    }
+}
+
+extension DeviceKind {
+    nonisolated var commandKind: MDMCommand.DeviceKind {
+        switch self {
+        case .computer: .computer
+        case .mobileDevice: .mobileDevice
+        }
+    }
+
+    nonisolated init(_ kind: MDMCommand.DeviceKind) {
+        switch kind {
+        case .computer: self = .computer
+        case .mobileDevice: self = .mobileDevice
         }
     }
 }
@@ -2057,8 +1986,65 @@ final class LookupModel {
 
     // MARK: MDM commands
 
-    /// Sends a Jamf Pro MDM command to every selected device it applies to,
-    /// routed per record kind. Returns the number of devices it was sent to.
+    /// The devices a command would go to, as JTKit plans them (ROADMAP step
+    /// 7): which receive it, which don't and why. What the confirmation shows
+    /// before anything is sent, and what the Action entry names afterwards.
+    struct CommandPlan {
+        let connection: MDMConnection
+        let targets: [MDMCommand.Target]
+        let plan: MDMCommand.Plan
+        /// Selected devices with no record on the connection.
+        let withoutRecord: Int
+    }
+
+    /// The selection as command targets: every device with a record.
+    private func commandTargets(_ reports: [DeviceReport]) -> [MDMCommand.Target] {
+        reports.compactMap { report in
+            report.mdm.value.map {
+                MDMCommand.Target(serial: report.serial, recordID: $0.recordID, kind: $0.kind.commandKind,
+                                  udid: $0.udid, managementID: $0.managementID)
+            }
+        }
+    }
+
+    /// Nil when the selection gives no single connection to send through.
+    func commandPlan(_ command: MDMCommand, reports: [DeviceReport]) -> CommandPlan? {
+        guard mdmActionUnavailableReason(for: reports) == nil,
+              let connection = mdmActionConnection(for: reports) else { return nil }
+        let targets = commandTargets(reports)
+        let plan: MDMCommand.Plan
+        if let product = connection.product.commandProduct {
+            plan = command.plan(for: targets, on: product, overPlatformAPI: connection.isUsingPlatformGateway)
+        } else {
+            // Intune (Checkpoint's own until step 8): only the kind decides.
+            plan = MDMCommand.Plan(
+                receiving: targets.filter { command.applies(to: DeviceKind($0.kind), product: connection.product) },
+                skipped: targets.filter { !command.applies(to: DeviceKind($0.kind), product: connection.product) }
+                    .map { MDMCommand.Skipped(target: $0, reason: .notApplicable($0.kind)) })
+        }
+        return CommandPlan(connection: connection, targets: targets, plan: plan,
+                           withoutRecord: reports.count - targets.count)
+    }
+
+    /// The confirmation for a command, by JTKit's rules: the connection named
+    /// when it can't be undone, the number typed from two devices, a PIN
+    /// twice, and why fewer devices than selected receive it.
+    func commandConfirmation(_ command: MDMCommand, reports: [DeviceReport]) -> MDMCommand.Confirmation? {
+        guard let planned = commandPlan(command, reports: reports) else { return nil }
+        let product = planned.connection.product
+        var confirmation = MDMCommand.Confirmation(
+            command, plan: planned.plan, on: product.commandProduct ?? .jamfPro,
+            connectionName: planned.connection.displayName,
+            extra: planned.withoutRecord > 0 ? [.noRecord: planned.withoutRecord] : [:])
+        confirmation.message = command.message(for: product)
+        confirmation.asksPINTwice = command.needsPIN(product: product)
+        return confirmation
+    }
+
+    /// Sends an MDM command to every selected device it applies to, through
+    /// JTKit (Jamf Pro, Jamf School) or Checkpoint's Intune client. Returns
+    /// the number of devices it was sent to. One Action entry says how many
+    /// it reached and names every other device with the reason.
     @discardableResult
     func sendCommand(_ command: MDMCommand, reports: [DeviceReport], passcode: String? = nil) async throws -> Int {
         // The connection the records are on, not the one the toolbar shows:
@@ -2081,104 +2067,53 @@ final class LookupModel {
         if let reason = unavailabilityReason(for: command, reports: reports) {
             throw ActionError(message: reason)
         }
-        let targets = reports.compactMap { report in
-            report.mdm.value.map { (serial: report.serial, info: $0) }
-        }.filter { command.applies(to: $0.info.kind, product: product) }
-        guard !targets.isEmpty else {
+        let targets = commandTargets(reports)
+        guard targets.contains(where: { command.applies(to: DeviceKind($0.kind), product: product) }) else {
             throw ActionError(message: "\(command.title) doesn't apply to any of the selected devices.")
         }
 
-        let serials = targets.map(\.serial)
+        let result: MDMCommand.Result
         do {
-            let sent: Int
             if let school {
-                sent = try await routeSchool(command, school: school, targets: targets)
+                result = try await school.send(command, to: targets)
             } else if let intune {
-                sent = try await routeIntune(command, intune: intune, targets: targets)
+                result = try await routeIntune(command, intune: intune, targets: targets)
             } else if let jamf {
-                sent = try await route(command, jamf: jamf, connection: connection, targets: targets, passcode: passcode)
+                result = try await jamf.send(command, to: targets, pin: command.needsPIN(product: product) ? passcode : nil)
             } else {
-                sent = 0
+                result = MDMCommand.Result(command: command.title, outcomes: [])
             }
-            recordAction(
-                product.activityService,
-                "Sent \(command.title) to \(Self.deviceCount(sent))",
-                serials: serials,
-                connectionName: connection.displayName
-            )
-            return sent
         } catch {
-            recordAction(
-                product.activityService,
-                "\(command.title) failed — \(error.localizedDescription)",
-                serials: serials,
-                outcome: .failed,
-                connectionName: connection.displayName
-            )
+            log.recordCommand(command.title, outcomes: targets.map { .init(target: $0, outcome: .failed(error.localizedDescription)) },
+                              failure: error.localizedDescription,
+                              service: product.activityService.rawValue, connection: connection.displayName)
             throw error
         }
-    }
-
-    /// Routes a command to its Jamf School endpoint.
-    ///
-    /// Straightforward compared with the Jamf Pro side: every command is one
-    /// request per device against a single device resource, and there is no
-    /// computer/mobile split to route around, so a Mac and an iPad take the
-    /// same path. Failures are collected per device rather than abandoning the
-    /// rest of the selection.
-    private func routeSchool(
-        _ command: MDMCommand,
-        school: JamfSchoolClient,
-        targets: [(serial: String, info: ManagedDeviceInfo)]
-    ) async throws -> Int {
-        var failures: [String] = []
-        var sent = 0
-        for target in targets {
-            let udid = target.info.recordID
-            do {
-                switch command {
-                case .updateInventory:
-                    try await school.refreshInventory(udid: udid)
-                case .restartMobile:
-                    try await school.restart(udid: udid)
-                case .wipeComputer, .wipeMobile:
-                    try await school.wipe(udid: udid)
-                case .unmanage:
-                    try await school.unenroll(udid: udid)
-                default:
-                    // Not offered for Jamf School, so unreachable through the
-                    // interface; refused here rather than silently skipped.
-                    throw ActionError(message: "\(command.title) is not available in Jamf School.")
-                }
-                sent += 1
-            } catch {
-                failures.append("\(target.serial): \(error.localizedDescription)")
-            }
-        }
-        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-        return sent
+        log.recordCommand(command.title, outcomes: result.outcomes, warning: result.warning,
+                          service: product.activityService.rawValue, connection: connection.displayName)
+        if let problems = result.problems { throw ActionError(message: problems) }
+        return result.sent.count
     }
 
     /// Routes a command to its Intune action.
     ///
-    /// One request per device, like Jamf School, because Graph's device
-    /// actions take no device list. Failures are collected per device rather
-    /// than abandoning the rest of the selection.
-    ///
-    /// Every action here answers 204 with no body, so there is no per-device
-    /// outcome hidden inside a success to check for — unlike Jamf School's
-    /// envelope or Jamf Pro's `udidsNotProcessed`. Whether the device then
-    /// acts on it is reported by Intune as a device action result, which
-    /// Checkpoint does not poll.
+    /// One request per device, because Graph's device actions take no device
+    /// list. Every action answers 204 with no body, so there is no per-device
+    /// outcome hidden inside a success; whether the device then acts on it is
+    /// reported by Intune as a device action result, which Checkpoint does
+    /// not poll.
     private func routeIntune(
         _ command: MDMCommand,
         intune: IntuneClient,
-        targets: [(serial: String, info: ManagedDeviceInfo)]
-    ) async throws -> Int {
-        var failures: [String] = []
-        var sent = 0
+        targets: [MDMCommand.Target]
+    ) async throws -> MDMCommand.Result {
+        var outcomes: [MDMCommand.DeviceOutcome] = []
         for target in targets {
-            let id = target.info.recordID
+            guard command.applies(to: DeviceKind(target.kind), product: .intune) else {
+                outcomes.append(.init(target: target, outcome: .skipped(.notApplicable(target.kind))))
+                continue
+            }
+            let id = target.recordID
             do {
                 switch command {
                 case .updateInventory:
@@ -2200,213 +2135,14 @@ final class LookupModel {
                     // interface; refused here rather than silently skipped.
                     throw ActionError(message: "\(command.title) is not available in Intune.")
                 }
-                sent += 1
+                outcomes.append(.init(target: target, outcome: .sent))
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                failures.append("\(target.serial): \(error.localizedDescription)")
+                outcomes.append(.init(target: target, outcome: .failed(error.localizedDescription)))
             }
         }
-        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-        return sent
-    }
-
-    /// Routes a command to whichever endpoint carries it for these targets.
-    private func route(
-        _ command: MDMCommand,
-        jamf: JamfClient,
-        connection: MDMConnection,
-        targets: [(serial: String, info: ManagedDeviceInfo)],
-        passcode: String?
-    ) async throws -> Int {
-        if command == .renewProfile {
-            let udids = targets.compactMap(\.info.udid).filter { !$0.isEmpty }
-            guard !udids.isEmpty else {
-                throw ActionError(message: "No device UDIDs are known, so the MDM profile cannot be renewed.")
-            }
-            // The endpoint answers with success even when it renews nothing,
-            // naming the devices it skipped, so report those rather than
-            // treating the status alone as the result.
-            let notProcessed = Set(try await jamf.renewMDMProfile(udids: udids))
-            guard notProcessed.isEmpty else {
-                let serials = targets
-                    .filter { notProcessed.contains($0.info.udid ?? "") }
-                    .map(\.serial)
-                let named = serials.isEmpty ? Array(notProcessed) : serials
-                throw ActionError(message: "Jamf Pro accepted the request but renewed no profile for: \(named.joined(separator: ", "))")
-            }
-            return udids.count
-        }
-
-        if command == .blankPush {
-            let pushTargets = targets.filter { $0.info.managementID != nil }
-            let managementIDs = pushTargets.compactMap(\.info.managementID)
-            guard !managementIDs.isEmpty else {
-                throw ActionError(message: "No management IDs are known, so a blank push cannot be sent. Run a fresh lookup first.")
-            }
-            // The Jamf Pro UI's blank push queues a DeclarativeManagement sync
-            // per device (POST /v1/ddm/{managementId}/sync), which is the entry
-            // in the management history. Do the same, falling back to a
-            // minimal DeviceInformation query for devices the DDM endpoint
-            // rejects. Failures don't stop the push itself.
-            var ddmError: String?
-            var fallbackIDs: [String] = []
-            var syncErrors: [String] = []
-            for managementID in managementIDs {
-                do {
-                    try await jamf.ddmSync(managementID: managementID)
-                } catch {
-                    fallbackIDs.append(managementID)
-                    syncErrors.append(error.localizedDescription)
-                }
-            }
-            if !fallbackIDs.isEmpty {
-                do {
-                    try await jamf.sendModernCommand(
-                        commandData: ["commandType": "DEVICE_INFORMATION", "queries": ["DeviceName"]],
-                        managementIDs: fallbackIDs
-                    )
-                } catch {
-                    ddmError = "\(syncErrors.first ?? ""); fallback DeviceInformation also failed: \(error.localizedDescription)"
-                }
-            }
-            let errorIDs = Set(try await jamf.blankPush(managementIDs: managementIDs).map { $0.lowercased() })
-            if !errorIDs.isEmpty {
-                let failedSerials = pushTargets
-                    .filter { errorIDs.contains(($0.info.managementID ?? "").lowercased()) }
-                    .map(\.serial)
-                let names = failedSerials.isEmpty ? errorIDs.joined(separator: ", ") : failedSerials.joined(separator: ", ")
-                throw ActionError(message: "Jamf Pro could not deliver the blank push to: \(names)")
-            }
-            if let ddmError {
-                throw ActionError(message: "The blank push was sent, but no visible command could be queued with it: \(ddmError)")
-            }
-            return managementIDs.count
-        }
-
-        var failures: [String] = []
-        var sent = 0
-
-        if command == .clearPasscode {
-            for target in targets where target.info.kind == .mobileDevice {
-                guard let managementID = target.info.managementID else {
-                    failures.append("\(target.serial): the record has no management ID. Run a fresh lookup first.")
-                    continue
-                }
-                do {
-                    // Read now rather than carried from the lookup: the
-                    // token is a secret, needed only for the devices the
-                    // command goes to.
-                    guard let unlockToken = try await jamf.unlockToken(mobileDeviceID: target.info.recordID) else {
-                        failures.append("\(target.serial): Jamf Pro has no escrowed unlock token for this device, so the passcode cannot be cleared.")
-                        continue
-                    }
-                    try await jamf.sendModernCommand(
-                        commandData: ["commandType": "CLEAR_PASSCODE", "unlockToken": unlockToken],
-                        managementIDs: [managementID]
-                    )
-                    sent += 1
-                } catch {
-                    failures.append("\(target.serial): \(error.localizedDescription)")
-                }
-            }
-            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-            return sent
-        }
-
-        // Restart and shut down have no Jamf Pro route, only the platform
-        // Device Management Actions API, which the gateway reaches. On a direct
-        // connection they fall through to the batched command endpoint below.
-        if connection.isUsingPlatformGateway, command == .shutDownMobile || command == .restartMobile {
-            for target in targets {
-                do {
-                    guard let deviceID = try await jamf.platformDeviceID(serial: target.serial) else {
-                        failures.append("\(target.serial): not in the platform device inventory.")
-                        continue
-                    }
-                    if command == .shutDownMobile {
-                        try await jamf.platformShutDown(deviceID: deviceID)
-                    } else {
-                        try await jamf.platformRestart(deviceID: deviceID)
-                    }
-                    sent += 1
-                } catch {
-                    failures.append("\(target.serial): \(error.localizedDescription)")
-                }
-            }
-            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-            return sent
-        }
-
-        // Wipe and Remove MDM Profile use per-device endpoints rather than the
-        // batched one, which is also why they work over the Platform API.
-        if command == .wipeComputer || command == .wipeMobile || command == .unmanage {
-            for target in targets {
-                do {
-                    switch (command, target.info.kind) {
-                    case (.wipeComputer, .computer):
-                        try await jamf.eraseComputer(computerID: target.info.recordID, pin: passcode)
-                    case (.wipeMobile, .mobileDevice):
-                        try await jamf.eraseMobileDevice(deviceID: target.info.recordID)
-                    case (.unmanage, .computer):
-                        try await jamf.removeMDMProfile(computerID: target.info.recordID)
-                    case (.unmanage, .mobileDevice):
-                        try await jamf.unmanageMobileDevice(deviceID: target.info.recordID)
-                    default:
-                        continue
-                    }
-                    sent += 1
-                } catch {
-                    failures.append("\(target.serial): \(error.localizedDescription)")
-                }
-            }
-            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-            return sent
-        }
-
-        if command == .redeployFramework {
-            for target in targets where target.info.kind == .computer {
-                do {
-                    try await jamf.redeployFramework(computerID: target.info.recordID)
-                    sent += 1
-                } catch {
-                    failures.append("\(target.serial): \(error.localizedDescription)")
-                }
-            }
-            if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-            return sent
-        }
-
-        // Modern /v2/mdm/commands endpoint, batched per device kind (the
-        // payload differs between computers and mobile devices).
-        for kind in [DeviceKind.computer, .mobileDevice] {
-            guard let commandData = command.modernCommandData(for: kind, passcode: command.needsPIN() ? passcode : nil) else { continue }
-            let kindTargets = targets.filter { $0.info.kind == kind }
-            guard !kindTargets.isEmpty else { continue }
-            for target in kindTargets where target.info.managementID == nil {
-                failures.append("\(target.serial): the record has no management ID. Run a fresh lookup first.")
-            }
-            let managementIDs = kindTargets.compactMap(\.info.managementID)
-            guard !managementIDs.isEmpty else { continue }
-            do {
-                try await jamf.sendModernCommand(commandData: commandData, managementIDs: managementIDs)
-                sent += managementIDs.count
-            } catch {
-                failures.append("\(kindTargets.map(\.serial).joined(separator: ", ")): \(error.localizedDescription)")
-            }
-        }
-
-        // Update Inventory is the one command still served by the Classic API.
-        if command == .updateInventory {
-            for target in targets where target.info.kind == .mobileDevice {
-                do {
-                    try await jamf.sendMobileDeviceCommand("UpdateInventory", deviceID: target.info.recordID)
-                    sent += 1
-                } catch {
-                    failures.append("\(target.serial): \(error.localizedDescription)")
-                }
-            }
-        }
-        if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
-        return sent
+        return MDMCommand.Result(command: command.title, outcomes: outcomes)
     }
 
     // MARK: Clients & shared context

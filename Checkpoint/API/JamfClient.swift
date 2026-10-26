@@ -651,6 +651,13 @@ struct JamfPrestage: Sendable, Identifiable, Hashable {
 /// Client for the Jamf Pro API, connected directly or through the Platform
 /// API gateway. Authenticates with an API client (OAuth client credentials),
 /// a username and password (bearer token), or a gateway integration.
+///
+/// Runs on JTKit's `JamfPlatform.Client` (ROADMAP step 7): its sign-in, the
+/// shared retry rules, JTKit's error format with the Trace ID and the hints
+/// (a refused request names the missing privilege), and an activity log entry
+/// for every attempt. The lookups, asset tags, MDM commands, record deletes,
+/// Platform API device calls and Classic groups are JTKit's; the other reads
+/// and writes below are Checkpoint's own until they move in JTKit 0.8.2.
 actor JamfClient {
     struct APIError: LocalizedError {
         let message: String
@@ -658,13 +665,9 @@ actor JamfClient {
     }
 
     private let authMethod: MDMAuthMethod
-    /// JTKit's sign-in: renews the token 60 s early, shares one sign-in
-    /// between simultaneous requests, and reads the secret only when it
-    /// signs in.
-    private let tokens: JamfTokenProvider
-    /// JTKit's sending: the token, `X-Environment-Id` on the Platform API,
-    /// the shared retry rules, and an activity log entry for every attempt.
-    private let http: HTTPClient
+    /// JTKit's client, or why the connection can't make one (e.g. an
+    /// Environment ID that isn't a UUID), thrown at the first request.
+    private let client: Result<JamfPlatform.Client, JamfPlatformError>
 
     /// - Parameters:
     ///   - secret: the client secret or password, read at each sign-in.
@@ -672,448 +675,224 @@ actor JamfClient {
     ///   - session: replaced in tests.
     init?(config: MDMConnection, secret: @escaping @Sendable () throws -> String,
           log: ActivityLog? = nil, session: URLSession = .shared) {
-        guard let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
-        let account = config.account.trimmingCharacters(in: .whitespacesAndNewlines)
-        let tokenURL: URL
-        let method: JamfTokenProvider.Method
-        switch config.authMethod {
-        case .apiClient:
-            (tokenURL, method) = (url.appending(path: "/api/oauth/token"), .apiClient(clientID: account))
-        // Same client-credentials form as the Jamf Pro API client flow, so
-        // only the URL differs. Tokens are region-locked, hence the same
-        // regional host the requests go to.
-        case .platformGateway:
-            (tokenURL, method) = (url.appending(path: "/auth/token"), .apiClient(clientID: account))
-        case .usernamePassword:
-            (tokenURL, method) = (url.appending(path: "/api/v1/auth/token"), .usernamePassword(username: account))
-        case .entraApp:
-            // An Entra app registration can't sign in to Jamf Pro; the editor
-            // offers it only for Intune.
-            return nil
-        }
+        // An Entra app registration can't sign in to Jamf Pro; the editor
+        // offers it only for Intune.
+        guard config.authMethod != .entraApp,
+              let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         let recorder = RequestRecorder(session: session, log: log,
                                        service: ActivityService.jamfPro.rawValue, connection: config.displayName)
-        let environmentID = config.environmentID.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.authMethod = config.authMethod
-        self.tokens = JamfTokenProvider(tokenURL: tokenURL, method: method, secret: secret, recorder: recorder)
-        self.http = HTTPClient(
-            baseURL: url, tokens: tokens, recorder: recorder,
-            headers: config.authMethod == .platformGateway && !environmentID.isEmpty
-                ? ["X-Environment-Id": environmentID] : [:]
-        )
+        authMethod = config.authMethod
+        do {
+            client = .success(try JamfPlatform.Client(connection: config.connection, secret: secret, recorder: recorder))
+        } catch let error as JamfPlatformError {
+            client = .failure(error)
+        } catch {
+            client = .failure(JamfPlatformError(.invalidResponse(error.localizedDescription)))
+        }
+    }
+
+    private func jamf() throws -> JamfPlatform.Client {
+        try client.get()
     }
 
     /// Drops the token, so the next request signs in again with the secret
     /// saved now. Called when the connection or its secret is edited.
     func forgetToken() async {
-        await tokens.forgetToken()
+        if case .success(let client) = client { await client.forgetToken() }
+    }
+
+    /// Signs in, for Test Connection. A refusal shows JTKit's hint: on a
+    /// direct server without the region, on the Platform API with it.
+    func verify() async throws {
+        try await jamf().signIn()
     }
 
     // MARK: Device records
 
-    /// Serials per filtered request. Fifty keeps the URL well within what
-    /// servers and proxies accept, and a page holds them all.
-    static let batchSize = 50
+    /// The sections a lookup asks for. DISK_ENCRYPTION reports FileVault
+    /// state without the recovery key, so the read stays within Read
+    /// Computers; USER_AND_LOCATION is hidden whole in the activity log.
+    static let computerSections: [JamfPro.InventorySection] = [.general, .hardware, .diskEncryption, .operatingSystem, .userAndLocation]
+    static let mobileDeviceSections: [JamfPro.InventorySection] = [.general, .hardware, .security, .userAndLocation]
 
-    /// Chunked requests in flight at once, per device kind.
-    private static let batchWindow = 4
-
-    /// A 400 to a filtered read: the server refused the filter itself, which
-    /// a value the list syntax cannot carry would cause.
-    private struct FilterRejected: Error {}
-
-    /// The computer records for these serials, a request per fifty rather
-    /// than per device.
+    /// The computer records for these serials: JTKit's batches of fifty, one
+    /// serial at a time when the filter is refused. Their answers are
+    /// recorded, trimmed to the sections asked for (ROADMAP step 5).
     func computers(serials: [String]) async -> JamfBatch<JamfComputerRecord> {
-        await batched(serials, field: "hardware.serialNumber") { filter in
-            try await self.computerRecords(filter: filter)
-        }
+        await batch(serials) {
+            try await $0.computers(serials: serials, sections: Self.computerSections, recording: .results)
+        } map: { Self.record($0) }
     }
 
     /// The mobile device records for these serials. The list read carries
     /// everything a lookup shows except the escrowed unlock token, which
     /// Clear Passcode reads for the devices it is sent to.
     func mobileDevices(serials: [String]) async -> JamfBatch<JamfMobileDeviceRecord> {
-        await batched(serials, field: "serialNumber") { filter in
-            try await self.mobileDeviceRecords(filter: filter)
-        }
+        await batch(serials) {
+            try await $0.mobileDevices(serials: serials, sections: Self.mobileDeviceSections, recording: .results)
+        } map: { Self.record($0) }
     }
 
-    /// Runs `read` over the serials in chunks. A chunk whose filter is
-    /// refused is asked again one serial at a time, quoted; a chunk that
-    /// fails otherwise marks its serials failed, so none reads as absent.
-    private func batched<Record: Sendable>(
+    private func batch<Found: Sendable, Record: Sendable>(
         _ serials: [String],
-        field: String,
-        read: @escaping @Sendable (String) async throws -> [String: Record]
+        read: (JamfPlatform.Client) async throws -> JamfPro.Batch<Found>,
+        map: (Found) -> Record?
     ) async -> JamfBatch<Record> {
-        let chunks = stride(from: 0, to: serials.count, by: Self.batchSize).map {
-            Array(serials[$0..<min($0 + Self.batchSize, serials.count)])
-        }
-        return await withTaskGroup(of: JamfBatch<Record>.self) { group in
-            var pending = chunks.makeIterator()
-            func addNext() {
-                guard let chunk = pending.next() else { return }
-                group.addTask {
-                    var batch = JamfBatch<Record>()
-                    do {
-                        batch.records = try await read("\(field)=in=(\(chunk.joined(separator: ",")))")
-                    } catch is FilterRejected {
-                        for serial in chunk {
-                            do {
-                                batch.records.merge(try await read("\(field)==\"\(serial)\"")) { first, _ in first }
-                            } catch {
-                                batch.failures[serial] = error.localizedDescription
-                            }
-                        }
-                    } catch {
-                        for serial in chunk { batch.failures[serial] = error.localizedDescription }
-                    }
-                    return batch
-                }
-            }
-            for _ in 0..<Self.batchWindow { addNext() }
-            var merged = JamfBatch<Record>()
-            for await batch in group {
-                merged.records.merge(batch.records) { first, _ in first }
-                merged.failures.merge(batch.failures) { first, _ in first }
-                addNext()
-            }
-            return merged
+        do {
+            let found = try await read(jamf())
+            return JamfBatch(records: found.records.compactMapValues(map),
+                             failures: found.failures.mapValues(\.localizedDescription))
+        } catch {
+            // No sign-in at all (no secret, an unusable Environment ID): every
+            // serial failed, so none reads as absent.
+            let keys = Set(serials.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }.filter { !$0.isEmpty })
+            return JamfBatch(failures: Dictionary(uniqueKeysWithValues: keys.map { ($0, error.localizedDescription) }))
         }
     }
 
-    /// Every page of a filtered inventory read. With fifty serials per
-    /// filter one page normally holds the lot; more only when a serial has
-    /// duplicate records.
-    private func filteredPages(path: String, sections: [String], filter: String) async throws -> [Data] {
-        struct Count: Decodable { let totalCount: Int }
-        let pageSize = 100
-        var pages: [Data] = []
-        var page = 0
-        while true {
-            let queryItems = sections.map { URLQueryItem(name: "section", value: $0) } + [
-                URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "page-size", value: String(pageSize)),
-                URLQueryItem(name: "filter", value: filter),
-            ]
-            // A device lookup: its answer is recorded, trimmed to the
-            // sections asked for (InventoryRecording).
-            let (data, status) = try await send(path: path, queryItems: queryItems, recordsBodies: true,
-                                                recordedJSON: InventoryRecording.keeping(sections: sections))
-            if status == 400 { throw FilterRejected() }
-            try throwIfError(status: status, data: data)
-            pages.append(data)
-            let total = try JSONDecoder().decode(Count.self, from: data).totalCount
-            page += 1
-            if page * pageSize >= total { return pages }
-        }
+    private static func iso(_ date: Date?) -> String? {
+        date?.ISO8601Format()
     }
 
-    private func computerRecords(filter: String) async throws -> [String: JamfComputerRecord] {
-        struct Response: Decodable {
-            let results: [Item]
-            struct Item: Decodable {
-                let id: String
-                let udid: String?
-                let general: General?
-                let hardware: Hardware?
-                let diskEncryption: DiskEncryption?
-                let operatingSystem: OperatingSystem?
-                let userAndLocation: UserAndLocation?
-            }
-            struct Hardware: Decodable {
-                let serialNumber: String?
-            }
-            struct DiskEncryption: Decodable {
-                let fileVault2Enabled: Bool?
-                let individualRecoveryKeyValidityStatus: String?
-                let bootPartitionEncryptionDetails: Partition?
-            }
-            struct Partition: Decodable {
-                let partitionFileVault2State: String?
-                let partitionFileVault2Percent: Int?
-            }
-            struct OperatingSystem: Decodable {
-                let version: String?
-                let build: String?
-            }
-            /// Only the assignment is read. The section also carries the
-            /// assigned user's name, e-mail address and telephone number,
-            /// which Checkpoint neither shows nor records.
-            struct UserAndLocation: Decodable {
-                let departmentId: String?
-                let buildingId: String?
-                let room: String?
-            }
-            struct General: Decodable {
-                let name: String?
-                /// The Jamf binary check-in.
-                let lastCheckIn: String?
-                /// Last Contact: binary, MDM or DDM, whichever was latest.
-                let lastContact: String?
-                let lastEnrolledDate: String?
-                let reportDate: String?
-                let mdmProfileExpiration: String?
-                let managementId: String?
-                let assetTag: String?
-                let enrolledViaAutomatedDeviceEnrollment: Bool?
-                let enrollmentMethod: EnrollmentMethod?
-                let site: Site?
-            }
-            struct EnrollmentMethod: Decodable {
-                let objectType: String?
-            }
-            struct Site: Decodable {
-                let id: String?
-                let name: String?
-            }
-        }
-        // HARDWARE carries the serial, which is how results map back to the
-        // serials asked for. DISK_ENCRYPTION reports FileVault state without
-        // the recovery key, so the read stays within Read Computers and the
-        // response is safe to record. OPERATING_SYSTEM is the installed OS,
-        // compared against an enforced update. USER_AND_LOCATION also
-        // carries the assigned user's details, so it is masked in the
-        // activity log (JTKit's personal blocks).
-        let pages = try await filteredPages(
-            path: "/api/v4/computers-inventory",
-            sections: ["GENERAL", "HARDWARE", "DISK_ENCRYPTION", "OPERATING_SYSTEM", "USER_AND_LOCATION"],
-            filter: filter
-        )
-        var records: [String: JamfComputerRecord] = [:]
-        for data in pages {
-            for item in try JSONDecoder().decode(Response.self, from: data).results {
-                guard let serial = item.hardware?.serialNumber?.uppercased(), !serial.isEmpty,
-                      records[serial] == nil else { continue }
-                records[serial] = JamfComputerRecord(
-                    id: item.id,
-                    udid: item.udid,
-                    managementID: item.general?.managementId,
-                    name: item.general?.name,
-                    lastContactTime: item.general?.lastCheckIn,
-                    lastContact: item.general?.lastContact,
-                    lastEnrolledDate: item.general?.lastEnrolledDate,
-                    reportDate: item.general?.reportDate,
-                    mdmProfileExpiration: item.general?.mdmProfileExpiration,
-                    siteID: item.general?.site?.id,
-                    siteName: item.general?.site?.name,
-                    encryption: item.diskEncryption.map {
-                        DiskEncryptionState(
-                            fileVaultEnabled: $0.fileVault2Enabled,
-                            bootPartitionState: $0.bootPartitionEncryptionDetails?.partitionFileVault2State,
-                            bootPartitionPercent: $0.bootPartitionEncryptionDetails?.partitionFileVault2Percent,
-                            recoveryKeyValidity: $0.individualRecoveryKeyValidityStatus
-                        )
-                    },
-                    osVersion: item.operatingSystem?.version,
-                    osBuild: item.operatingSystem?.build,
-                    departmentID: item.userAndLocation?.departmentId,
-                    buildingID: item.userAndLocation?.buildingId,
-                    room: item.userAndLocation?.room,
-                    assetTag: item.general?.assetTag,
-                    enrolledViaADE: item.general?.enrolledViaAutomatedDeviceEnrollment,
-                    enrollmentMethod: item.general?.enrollmentMethod?.objectType
+    private static func record(_ computer: JamfPro.Computer) -> JamfComputerRecord? {
+        guard let id = computer.id else { return nil }
+        let general = computer.general
+        return JamfComputerRecord(
+            id: id,
+            udid: computer.udid,
+            managementID: general?.managementID,
+            name: general?.name,
+            lastContactTime: iso(general?.lastCheckIn),
+            lastContact: iso(general?.lastContact),
+            lastEnrolledDate: iso(general?.lastEnrolledDate),
+            reportDate: iso(general?.reportDate),
+            mdmProfileExpiration: iso(general?.mdmProfileExpiration),
+            siteID: general?.site?.id,
+            siteName: general?.site?.name,
+            encryption: computer.diskEncryption.map {
+                DiskEncryptionState(
+                    fileVaultEnabled: $0.fileVault2Enabled,
+                    bootPartitionState: $0.bootPartitionFileVault2State,
+                    bootPartitionPercent: $0.bootPartitionFileVault2Percent,
+                    recoveryKeyValidity: $0.individualRecoveryKeyValidityStatus
                 )
-            }
-        }
-        return records
-    }
-
-    private func mobileDeviceRecords(filter: String) async throws -> [String: JamfMobileDeviceRecord] {
-        struct Response: Decodable {
-            let results: [Item]
-            struct Item: Decodable {
-                let mobileDeviceId: String
-                let general: General?
-                let hardware: Hardware?
-                let security: Security?
-                let userAndLocation: UserAndLocation?
-            }
-            struct General: Decodable {
-                let displayName: String?
-                let udid: String?
-                let managementId: String?
-                let lastInventoryUpdateDate: String?
-                let lastContactDate: String?
-                let lastEnrolledDate: String?
-                let mdmProfileExpirationDate: String?
-                let osVersion: String?
-                let osBuild: String?
-                let assetTag: String?
-                let siteId: String?
-                let enrollmentMethodPrestage: Prestage?
-            }
-            /// Set exactly when a PreStage enrolled the record.
-            struct Prestage: Decodable {
-                let mobileDevicePrestageId: String?
-                let profileName: String?
-            }
-            struct Hardware: Decodable {
-                let serialNumber: String?
-            }
-            struct Security: Decodable {
-                let passcodePresent: Bool?
-                let passcodeCompliant: Bool?
-                let passcodeCompliantWithProfile: Bool?
-                let hardwareEncryption: Int?
-            }
-            /// Only the assignment is read; the user's own details are left
-            /// alone.
-            struct UserAndLocation: Decodable {
-                let departmentId: String?
-                let buildingId: String?
-                let room: String?
-            }
-        }
-        // SECURITY and USER_AND_LOCATION are only returned when asked for by
-        // name. HARDWARE carries the serial. USER_AND_LOCATION is masked in
-        // the activity log, as for computers.
-        let pages = try await filteredPages(
-            path: "/api/v2/mobile-devices/detail",
-            sections: ["GENERAL", "HARDWARE", "SECURITY", "USER_AND_LOCATION"],
-            filter: filter
+            },
+            osVersion: computer.operatingSystem?.version,
+            osBuild: computer.operatingSystem?.build,
+            departmentID: computer.userAndLocation?.departmentID,
+            buildingID: computer.userAndLocation?.buildingID,
+            room: computer.userAndLocation?.room,
+            assetTag: general?.assetTag,
+            enrolledViaADE: general?.enrolledViaAutomatedDeviceEnrollment,
+            enrollmentMethod: general?.enrollmentMethod?.objectType
         )
-        var records: [String: JamfMobileDeviceRecord] = [:]
-        for data in pages {
-            for item in try JSONDecoder().decode(Response.self, from: data).results {
-                guard let serial = item.hardware?.serialNumber?.uppercased(), !serial.isEmpty,
-                      records[serial] == nil else { continue }
-                let general = item.general
-                let prestage = general?.enrollmentMethodPrestage
-                records[serial] = JamfMobileDeviceRecord(
-                    id: item.mobileDeviceId,
-                    udid: general?.udid,
-                    managementID: general?.managementId,
-                    name: general?.displayName,
-                    lastEnrolledDate: general?.lastEnrolledDate,
-                    lastInventoryDate: general?.lastInventoryUpdateDate,
-                    lastContactTime: general?.lastContactDate,
-                    mdmProfileExpiration: general?.mdmProfileExpirationDate,
-                    siteID: general?.siteId ?? "-1",
-                    security: item.security.map {
-                        MobileSecurityState(
-                            passcodePresent: $0.passcodePresent,
-                            passcodeCompliant: $0.passcodeCompliant,
-                            passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
-                            hardwareEncryption: $0.hardwareEncryption
-                        )
-                    },
-                    osVersion: general?.osVersion,
-                    osBuild: general?.osBuild,
-                    // The list read writes "none" as -1 here.
-                    departmentID: item.userAndLocation?.departmentId.flatMap { $0 == "-1" ? nil : $0 },
-                    buildingID: item.userAndLocation?.buildingId.flatMap { $0 == "-1" ? nil : $0 },
-                    room: item.userAndLocation?.room,
-                    assetTag: general?.assetTag,
-                    enrolledViaADE: prestage != nil,
-                    enrollmentMethod: prestage.map {
-                        "PreStage enrollment: \($0.profileName ?? "") (\($0.mobileDevicePrestageId ?? ""))"
-                    }
-                )
-            }
-        }
-        return records
     }
 
-    /// A mobile device's escrowed unlock token, which Clear Passcode needs.
-    /// Read when the command is sent rather than during a lookup, and
-    /// withheld from the activity log, which would otherwise record it.
-    func unlockToken(mobileDeviceID id: String) async throws -> String? {
-        struct Detail: Decodable {
-            // The token lives in the per-OS detail object.
-            let ios: OSDetails?
-            let tvos: OSDetails?
-            let watchos: OSDetails?
-            let visionos: OSDetails?
-            struct OSDetails: Decodable {
-                let unlockToken: String?
+    private static func record(_ device: JamfPro.MobileDevice) -> JamfMobileDeviceRecord? {
+        guard let id = device.id else { return nil }
+        let general = device.general
+        let prestage = general?.enrollmentPreStageID ?? general?.enrollmentPreStageName
+        return JamfMobileDeviceRecord(
+            id: id,
+            udid: device.udid,
+            managementID: general?.managementID,
+            name: general?.displayName,
+            lastEnrolledDate: iso(general?.lastEnrolledDate),
+            lastInventoryDate: iso(general?.lastInventoryUpdateDate),
+            lastContactTime: iso(general?.lastContactDate),
+            mdmProfileExpiration: iso(general?.mdmProfileExpirationDate),
+            siteID: general?.siteID ?? "-1",
+            security: device.security.map {
+                MobileSecurityState(
+                    passcodePresent: $0.passcodePresent,
+                    passcodeCompliant: $0.passcodeCompliant,
+                    passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
+                    hardwareEncryption: $0.hardwareEncryption
+                )
+            },
+            osVersion: general?.osVersion,
+            osBuild: general?.osBuild,
+            departmentID: device.userAndLocation?.departmentID,
+            buildingID: device.userAndLocation?.buildingID,
+            room: device.userAndLocation?.room,
+            assetTag: general?.assetTag,
+            enrolledViaADE: prestage != nil,
+            enrollmentMethod: prestage.map { _ in
+                "PreStage enrollment: \(general?.enrollmentPreStageName ?? "") (\(general?.enrollmentPreStageID ?? ""))"
             }
-        }
-        let (data, status) = try await send(path: "/api/v2/mobile-devices/\(id)/detail")
-        try throwIfError(status: status, data: data)
-        let detail = try JSONDecoder().decode(Detail.self, from: data)
-        return [detail.ios, detail.tvos, detail.watchos, detail.visionos]
-            .compactMap { $0?.unlockToken }
-            .first { !$0.isEmpty }
+        )
+    }
+
+    // MARK: Commands and record deletes (JTKit)
+
+    /// Sends an MDM command; JTKit routes it, per device.
+    func send(_ command: MDMCommand, to targets: [MDMCommand.Target], pin: String?) async throws -> MDMCommand.Result {
+        try await jamf().send(command, to: targets, pin: pin)
+    }
+
+    /// Where the requests go, which decides how Restart and Shut Down are sent.
+    var overPlatformAPI: Bool { authMethod == .platformGateway }
+
+    func deleteComputer(id: String) async throws {
+        try await jamf().deleteComputer(id: id)
     }
 
     func deleteMobileDevice(id: String) async throws {
-        let (data, status) = try await send(path: "/JSSResource/mobiledevices/id/\(id)", method: "DELETE")
-        try throwIfError(status: status, data: data)
+        try await jamf().deleteMobileDevice(id: id)
     }
 
-    // MARK: MDM commands
+    // MARK: Asset tags (JTKit)
 
-    /// Sends a Classic API mobile device command. Only UpdateInventory still
-    /// goes through this route: Jamf Pro removed the security-sensitive
-    /// commands from the Classic API (they return HTTP 400 now).
-    func sendMobileDeviceCommand(_ command: String, deviceID: String) async throws {
-        let (data, status) = try await send(
-            path: "/JSSResource/mobiledevicecommands/command/\(command)/id/\(deviceID)",
-            method: "POST"
-        )
-        try throwIfError(status: status, data: data)
+    func setComputerAssetTag(computerID: String, assetTag: String) async throws {
+        try await jamf().setAssetTag(assetTag, computerID: computerID)
     }
 
-    /// Sends an MDM command through the modern /v2/mdm/commands endpoint,
-    /// batched across the given management IDs.
-    func sendModernCommand(commandData: [String: any Sendable], managementIDs: [String]) async throws {
-        let body = try JSONSerialization.data(withJSONObject: [
-            "clientData": managementIDs.map { ["managementId": $0] },
-            "commandData": commandData,
-        ] as [String: Any])
-        let (data, status) = try await send(path: "/api/v2/mdm/commands", method: "POST", body: body)
-        try throwIfError(status: status, data: data)
+    func setMobileDeviceAssetTag(deviceID: String, assetTag: String) async throws {
+        try await jamf().setAssetTag(assetTag, mobileDeviceID: deviceID)
     }
 
-    /// Renews the MDM enrollment profile for the given device UDIDs.
-    /// Returns the UDIDs Jamf Pro declined to renew. The endpoint answers 200
-    /// even when it renewed nothing, listing the ones it skipped, so the status
-    /// alone would report success wrongly.
-    @discardableResult
-    func renewMDMProfile(udids: [String]) async throws -> [String] {
-        struct Response: Decodable {
-            let udidsNotProcessed: Wrapper?
-            struct Wrapper: Decodable { let udids: [String]? }
+    // MARK: Platform API devices (JTKit)
+
+    /// The platform device UUID for a serial, nil when the inventory doesn't
+    /// know it; refused when devices come back but none has the serial.
+    func platformDeviceID(serial: String) async throws -> String? {
+        try await jamf().device(serial: serial)?.id
+    }
+
+    /// Declarations from the platform's reporting API, typed JSON instead of
+    /// the flattened status item. Gateway connections only; nil when the
+    /// platform can't answer, so the caller keeps the declarations parsed
+    /// out of the status report.
+    func platformDeclarations(serial: String) async throws -> [JamfDeclaration]? {
+        guard authMethod == .platformGateway, let deviceID = try await platformDeviceID(serial: serial),
+              let declarations = try await jamf().declarations(deviceID: deviceID) else { return nil }
+        return declarations.map {
+            JamfDeclaration(identifier: $0.identifier, active: $0.active,
+                            validity: JamfDeclarationValidity(rawValue: $0.validity) ?? .unknown, reasons: $0.reasons)
         }
-        let body = try JSONSerialization.data(withJSONObject: ["udids": udids])
-        let (data, status) = try await send(path: "/api/v1/mdm/renew-profile", method: "POST", body: body)
-        try throwIfError(status: status, data: data)
-        return (try? JSONDecoder().decode(Response.self, from: data))?.udidsNotProcessed?.udids ?? []
     }
 
-    /// Queues a DeclarativeManagement sync command for the device, which is what the
-    /// Jamf Pro UI's blank push shows in the management history. Requires the
-    /// "Send Declarative Management Command" privilege.
-    func ddmSync(managementID: String) async throws {
-        let (data, status) = try await send(path: "/api/v1/ddm/\(managementID)/sync", method: "POST")
-        try throwIfError(status: status, data: data)
+    // MARK: Groups (JTKit's Classic API)
+
+    /// Every computer or mobile device group on the server, smart and static.
+    func groups(kind: JamfGroupKind) async throws -> [JamfGroup] {
+        try await jamf().classicGroups(kind.classic).map {
+            JamfGroup(id: $0.id, name: $0.name, isSmart: $0.isSmart, kind: kind)
+        }
     }
 
-    /// Sends a blank push to the given management IDs. Returns the management
-    /// IDs the server could not push to.
-    func blankPush(managementIDs: [String]) async throws -> [String] {
-        let body = try JSONSerialization.data(withJSONObject: ["clientManagementIds": managementIDs])
-        let (data, status) = try await send(path: "/api/v2/mdm/blank-push", method: "POST", body: body)
-        try throwIfError(status: status, data: data)
-        struct Response: Decodable { let errorUuids: [String]? }
-        return (try? JSONDecoder().decode(Response.self, from: data))?.errorUuids ?? []
-    }
-
-    /// Reinstalls the Jamf management framework (jamf binary) on a computer
-    /// through an MDM InstallEnterpriseApplication command.
-    func redeployFramework(computerID: String) async throws {
-        let (data, status) = try await send(
-            path: "/api/v1/jamf-management-framework/redeploy/\(computerID)",
-            method: "POST"
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    func deleteComputer(id: String) async throws {
-        let (data, status) = try await send(path: "/api/v4/computers-inventory/\(id)", method: "DELETE")
-        try throwIfError(status: status, data: data)
+    /// The serial numbers of a group's members, in one request. Members
+    /// without a serial (records that never completed inventory) are left out.
+    func groupSerials(_ group: JamfGroup) async throws -> [String] {
+        guard let kind = group.kind else {
+            throw APIError(message: "\(group.name) is not a Jamf Pro group.")
+        }
+        let members = try await jamf().classicGroupMembers(
+            JamfClassic.Group(id: group.id, name: group.name, isSmart: group.isSmart, kind: kind.classic))
+        var seen = Set<String>()
+        return members
+            .compactMap { $0.serialNumber?.trimmingCharacters(in: .whitespaces).uppercased() }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     // MARK: PreStages
@@ -1131,7 +910,7 @@ actor JamfClient {
         var all: [JamfPrestage] = []
         var page = 0
         while true {
-            let (data, status) = try await send(
+            let data = try await send(
                 path: "/api/v3/\(family.pathComponent)",
                 queryItems: [
                     URLQueryItem(name: "page", value: String(page)),
@@ -1139,8 +918,7 @@ actor JamfClient {
                     URLQueryItem(name: "sort", value: "id:asc"),
                 ]
             )
-            try throwIfError(status: status, data: data)
-            let decoded = try JSONDecoder().decode(Response.self, from: data)
+            let decoded = try decode(Response.self, data)
             all += decoded.results.map {
                 JamfPrestage(id: $0.id, displayName: $0.displayName, enrollmentInstanceID: $0.deviceEnrollmentProgramInstanceId)
             }
@@ -1150,103 +928,20 @@ actor JamfClient {
         return all
     }
 
-    // MARK: Platform declaration reporting
-
-    /// Declarations from the platform's own reporting API, which serves them
-    /// as typed JSON instead of the flattened status item the Jamf Pro API
-    /// gives.
-    ///
-    /// Gateway connections only: both endpoints are platform-native, under
-    /// their own product prefixes. Returns nil when the platform cannot
-    /// answer, so the caller keeps the declarations parsed out of the status
-    /// report rather than losing the row.
-    ///
-    /// Two requests, because the platform keys devices by its own UUID rather
-    /// than by the management ID the status report uses, and the only way to
-    /// reach it from a serial number is to ask. The resolver is the one the
-    /// platform restart and shut down actions already use, including its
-    /// refusal to accept a row whose serial does not match.
-    func platformDeclarations(serial: String) async throws -> [JamfDeclaration]? {
-        guard authMethod == .platformGateway,
-              let deviceID = try await platformDeviceID(serial: serial) else { return nil }
-        struct Response: Decodable {
-            let results: [Item]?
-            struct Item: Decodable {
-                let declarationIdentifier: String?
-                let active: Bool?
-                let validityState: String?
-                let reasons: [Reason]?
-            }
-            struct Reason: Decodable {
-                let code: String?
-                let description: String?
-                let details: [Detail]?
-            }
-            struct Detail: Decodable {
-                let key: String?
-                let description: String?
-            }
-        }
-        let (data, status) = try await send(
-            path: "/ddm/report/v1/devices/\(deviceID)/declarations",
-            queryItems: [
-                // Required by the endpoint. Configurations only, matching what
-                // the status report's own configurations item carries. The
-                // filter field is declarationType — the response property is
-                // named type, but that is not a filterable field.
-                URLQueryItem(name: "filter", value: "declarationType==CONFIGURATION"),
-                // No paging: a device carries a few dozen declarations at
-                // most, so one page holds them all.
-                URLQueryItem(name: "size", value: "200"),
-            ],
-            recordsBodies: true
-        )
-        if status == 403 || status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        guard let results = try? JSONDecoder().decode(Response.self, from: data).results else { return nil }
-        return results.compactMap { item in
-            guard let identifier = item.declarationIdentifier, !identifier.isEmpty else { return nil }
-            // The same precedence the status-item parser uses — the Error
-            // detail, else the summary, else the code — so a gateway
-            // connection shows the identical text a direct one does. The
-            // Error detail is Apple's own wording and names the offending
-            // version.
-            let reasons: [String] = (item.reasons ?? []).compactMap { reason in
-                reason.details?.first { $0.key == "Error" }?.description
-                    ?? reason.description
-                    ?? reason.code
-            }
-            return JamfDeclaration(
-                identifier: identifier,
-                active: item.active ?? false,
-                validity: JamfDeclarationValidity(rawValue: (item.validityState ?? "unknown").lowercased()) ?? .unknown,
-                reasons: reasons.filter { !$0.isEmpty }
-            )
-        }
-    }
-
     // MARK: Device compliance
 
     /// Whether the Device Compliance integration is switched on for the
-    /// instance.
-    ///
-    /// Read once before asking per device: with the feature off, every
-    /// per-device call answers with an inapplicable record, and the row is
-    /// better left out than shown as unknown. It needs its own privilege, so
-    /// a failure here is not read as "off" — the caller falls through to the
-    /// per-device read and lets that decide.
+    /// instance. It needs its own privilege, so a failure here is not read
+    /// as "off": the caller falls through to the per-device read.
     func deviceComplianceEnabled() async throws -> Bool {
         struct Response: Decodable { let sharedDeviceFeatureEnabled: Bool? }
-        let (data, status) = try await send(path: "/api/v1/conditional-access/device-compliance/feature-toggle")
-        try throwIfError(status: status, data: data)
-        return try JSONDecoder().decode(Response.self, from: data).sharedDeviceFeatureEnabled ?? false
+        let data = try await send(path: "/api/v1/conditional-access/device-compliance/feature-toggle")
+        return try decode(Response.self, data).sharedDeviceFeatureEnabled ?? false
     }
 
     /// Compliance for one device, as the compliance vendor last reported it.
-    ///
-    /// The response is documented as an array, and a device outside the
-    /// integration's scope comes back with `applicable: false` rather than as
-    /// an error.
+    /// A device outside the integration's scope comes back with
+    /// `applicable: false` rather than as an error.
     func deviceCompliance(kind: DeviceKind, deviceID: String) async throws -> JamfDeviceCompliance? {
         struct Item: Decodable {
             let applicable: Bool?
@@ -1254,13 +949,11 @@ actor JamfClient {
             let complianceVendor: String?
         }
         let family = kind == .computer ? "computer" : "mobile"
-        let (data, status) = try await send(
+        let data = try await send(
             path: "/api/v1/conditional-access/device-compliance-information/\(family)/\(deviceID)",
             recordsBodies: true
         )
-        try throwIfError(status: status, data: data)
-        // An array by contract; a single object is accepted too, in case the
-        // shape is ever tightened.
+        // An array by contract; a single object is accepted too.
         let items: [Item]
         if let decoded = try? JSONDecoder().decode([Item].self, from: data) {
             items = decoded
@@ -1270,18 +963,14 @@ actor JamfClient {
             return nil
         }
         guard let item = items.first(where: { $0.applicable == true }) ?? items.first else { return nil }
-        return JamfDeviceCompliance(
-            applicable: item.applicable ?? false,
-            state: item.complianceState,
-            vendor: item.complianceVendor
-        )
+        return JamfDeviceCompliance(applicable: item.applicable ?? false, state: item.complianceState, vendor: item.complianceVendor)
     }
 
+    // MARK: Automated Device Enrollment
+
     /// The Apple service identity of every ADE token on the instance. A
-    /// token's `serverUuid` is the same ID Apple Business or School Manager
-    /// gives the matching device management service — verified identical on
-    /// two instances — which is what links a connection to Apple's
-    /// assignment without any configuration.
+    /// token's `serverUuid` is the ID Apple Business or School Manager gives
+    /// the matching device management service.
     func adeServerUUIDs() async throws -> Set<String> {
         struct ListResponse: Decodable {
             let totalCount: Int
@@ -1292,15 +981,11 @@ actor JamfClient {
         var count = 0
         var page = 0
         while true {
-            let (data, status) = try await send(
+            let data = try await send(
                 path: "/api/v1/device-enrollments",
-                queryItems: [
-                    URLQueryItem(name: "page", value: String(page)),
-                    URLQueryItem(name: "page-size", value: "100"),
-                ]
+                queryItems: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "page-size", value: "100")]
             )
-            try throwIfError(status: status, data: data)
-            let decoded = try JSONDecoder().decode(ListResponse.self, from: data)
+            let decoded = try decode(ListResponse.self, data)
             for item in decoded.results {
                 if let uuid = item.serverUuid, !uuid.isEmpty { uuids.insert(uuid) }
             }
@@ -1311,9 +996,8 @@ actor JamfClient {
         return uuids
     }
 
-    /// Maps serial number → device-enrollment (ADE) instance ID for every
-    /// device synced through any of the server's ADE tokens. Used to filter
-    /// PreStages to the ones a device can actually be scoped to.
+    /// Serial number → device-enrollment (ADE) instance ID for every device
+    /// synced through any of the server's ADE tokens.
     func adeInstanceBySerial() async throws -> [String: String] {
         struct ListResponse: Decodable {
             let totalCount: Int
@@ -1325,38 +1009,28 @@ actor JamfClient {
             let results: [Item]
             struct Item: Decodable { let serialNumber: String? }
         }
-
         var instanceIDs: [String] = []
         var page = 0
         while true {
-            let (data, status) = try await send(
+            let data = try await send(
                 path: "/api/v1/device-enrollments",
-                queryItems: [
-                    URLQueryItem(name: "page", value: String(page)),
-                    URLQueryItem(name: "page-size", value: "100"),
-                ]
+                queryItems: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "page-size", value: "100")]
             )
-            try throwIfError(status: status, data: data)
-            let decoded = try JSONDecoder().decode(ListResponse.self, from: data)
+            let decoded = try decode(ListResponse.self, data)
             instanceIDs += decoded.results.map(\.id)
             if instanceIDs.count >= decoded.totalCount || decoded.results.isEmpty { break }
             page += 1
         }
-
         var map: [String: String] = [:]
         for instanceID in instanceIDs {
             var page = 0
             var seen = 0
             while true {
-                let (data, status) = try await send(
+                let data = try await send(
                     path: "/api/v1/device-enrollments/\(instanceID)/devices",
-                    queryItems: [
-                        URLQueryItem(name: "page", value: String(page)),
-                        URLQueryItem(name: "page-size", value: "500"),
-                    ]
+                    queryItems: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "page-size", value: "500")]
                 )
-                try throwIfError(status: status, data: data)
-                let decoded = try JSONDecoder().decode(DevicesResponse.self, from: data)
+                let decoded = try decode(DevicesResponse.self, data)
                 for item in decoded.results {
                     if let serial = item.serialNumber?.uppercased() { map[serial] = instanceID }
                 }
@@ -1368,12 +1042,10 @@ actor JamfClient {
         return map
     }
 
-    /// Maps serial number → PreStage ID for every scoped device in the family.
+    /// Serial number → PreStage ID for every scoped device in the family.
     func prestageAssignments(family: JamfPrestageFamily) async throws -> [String: String] {
         struct Response: Decodable { let serialsByPrestageId: [String: String] }
-        let (data, status) = try await send(path: "/api/v2/\(family.pathComponent)/scope")
-        try throwIfError(status: status, data: data)
-        return try JSONDecoder().decode(Response.self, from: data).serialsByPrestageId
+        return try decode(Response.self, try await send(path: "/api/v2/\(family.pathComponent)/scope")).serialsByPrestageId
     }
 
     func addToPrestage(family: JamfPrestageFamily, prestageID: String, serials: [String]) async throws {
@@ -1388,142 +1060,28 @@ actor JamfClient {
         struct ScopeResponse: Decodable { let versionLock: Int }
         let scopePath = "/api/v2/\(family.pathComponent)/\(prestageID)/scope"
         // Scope writes are optimistic-locked: read the current versionLock first.
-        let (scopeData, scopeStatus) = try await send(path: scopePath)
-        try throwIfError(status: scopeStatus, data: scopeData)
-        let versionLock = try JSONDecoder().decode(ScopeResponse.self, from: scopeData).versionLock
-
+        let versionLock = try decode(ScopeResponse.self, try await send(path: scopePath)).versionLock
         let body = try JSONSerialization.data(withJSONObject: [
             "serialNumbers": serials,
             "versionLock": versionLock,
         ] as [String: Any])
-        let (data, status) = try await send(
-            path: deleting ? "\(scopePath)/delete-multiple" : scopePath,
-            method: "POST",
-            body: body
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    // MARK: Destructive per-device actions
-
-    // Each takes the Jamf Pro record ID and has its own endpoint, rather than
-    // going through the batched /v2/mdm/commands route the gateway withholds,
-    // which is why these work over the Platform API.
-
-    /// Erases a Mac. `pin` is the six digits needed to unlock it afterwards,
-    /// and is the reason JTKit records this call without its contents.
-    func eraseComputer(computerID: String, pin: String?) async throws {
-        let body = try JSONSerialization.data(withJSONObject: pin.map { ["pin": $0] } ?? [:])
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/erase",
-            method: "POST",
-            body: body
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    func eraseMobileDevice(deviceID: String) async throws {
-        let (data, status) = try await send(
-            path: "/api/v2/mobile-devices/\(deviceID)/erase",
-            method: "POST",
-            body: try JSONSerialization.data(withJSONObject: [:] as [String: Any])
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    /// Removes a Mac's MDM profile, which unmanages it. Jamf Pro names the
-    /// mobile device equivalent differently; see `unmanageMobileDevice`.
-    func removeMDMProfile(computerID: String) async throws {
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/remove-mdm-profile",
-            method: "POST"
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    func unmanageMobileDevice(deviceID: String) async throws {
-        let (data, status) = try await send(
-            path: "/api/v2/mobile-devices/\(deviceID)/unmanage",
-            method: "POST"
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    // MARK: Platform device actions
-
-    // Restart and shut down live on Jamf's platform APIs rather than the Jamf
-    // Pro passthrough, so they are reachable only through the gateway, and
-    // only with an environment-scoped integration. Each platform API has its
-    // own prefix, and the paths in Jamf's reference are relative to it: the
-    // documented /v1/devices/{id}/restart is really /device-actions/v1/... .
-    // They also address devices by platform UUID rather than Jamf Pro record
-    // ID, hence the lookup below.
-
-    /// Resolves a serial to the platform device UUID the actions below expect.
-    /// Nil when the platform inventory does not know the serial.
-    func platformDeviceID(serial: String) async throws -> String? {
-        struct Response: Decodable {
-            let results: [Item]?
-            struct Item: Decodable {
-                let id: String
-                let serialNumber: String?
-            }
-        }
-        let (data, status) = try await send(
-            path: "/devices/v1/devices",
-            queryItems: [URLQueryItem(name: "filter", value: "serialNumber==\"\(serial)\"")],
-            recordsBodies: true
-        )
-        if status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        let results = try JSONDecoder().decode(Response.self, from: data).results ?? []
-        // Match on the serial rather than trusting the first row. These IDs are
-        // handed to restart and shut down, so a filter the server ignored must
-        // not become an action against somebody else's device.
-        guard let match = results.first(where: {
-            $0.serialNumber?.caseInsensitiveCompare(serial) == .orderedSame
-        }) else {
-            if results.isEmpty { return nil }
-            throw APIError(message: "The platform device inventory returned \(results.count) result(s) for \(serial), none with that serial number. No command was sent.")
-        }
-        return match.id
-    }
-
-    func platformRestart(deviceID: String) async throws {
-        try await platformAction(deviceID: deviceID, path: "restart", verb: "restart")
-    }
-
-    func platformShutDown(deviceID: String) async throws {
-        try await platformAction(deviceID: deviceID, path: "shutdown", verb: "shut down")
-    }
-
-    private func platformAction(deviceID: String, path: String, verb: String) async throws {
-        let (data, status) = try await send(path: "/device-actions/v1/devices/\(deviceID)/\(path)", method: "POST")
-        // 422 is Jamf's answer for a device it will not act on, which is worth
-        // explaining rather than reporting as a bare status.
-        if status == 422 {
-            throw APIError(message: "Jamf Pro will not \(verb) this device. It may be unmanaged, personally owned, or running an OS version that does not support the command.")
-        }
-        try throwIfError(status: status, data: data)
+        _ = try await send(path: deleting ? "\(scopePath)/delete-multiple" : scopePath, method: "POST", body: body)
     }
 
     // MARK: Recovery secrets
 
-    /// A computer's FileVault personal recovery key. Requires the "View Disk
-    /// Encryption Recovery Key" privilege, or `disk-encryption-recovery-key:read`
-    /// through the Platform API gateway. Nil when Jamf Pro holds no key.
+    // Each of these is recorded without its contents (JTKit's sensitive calls).
+
+    /// A computer's FileVault personal recovery key. Nil when Jamf Pro holds no key.
     func fileVaultRecoveryKey(computerID: String) async throws -> JamfFileVaultKey? {
         struct Response: Decodable {
             let personalRecoveryKey: String?
             let individualRecoveryKeyValidityStatus: String?
             let diskEncryptionConfigurationName: String?
         }
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/filevault"
-        )
-        if status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
+        guard let data = try await send(path: "/api/v4/computers-inventory/\(computerID)/filevault",
+                                        privilege: .viewDiskEncryptionRecoveryKey, absentOn: [404]) else { return nil }
+        let decoded = try decode(Response.self, data)
         guard let key = decoded.personalRecoveryKey, !key.isEmpty else { return nil }
         return JamfFileVaultKey(
             personalRecoveryKey: key,
@@ -1532,46 +1090,29 @@ actor JamfClient {
         )
     }
 
-    /// The PIN a Mac was locked with, needed to unlock it. Requires "View
-    /// Computer Device Lock Pin", or `computer-device-lock-pin:read` through
-    /// the gateway. Nil when the Mac has never been locked. Macs only: iOS and
-    /// iPadOS lock with the owner's own passcode, so no PIN exists to hold.
+    /// The PIN a Mac was locked with. Nil when the Mac has never been locked.
     func deviceLockPIN(computerID: String) async throws -> String? {
         struct Response: Decodable { let pin: String? }
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin"
-        )
-        if status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        let pin = try JSONDecoder().decode(Response.self, from: data).pin
+        guard let data = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin",
+                                        privilege: .viewComputerDeviceLockPin, absentOn: [404]) else { return nil }
+        let pin = try decode(Response.self, data).pin
         return (pin?.isEmpty ?? true) ? nil : pin
     }
 
-    /// A computer's Recovery Lock password, static or rotating. Requires the "View
-    /// Recovery Lock" privilege, or `recovery-lock:read` through the gateway.
-    /// Nil when no password is escrowed.
+    /// A computer's Recovery Lock password. Nil when none is escrowed.
     func recoveryLockPassword(computerID: String) async throws -> String? {
         struct Response: Decodable { let recoveryLockPassword: String? }
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory/\(computerID)/view-recovery-lock-password"
-        )
-        if status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        let password = try JSONDecoder().decode(Response.self, from: data).recoveryLockPassword
+        guard let data = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-recovery-lock-password",
+                                        privilege: .viewRecoveryLock, absentOn: [404]) else { return nil }
+        let password = try decode(Response.self, data).recoveryLockPassword
         return (password?.isEmpty ?? true) ? nil : password
     }
 
     // MARK: Managed local administrator accounts
 
-    // Jamf Pro's LAPS endpoints. A device can carry an account created by its
-    // PreStage (source MDM), one created by the Jamf binary (source JMF),
-    // both, or neither, and their usernames need not match, so the accounts
-    // are always enumerated rather than assumed.
-
     /// The managed local administrator accounts Jamf Pro knows for a device.
-    /// Requires the "View Local Admin Password" privilege; an empty list is
-    /// returned when the privilege is missing, since the accounts are shown
-    /// as part of an ordinary lookup and their absence is not an error.
+    /// Empty when the privilege is missing: they are shown as part of an
+    /// ordinary lookup, and their absence is not an error.
     func localAdminAccounts(managementID: String) async throws -> [JamfLocalAdminAccount] {
         struct Response: Decodable {
             let results: [Item]?
@@ -1581,135 +1122,46 @@ actor JamfClient {
                 let userSource: String?
             }
         }
-        let (data, status) = try await send(path: "/api/v2/local-admin-password/\(managementID)/accounts")
-        if status == 403 || status == 404 { return [] }
-        try throwIfError(status: status, data: data)
-        return (try JSONDecoder().decode(Response.self, from: data).results ?? []).compactMap {
+        guard let data = try await send(path: "/api/v2/local-admin-password/\(managementID)/accounts",
+                                        absentOn: [403, 404]) else { return [] }
+        return (try decode(Response.self, data).results ?? []).compactMap {
             guard let username = $0.username, !username.isEmpty else { return nil }
-            return JamfLocalAdminAccount(
-                username: username,
-                guid: $0.guid ?? "",
-                source: $0.userSource ?? ""
-            )
+            return JamfLocalAdminAccount(username: username, guid: $0.guid ?? "", source: $0.userSource ?? "")
         }
     }
 
     /// The current password for a managed local administrator account.
-    ///
-    /// Viewing queues a rotation: the value stays valid for the instance's
-    /// rotation time and is then replaced. The account GUID is used rather
-    /// than the username alone, because Jamf Pro resolves a bare username to
-    /// the MDM source when two accounts share one.
-    ///
-    /// Nil when Jamf Pro holds no password for the account. That case answers
-    /// HTTP 400 with code NOT_FOUND rather than a 404.
+    /// Viewing queues a rotation. Nil when Jamf Pro holds no password, which
+    /// it answers with HTTP 400 and code NOT_FOUND rather than a 404.
     func localAdminPassword(managementID: String, account: JamfLocalAdminAccount) async throws -> String? {
         struct Response: Decodable { let password: String? }
         let path = account.guid.isEmpty
             ? "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/password"
             : "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/\(account.guid)/password"
-        let (data, status) = try await send(path: path)
-        if status == 404 || (status == 400 && Self.isNotFound(data)) { return nil }
-        try throwIfError(status: status, data: data)
-        let password = try JSONDecoder().decode(Response.self, from: data).password
+        let data: Data
+        do {
+            guard let found = try await send(path: path, privilege: .viewLocalAdminPassword, absentOn: [404]) else { return nil }
+            data = found
+        } catch let error as JamfPlatformError where error.status == 400 && error.hasCode(.notFound) {
+            return nil
+        }
+        let password = try decode(Response.self, data).password
         return (password?.isEmpty ?? true) ? nil : password
     }
 
-    /// How long after being viewed a password is rotated, in seconds. Nil when
-    /// the setting cannot be read, in which case the caller says only that a
-    /// rotation follows.
+    /// How long after being viewed a password is rotated, in seconds. Nil
+    /// when the setting can't be read.
     func localAdminRotationTime() async throws -> Int? {
         struct Response: Decodable { let passwordRotationTime: Int? }
-        let (data, status) = try await send(path: "/api/v2/local-admin-password/settings")
-        guard (200...299).contains(status) else { return nil }
+        guard let data = try? await send(path: "/api/v2/local-admin-password/settings") else { return nil }
         return try? JSONDecoder().decode(Response.self, from: data).passwordRotationTime
-    }
-
-    /// Whether an error body carries the NOT_FOUND code Jamf Pro returns, with
-    /// HTTP 400, for an account it holds no password for.
-    private nonisolated static func isNotFound(_ data: Data) -> Bool {
-        struct ErrorResponse: Decodable {
-            let errors: [Item]?
-            struct Item: Decodable { let code: String? }
-        }
-        let parsed = try? JSONDecoder().decode(ErrorResponse.self, from: data)
-        return parsed?.errors?.contains { $0.code == "NOT_FOUND" } ?? false
-    }
-
-    // MARK: Groups
-
-    /// Every computer or mobile device group on the server, smart and static
-    /// alike. Both kinds are listed together because either can be a useful
-    /// source of serial numbers.
-    func groups(kind: JamfGroupKind) async throws -> [JamfGroup] {
-        struct Response: Decodable {
-            let computer_groups: [Item]?
-            let mobile_device_groups: [Item]?
-            struct Item: Decodable {
-                let id: Int
-                let name: String?
-                let is_smart: Bool?
-            }
-        }
-        let (data, status) = try await send(path: "/JSSResource/\(kind.groupResource)")
-        try throwIfError(status: status, data: data)
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
-        let items = decoded.computer_groups ?? decoded.mobile_device_groups ?? []
-        return items.map {
-            JamfGroup(
-                id: String($0.id),
-                name: $0.name ?? "Group \($0.id)",
-                isSmart: $0.is_smart ?? false,
-                kind: kind
-            )
-        }
-    }
-
-    /// The serial numbers of a group's members, in one request. Members
-    /// without a serial, which Jamf Pro reports for records that never
-    /// completed inventory, are left out.
-    func groupSerials(_ group: JamfGroup) async throws -> [String] {
-        struct Response: Decodable {
-            let computer_group: Group?
-            let mobile_device_group: Group?
-            struct Group: Decodable {
-                let computers: [Member]?
-                let mobile_devices: [Member]?
-            }
-            struct Member: Decodable { let serial_number: String? }
-        }
-        // Every group this client produces carries a kind; only Jamf School's
-        // do not, and those never reach here.
-        guard let resource = group.kind?.groupResource else {
-            throw APIError(message: "\(group.name) is not a Jamf Pro group.")
-        }
-        let (data, status) = try await send(path: "/JSSResource/\(resource)/id/\(group.id)")
-        try throwIfError(status: status, data: data)
-        let decoded = try JSONDecoder().decode(Response.self, from: data)
-        let container = decoded.computer_group ?? decoded.mobile_device_group
-        let members = container?.computers ?? container?.mobile_devices ?? []
-        var seen = Set<String>()
-        return members
-            .compactMap { $0.serial_number?.trimmingCharacters(in: .whitespaces).uppercased() }
-            .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
     // MARK: Declarative status
 
     /// What the device last reported about itself declaratively: its software
-    /// update state and the declarations it has processed.
-    ///
-    /// Both come from one request because they come from one report, and they
-    /// explain each other — a rejected enforcement declaration is why a device
-    /// with nothing pending is nonetheless not being updated.
-    ///
-    /// This is the only supported source for software updates: Apple has moved
-    /// them to declarative management, and Jamf Pro's managed software update
-    /// plans and per-product statuses are both deprecated. Needs nothing
-    /// beyond the read privileges a lookup already uses.
-    ///
-    /// Nil when the device has sent no report, which is the answer for a
-    /// device that is not declaratively managed.
+    /// update state and the declarations it has processed, from one report.
+    /// Nil when the device has sent no report (not declaratively managed).
     func ddmStatus(managementID: String) async throws -> JamfDDMStatus? {
         struct Response: Decodable {
             let statusItems: [Item]?
@@ -1719,10 +1171,9 @@ actor JamfClient {
                 let lastUpdateTime: String?
             }
         }
-        let (data, status) = try await send(path: "/api/v1/ddm/\(managementID)/status-items", recordsBodies: true)
-        if status == 403 || status == 404 { return nil }
-        try throwIfError(status: status, data: data)
-        let items = try JSONDecoder().decode(Response.self, from: data).statusItems ?? []
+        guard let data = try await send(path: "/api/v1/ddm/\(managementID)/status-items", recordsBodies: true,
+                                        absentOn: [403, 404]) else { return nil }
+        let items = try decode(Response.self, data).statusItems ?? []
         guard !items.isEmpty else { return nil }
 
         // Exact keys only. The report can also carry malformed leftovers such
@@ -1737,22 +1188,14 @@ actor JamfClient {
             guard let value = values[key]?.value, !value.isEmpty else { return nil }
             return value
         }
-
-        let declarations = JamfDeclarationParsing.declarations(
-            from: values["management.declarations.configurations"]?.value
-        )
+        let declarations = JamfDeclarationParsing.declarations(from: values["management.declarations.configurations"]?.value)
         let newestReport = values.values.compactMap(\.reportedAt).max()
-
-        return JamfDDMStatus(
-            softwareUpdate: softwareUpdate(values: values, text: text),
-            declarations: declarations,
-            reportedAt: newestReport
-        )
+        return JamfDDMStatus(softwareUpdate: softwareUpdate(values: values, text: text),
+                             declarations: declarations, reportedAt: newestReport)
     }
 
     /// The software update half of a status report, or nil when the device
-    /// reported none of those keys. Reporting nothing is different from
-    /// reporting that there is nothing to do.
+    /// reported none of those keys.
     private func softwareUpdate(
         values: [String: (value: String?, reportedAt: Date?)],
         text: (String) -> String?
@@ -1761,8 +1204,7 @@ actor JamfClient {
 
         // The deadline belongs to the offer beside it. Jamf keeps whichever
         // value it last saw, so a deadline recorded before the current offer
-        // was reported is a leftover from an earlier enforcement and saying
-        // "was due" from it would be inventing a deadline for this update.
+        // was reported is a leftover from an earlier enforcement.
         let offerReportedAt = values["softwareupdate.pending-version.os-version"]?.reportedAt
         let deadlineReportedAt = values["softwareupdate.pending-version.target-local-date-time"]?.reportedAt
         let deadlineIsCurrent: Bool = {
@@ -1771,44 +1213,32 @@ actor JamfClient {
         }()
 
         return JamfSoftwareUpdateStatus(
-            // The one scalar that says what the device is doing. The two
-            // dictionaries are deliberately not read as signals: Jamf flattens
-            // them, so softwareupdate.pending-version and
-            // softwareupdate.failure-reason always arrive null whatever the
-            // device reported.
+            // The one scalar that says what the device is doing; Jamf
+            // flattens the two dictionaries, so they always arrive null.
             installState: text("softwareupdate.install-state"),
             installReason: text("softwareupdate.install-reason.reason"),
             offeredOSVersion: text("softwareupdate.pending-version.os-version"),
             offeredBuildVersion: text("softwareupdate.pending-version.build-version"),
             deadline: deadlineIsCurrent
-                ? text("softwareupdate.pending-version.target-local-date-time")
-                    .flatMap(DateFormatting.parseStatusItemDate)
+                ? text("softwareupdate.pending-version.target-local-date-time").flatMap(DateFormatting.parseStatusItemDate)
                 : nil,
             offerReportedAt: offerReportedAt,
             failureCount: text("softwareupdate.failure-reason.count").flatMap(Int.init),
             lastFailureReason: text("softwareupdate.failure-reason.reason"),
-            lastFailureAt: text("softwareupdate.failure-reason.timestamp")
-                .flatMap(DateFormatting.parseStatusItemDate),
+            lastFailureAt: text("softwareupdate.failure-reason.timestamp").flatMap(DateFormatting.parseStatusItemDate),
             betaEnrollment: text("softwareupdate.beta-enrollment"),
             // Presence, not value: Apple sends an empty string for a device
-            // that is in no beta programme, and text() cannot tell that from
-            // a key the device never sent.
+            // in no beta programme.
             betaReported: values.keys.contains("softwareupdate.beta-enrollment"),
             isReported: true
         )
     }
 
-    /// The software update enforcement declaration among those given, or nil
-    /// when none of them is one.
-    ///
-    /// The status report names declarations but does not say what they
-    /// contain, so each has to be read back. Nothing here throws: this runs
-    /// while someone browses a device, and a declaration the server will not
-    /// hand over is worth skipping rather than failing the whole row.
+    /// The software update enforcement declaration among those given, or nil.
+    /// Nothing here throws: a declaration the server won't hand over is
+    /// skipped rather than failing the row.
     func updateEnforcement(among declarations: [JamfDeclaration]) async -> JamfUpdateEnforcement? {
         for declaration in declarations {
-            // Two levels of optional: the request can fail, and a declaration
-            // that reads fine may simply not be an enforcement one.
             if let found = ((try? await updateEnforcement(declarationID: declaration.identifier)) ?? nil) {
                 return found
             }
@@ -1816,17 +1246,13 @@ actor JamfClient {
         return nil
     }
 
-    /// Reads one declaration, returning it only if it enforces a software
-    /// update. Others are legitimate — `management.status-subscriptions` is
-    /// the one most devices carry — so the type must be checked rather than
-    /// assumed from the declaration being valid.
+    /// Reads one declaration, returning it only if it enforces a software update.
     private func updateEnforcement(declarationID: String) async throws -> JamfUpdateEnforcement? {
         struct Response: Decodable {
             let declarations: [Item]?
             struct Item: Decodable {
                 let type: String?
-                /// The declaration's own payload, delivered as a JSON string
-                /// inside the JSON, so it needs decoding a second time.
+                /// The declaration's payload, a JSON string inside the JSON.
                 let payloadJson: String?
                 let uuid: String?
             }
@@ -1836,13 +1262,11 @@ actor JamfClient {
             let TargetBuildVersion: String?
             let TargetLocalDateTime: String?
         }
-        let (data, status) = try await send(path: "/api/v1/dss-declarations/\(declarationID)")
-        guard (200...299).contains(status) else { return nil }
+        guard let data = try? await send(path: "/api/v1/dss-declarations/\(declarationID)") else { return nil }
         let items = (try? JSONDecoder().decode(Response.self, from: data))?.declarations ?? []
-        guard let item = items.first(where: {
-            $0.type == "com.apple.configuration.softwareupdate.enforcement.specific"
-        }) else { return nil }
-
+        guard let item = items.first(where: { $0.type == "com.apple.configuration.softwareupdate.enforcement.specific" }) else {
+            return nil
+        }
         let payload = item.payloadJson
             .flatMap { Data($0.utf8) }
             .flatMap { try? JSONDecoder().decode(Payload.self, from: $0) }
@@ -1850,19 +1274,13 @@ actor JamfClient {
             declarationID: item.uuid ?? declarationID,
             targetOSVersion: payload?.TargetOSVersion,
             targetBuildVersion: payload?.TargetBuildVersion,
-            // Apple's format carries no time zone, so it is the device's own
-            // wall clock, like the deadline in the status report.
-            targetLocalDateTime: payload?.TargetLocalDateTime
-                .flatMap(DateFormatting.parseDeviceLocal)
+            // No time zone: the device's own wall clock.
+            targetLocalDateTime: payload?.TargetLocalDateTime.flatMap(DateFormatting.parseDeviceLocal)
         )
     }
 
-    /// Blueprint names, keyed by identifier.
-    ///
-    /// Platform API only: blueprints are a platform feature with no endpoint
-    /// on a Jamf Pro instance, so a direct connection can show only the
-    /// identifier a declaration carries. Server-wide and small, so callers
-    /// read it once per session.
+    /// Blueprint names, keyed by identifier. Platform API only; empty when
+    /// they can't be read.
     func blueprintNames() async throws -> [String: String] {
         struct Response: Decodable {
             let results: [Item]?
@@ -1871,14 +1289,8 @@ actor JamfClient {
                 let name: String?
             }
         }
-        // Blueprints sit behind their own product prefix on the gateway, so
-        // the path is /blueprints/v1/blueprints. It is not one of the
-        // prefixes gatewayPath rewrites, and passes through as it stands.
-        let (data, status) = try await send(
-            path: "/blueprints/v1/blueprints",
-            queryItems: [URLQueryItem(name: "page-size", value: "200")]
-        )
-        guard (200...299).contains(status) else { return [:] }
+        guard let data = try? await send(path: "/blueprints/v1/blueprints",
+                                         queryItems: [URLQueryItem(name: "page-size", value: "200")]) else { return [:] }
         let items = (try? JSONDecoder().decode(Response.self, from: data))?.results
             ?? (try? JSONDecoder().decode([Response.Item].self, from: data))
             ?? []
@@ -1893,16 +1305,14 @@ actor JamfClient {
 
     // MARK: Sites
 
-    /// All sites on the server. The full-access site is represented by
-    /// Jamf with the ID "-1" and is not included in the response.
+    /// All sites on the server. The full-access site ("-1") isn't listed.
     func sites() async throws -> [JamfSite] {
         struct Item: Decodable {
             let id: String
             let name: String
         }
         struct Wrapped: Decodable { let results: [Item] }
-        let (data, status) = try await send(path: "/api/v1/sites")
-        try throwIfError(status: status, data: data)
+        let data = try await send(path: "/api/v1/sites", privilege: .readSites)
         let items = (try? JSONDecoder().decode([Item].self, from: data))
             ?? (try? JSONDecoder().decode(Wrapped.self, from: data))?.results
             ?? []
@@ -1912,72 +1322,32 @@ actor JamfClient {
     /// Moves a computer to the given site ("-1" for none).
     func setComputerSite(computerID: String, siteID: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["general": ["siteId": siteID]])
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory-detail/\(computerID)",
-            method: "PATCH",
-            body: body
-        )
-        try throwIfError(status: status, data: data)
+        _ = try await send(path: "/api/v4/computers-inventory-detail/\(computerID)", method: "PATCH", body: body,
+                           privilege: .updateComputers)
     }
 
     /// Moves a mobile device to the given site ("-1" for none).
     func setMobileDeviceSite(deviceID: String, siteID: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["siteId": siteID])
-        let (data, status) = try await send(
-            path: "/api/v2/mobile-devices/\(deviceID)",
-            method: "PATCH",
-            body: body
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    /// Sets or clears a computer's asset tag. Jamf Pro takes an empty string
-    /// as clearing it.
-    func setComputerAssetTag(computerID: String, assetTag: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["general": ["assetTag": assetTag]])
-        let (data, status) = try await send(
-            path: "/api/v4/computers-inventory-detail/\(computerID)",
-            method: "PATCH",
-            body: body
-        )
-        try throwIfError(status: status, data: data)
-    }
-
-    /// Sets or clears a mobile device's asset tag.
-    func setMobileDeviceAssetTag(deviceID: String, assetTag: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["assetTag": assetTag])
-        let (data, status) = try await send(
-            path: "/api/v2/mobile-devices/\(deviceID)",
-            method: "PATCH",
-            body: body
-        )
-        try throwIfError(status: status, data: data)
+        _ = try await send(path: "/api/v2/mobile-devices/\(deviceID)", method: "PATCH", body: body,
+                           privilege: .updateMobileDevices)
     }
 
     // MARK: Departments and buildings
 
-    /// Department names, keyed by identifier.
-    ///
-    /// Inventory reports a device's department as an identifier, so this list
-    /// is what turns it into a name. Server-wide and small, so callers read it
-    /// once per lookup. Needs Read Departments; without it the row is omitted
-    /// rather than shown unresolved.
+    /// Department names, keyed by identifier. Needs Read Departments; without
+    /// it the row is omitted rather than shown unresolved.
     func departmentNames() async throws -> [String: String] {
         try await nameMap(path: "/api/v1/departments")
     }
 
-    /// Building names, keyed by identifier. As for departments, and needs Read
-    /// Buildings.
+    /// Building names, keyed by identifier; needs Read Buildings.
     func buildingNames() async throws -> [String: String] {
         try await nameMap(path: "/api/v1/buildings")
     }
 
-    /// Reads a paged Jamf Pro list of identifier and name into a map.
-    ///
-    /// Both lists answer with a total count, which is followed rather than
-    /// assumed: an instance with more entries than a page holds would
-    /// otherwise leave the later ones unresolved. The page cap guards against
-    /// an unbounded loop rather than marking an expected limit.
+    /// Reads a paged list of identifier and name into a map, following the
+    /// total count (at most ten pages).
     private func nameMap(path: String) async throws -> [String: String] {
         struct Response: Decodable {
             let totalCount: Int?
@@ -1991,14 +1361,10 @@ actor JamfClient {
         var map: [String: String] = [:]
         var read = 0
         for page in 0..<10 {
-            let (data, status) = try await send(
-                path: path,
-                queryItems: [
-                    URLQueryItem(name: "page", value: String(page)),
-                    URLQueryItem(name: "page-size", value: String(pageSize)),
-                ]
-            )
-            guard (200...299).contains(status) else { return map }
+            guard let data = try? await send(path: path, queryItems: [
+                URLQueryItem(name: "page", value: String(page)),
+                URLQueryItem(name: "page-size", value: String(pageSize)),
+            ]) else { return map }
             guard let response = try? JSONDecoder().decode(Response.self, from: data),
                   let items = response.results, !items.isEmpty else { return map }
             read += items.count
@@ -2011,77 +1377,70 @@ actor JamfClient {
         return map
     }
 
-    /// Cheap connectivity/credentials check.
-    func verify() async throws {
-        do {
-            _ = try await tokens.token()
-        } catch {
-            throw signInError(error)
-        }
-    }
-
     // MARK: Plumbing
 
-    /// The single point every Jamf Pro request goes through. JTKit's client
-    /// adds the token, retries by the shared rules (429 for every request,
-    /// server errors for reads, one new sign-in after a 401) and records each
-    /// attempt in the activity log. The calls that carry a device secret
-    /// (unlock token, erase PIN, FileVault key, lock PIN, Recovery Lock and
-    /// LAPS passwords) are recognised by JTKit and recorded without contents.
-    ///
-    /// An error answer comes back as its status, as before, so the callers
-    /// keep their own handling (a 400 to a filter, a 404 for "none").
+    /// Every request of Checkpoint's own goes through JTKit's client: the
+    /// token, the shared retry rules (429 for every request, server errors for
+    /// reads, one new sign-in after a 401), JTKit's error format and an
+    /// activity log entry per attempt. Paths are written as Jamf Pro has them
+    /// (`/api/…`) and sent in the gateway's form (`pro/…`), which JTKit maps
+    /// back onto a direct server.
     ///
     /// - Parameters:
     ///   - recordsBodies: record a successful answer too; only for the
     ///     read-only device lookups (ROADMAP step 5, "Checkpoint").
-    ///   - recordedJSON: what of a recorded answer may be kept.
+    ///   - privilege: named in the hint when Jamf Pro refuses the request.
+    /// - Returns: the answer.
     private func send(
         path: String,
         method: String = "GET",
         queryItems: [URLQueryItem] = [],
         body: Data? = nil,
         recordsBodies: Bool = false,
-        recordedJSON: RecordedJSONFilter? = nil
-    ) async throws -> (Data, Int) {
-        let mapped = authMethod == .platformGateway ? Self.gatewayPath(for: path) : path
+        privilege: JamfPro.Privilege? = nil
+    ) async throws -> Data {
+        // non-nil: no status is allowed to come back as "absent"
+        try await send(path: path, method: method, queryItems: queryItems, body: body,
+                       recordsBodies: recordsBodies, privilege: privilege, absentOn: [])!
+    }
+
+    /// As above; nil when the server answers one of `absentOn` (e.g. 404 for
+    /// "Jamf Pro holds none").
+    private func send(
+        path: String,
+        method: String = "GET",
+        queryItems: [URLQueryItem] = [],
+        body: Data? = nil,
+        recordsBodies: Bool = false,
+        privilege: JamfPro.Privilege? = nil,
+        absentOn: Set<Int>
+    ) async throws -> Data? {
+        let mapped = String(Self.gatewayPath(for: path).drop { $0 == "/" })
         // Encoded as URLComponents encoded a path, so the address is unchanged.
         guard let encoded = mapped.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
             throw APIError(message: "Invalid Jamf Pro request URL")
         }
-        let request = HTTPRequest(
-            method: method, path: encoded, query: queryItems, body: body,
-            // JSON throughout, the Classic API included
-            accept: "application/json", contentType: body == nil ? nil : "application/json",
-            recordsBodies: recordsBodies, recordedJSON: recordedJSON
-        )
+        let request = HTTPRequest(method: method, path: encoded, query: queryItems, body: body,
+                                  accept: "application/json", recordsBodies: recordsBodies)
         do {
-            let response = try await http.send(request)
-            return (response.data, response.status)
-        } catch HTTPError.status(let response, _, _, duringSignIn: false) {
-            return (response.data, response.status)
+            return try await jamf().send(request, privilege: privilege).data
+        } catch let error as JamfPlatformError where error.status.map(absentOn.contains) == true {
+            return nil
+        }
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: data)
         } catch {
-            throw signInError(error)
+            throw APIError(message: "Jamf Pro answered in an unexpected shape: \(error.localizedDescription)")
         }
     }
 
-    /// A refused sign-in, with the hint Checkpoint has always given; other
-    /// errors unchanged.
-    private func signInError(_ error: any Error) -> any Error {
-        guard case HTTPError.status(let response, _, _, duringSignIn: true) = error else { return error }
-        let hint = switch authMethod {
-        case .usernamePassword: "Check the username and password."
-        case .platformGateway: "Check the Platform API client ID and secret, and that the region matches your environment."
-        case .apiClient, .entraApp: "Check the API client ID and secret."
-        }
-        return APIError(message: "Jamf Pro sign-in failed (HTTP \(response.status)). \(hint)")
-    }
-
-    /// Maps a Jamf Pro path onto the Platform API gateway, which fronts the
-    /// Jamf Pro API under `/pro` and the Classic API under `/proclassic`. Both
-    /// prefixes replace the product segment rather than prefixing it, so
-    /// `/JSSResource/mobiledevices` becomes `/proclassic/mobiledevices`.
-    /// Keeping `/JSSResource` in place returns 403.
+    /// A Jamf Pro path in the gateway's form: the Jamf Pro API under `/pro`,
+    /// the Classic API under `/proclassic`. Both replace the product segment,
+    /// so `/JSSResource/mobiledevices` becomes `/proclassic/mobiledevices`.
+    /// Platform paths pass through as they are.
     ///
     /// This prefix behaviour is described for users in `docs/platform-api.md`.
     nonisolated static func gatewayPath(for path: String) -> String {
@@ -2093,55 +1452,14 @@ actor JamfClient {
         }
         return path
     }
-
-    private func throwIfError(status: Int, data: Data) throws {
-        guard !(200...299).contains(status) else { return }
-        struct ErrorResponse: Decodable {
-            let errors: [Item]?
-            struct Item: Decodable {
-                let code: String?
-                let description: String?
-            }
-        }
-        var detail = ""
-        if let parsed = try? JSONDecoder().decode(ErrorResponse.self, from: data),
-           let first = parsed.errors?.first {
-            detail = first.description ?? first.code ?? ""
-        }
-        throw APIError(message: "Jamf Pro: HTTP \(status)\(detail.isEmpty ? "" : " – \(detail)")")
-    }
 }
 
-/// What of a Jamf Pro inventory answer may be recorded in the activity log:
-/// per record, its identity and the sections Checkpoint asked for, nothing
-/// else. So a server that sends more than was asked (local user accounts,
-/// certificates, the per-OS detail that carries the unlock token) never has
-/// it recorded. Extension attributes and the user and location block are
-/// then hidden whole by JTKit's redaction.
-nonisolated enum InventoryRecording {
-    /// The fields that say which record it is.
-    static let identityKeys: Set<String> = ["id", "udid", "mobileDeviceId", "deviceType"]
-
-    /// `USER_AND_LOCATION` → `userAndLocation`, as the answer names it.
-    static func key(forSection section: String) -> String {
-        let words = section.lowercased().split(separator: "_")
-        guard let first = words.first else { return "" }
-        return String(first) + words.dropFirst().map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined()
-    }
-
-    static func keeping(sections: [String]) -> RecordedJSONFilter {
-        let allowed = identityKeys.union(sections.map(key(forSection:)))
-        return { object in
-            guard let page = object as? [String: Any] else { return object }
-            var kept: [String: Any] = [:]
-            if let total = page["totalCount"] { kept["totalCount"] = total }
-            if let results = page["results"] as? [Any] {
-                kept["results"] = results.map { item -> Any in
-                    guard let record = item as? [String: Any] else { return item }
-                    return record.filter { allowed.contains($0.key) }
-                }
-            }
-            return kept
+extension JamfGroupKind {
+    /// The same kind in JTKit's Classic API.
+    var classic: JamfClassic.GroupKind {
+        switch self {
+        case .computer: .computer
+        case .mobileDevice: .mobileDevice
         }
     }
 }

@@ -260,7 +260,7 @@ struct MappingTests {
         record.connection.environmentID = " 0F2C1B0A-1111-2222-3333-444455556666 "
         guard case .mdm(let gateway) = record else { Issue.record("not MDM"); return }
         #expect(gateway.authMethod == .platformGateway)
-        #expect(gateway.region == Checkpoint.JamfRegion.apac)
+        #expect(gateway.region == JamfRegion.apac)
         #expect(gateway.environmentID == "0F2C1B0A-1111-2222-3333-444455556666")
         #expect(gateway.baseURL == "https://jamf.example.com")
     }

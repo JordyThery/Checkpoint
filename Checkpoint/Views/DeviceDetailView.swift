@@ -1,3 +1,4 @@
+import JTKit
 import SwiftUI
 
 /// Inspector pane for a single device: the Apple organization and device
@@ -27,8 +28,8 @@ struct DeviceDetailView: View {
     @State private var errorMessage: String?
     @State private var infoMessage: String?
     @State private var pending: PendingAction?
-    @State private var pinCommand: MDMCommand?
-    @State private var pin = ""
+    /// A confirmation with something to type (the PIN, twice).
+    @State private var typed: TypedConfirmation?
     @State private var localAdmins: [JamfLocalAdminAccount] = []
     @State private var rotationTime: TimeInterval?
     /// The device's declarative status report: software update state and the
@@ -304,17 +305,10 @@ struct DeviceDetailView: View {
         } message: {
             Text(infoMessage ?? "")
         }
-        .alert(
-            pinCommand.map { "\($0.title) — \(report.serial)" } ?? "",
-            isPresented: Binding(get: { pinCommand != nil }, set: { if !$0 { pinCommand = nil } })
-        ) {
-            TextField("6-digit PIN", text: $pin)
-            Button("Cancel", role: .cancel) {}
-            Button(pinCommand?.title ?? "Send", role: .destructive) {
-                if let command = pinCommand { executeWithPIN(command) }
+        .sheet(item: $typed) { item in
+            CommandConfirmationSheet(confirmation: item.confirmation) { pin in
+                if case .command(let command) = item.action { execute(command, pin: pin) }
             }
-        } message: {
-            Text("Enter the 6-digit PIN that will be required to unlock the Mac afterwards. \(pinCommand?.message(for: model.product(for: report)) ?? "")")
         }
         .confirmationDialog(
             pendingTitle,
@@ -394,7 +388,7 @@ struct DeviceDetailView: View {
         case .removeOtherRecord(let info):
             (model.connection(for: info)?.product ?? .jamfPro).removeRecordPrompt(report.serial)
         case .command(let command):
-            "\(command.title) — \(report.serial)?"
+            (model.commandConfirmation(command, reports: [report])?.title ?? "\(command.title) — \(report.serial)") + "?"
         case .viewLocalAdminPassword:
             "Rotation after viewing"
         case nil:
@@ -425,11 +419,11 @@ struct DeviceDetailView: View {
         case .applyAssetTag:
             "The tag is written to the \(model.product(for: report).label) record."
         case .deleteRecord:
-            model.product(for: report).removeRecordConsequence
+            model.deleteConfirmation(reports: [report])?.dialogMessage ?? model.product(for: report).removeRecordConsequence
         case .removeOtherRecord(let info):
-            (model.connection(for: info)?.product ?? .jamfPro).removeRecordConsequence
+            model.recordRemovalConfirmation(info, serial: report.serial).dialogMessage
         case .command(let command):
-            command.message(for: model.product(for: report))
+            model.commandConfirmation(command, reports: [report])?.dialogMessage ?? command.message(for: model.product(for: report))
         case .viewLocalAdminPassword(let account):
             "Viewing the password for \(account.username) will cause Jamf Pro to rotate it \(rotationDescription)."
         case nil:
@@ -1416,9 +1410,9 @@ struct DeviceDetailView: View {
             let unavailable = model.unavailabilityReason(for: command, reports: [report])
                 ?? command.inapplicabilityReason(for: info)
             Button(command.title, role: command.isDestructive ? .destructive : nil) {
-                if command.needsPIN(product: product) {
-                    pin = ""
-                    pinCommand = command
+                guard let confirmation = model.commandConfirmation(command, reports: [report]) else { return }
+                if confirmation.needsTyping {
+                    typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
                 } else {
                     pending = .command(command)
                 }
@@ -1434,15 +1428,6 @@ struct DeviceDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-    }
-
-    private func executeWithPIN(_ command: MDMCommand) {
-        let enteredPIN = pin
-        guard enteredPIN.count == 6, enteredPIN.allSatisfy(\.isNumber) else {
-            errorMessage = "The PIN must be exactly 6 digits."
-            return
-        }
-        execute(command, pin: enteredPIN)
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
