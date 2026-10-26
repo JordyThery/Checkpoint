@@ -1,4 +1,5 @@
 import Foundation
+import JTKit
 
 /// Which of the looked-up devices the table shows.
 ///
@@ -84,7 +85,9 @@ nonisolated struct DeviceFilters: Equatable {
         kind.matches(report)
             && appleBusiness.matches(report)
             && appleOrg.matches(report.abm.value?.orgID?.uuidString, hasRecord: report.abm.value != nil)
-            && mdmServer.matches(report.abm.value?.mdmServerID, hasRecord: report.abm.value != nil)
+            // an unknown assignment is neither None nor a server
+            && mdmServer.matches(report.abm.value?.mdmServerID,
+                                 hasRecord: report.abm.value.map { !$0.assignmentUnknown } ?? false)
             && mdmConnection.matches(report.mdm.value?.connectionID?.uuidString, hasRecord: report.mdm.value != nil)
             && model.matches(report.abm.value?.device.deviceModel, hasRecord: report.abm.value != nil)
             && orderNumber.matches(report.abm.value?.device.orderNumber, hasRecord: report.abm.value != nil)
@@ -299,7 +302,7 @@ nonisolated struct DeviceFilters: Equatable {
                 // released from it — yet holding an MDM record. Computed
                 // from the report itself so it works in any scope.
                 guard let abm = report.abm.value, report.mdm.value != nil else { return false }
-                return abm.isReleased || abm.mdmServerID == nil
+                return abm.isReleased || (abm.mdmServerID == nil && !abm.assignmentUnknown)
             case .multipleMDMRecords:
                 return !report.otherRecords.isEmpty
             case .assignedElsewhere:
@@ -451,7 +454,7 @@ nonisolated struct FilterOptions {
                 if let id = abm.mdmServerID {
                     let name = abm.mdmServerName ?? id
                     serverCounts[id] = (name, (serverCounts[id]?.count ?? 0) + 1)
-                } else {
+                } else if !abm.assignmentUnknown {
                     serverNone += 1
                 }
                 // No None entry: an Apple record without a model is a wire

@@ -67,6 +67,13 @@ struct DeviceDetailView: View {
     /// Management state from Apple's built-in device management, for records
     /// it holds. Fetched on selection like the other per-device reads.
     @State private var appleDetail: ABMManagedDeviceDetail?
+    /// Apple reads that failed, by what they were for, with the message to
+    /// show in place of the value (ROADMAP step 9: an error, not "none").
+    @State private var appleReadErrors: [AppleRead: String] = [:]
+
+    private enum AppleRead: Hashable {
+        case coverage, activationLock, history, management
+    }
 
     private enum PendingAction {
         case applyMDM
@@ -121,7 +128,9 @@ struct DeviceDetailView: View {
     /// selection; read-only by nature of the API.
     @ViewBuilder
     private var appleManagementRows: some View {
-        if let detail = appleDetail {
+        if let message = appleReadErrors[.management] {
+            LabeledContent("Apple Management") { readFailure(message) }
+        } else if let detail = appleDetail {
             if let os = detail.osVersion, !os.isEmpty {
                 LabeledContent("OS Version", value: os)
             }
@@ -345,24 +354,29 @@ struct DeviceDetailView: View {
         } ?? "None"
     }
 
+    /// The Apple write a pending action stands for, nil for the others.
+    private var pendingAppleWrite: AppleWrite? {
+        switch pending {
+        case .applyMDM: .setServer(mdmSelection)
+        case .unassignMDM: .setServer(nil)
+        case .release: .release
+        case .scheduleMigration: mdmSelection.map { .scheduleMigration(server: $0, deadline: migrationDeadline) }
+        case .updateDeadline: .updateDeadline(migrationDeadline)
+        case .cancelMigration: .cancelMigration
+        default: nil
+        }
+    }
+
+    /// The pending Apple write's confirmation (JTKit's rules). One device
+    /// never has a number to type, so it is always a dialog.
+    private var appleDialog: MDMCommand.Confirmation? {
+        pendingAppleWrite.flatMap { model.appleConfirmation($0, reports: [report]) }
+    }
+
     private var pendingTitle: String {
         switch pending {
-        case .applyMDM:
-            if let selectedServerName {
-                "Assign \(report.serial) to “\(selectedServerName)”?"
-            } else {
-                "Unassign \(report.serial) from its MDM server?"
-            }
-        case .unassignMDM:
-            "Unassign \(report.serial) from “\(report.abm.value?.mdmServerName ?? "its MDM server")”?"
-        case .release:
-            "Release \(report.serial) from \(model.abmKind.label)?"
-        case .scheduleMigration:
-            "Migrate \(report.serial) to “\(selectedServerName ?? "the selected server")”?"
-        case .updateDeadline:
-            "Change the migration deadline for \(report.serial)?"
-        case .cancelMigration:
-            "Cancel the migration for \(report.serial)?"
+        case .applyMDM, .unassignMDM, .release, .scheduleMigration, .updateDeadline, .cancelMigration:
+            (appleDialog?.title).map { $0 + "?" } ?? ""
         case .applyPrestage:
             if let selectedPrestageName {
                 "Move \(report.serial) to PreStage “\(selectedPrestageName)”?"
@@ -392,18 +406,8 @@ struct DeviceDetailView: View {
 
     private var pendingMessage: String {
         switch pending {
-        case .applyMDM:
-            "Apple processes MDM server assignments asynchronously, so allow a moment before the new state appears."
-        case .unassignMDM:
-            "The device stays in your organization but is no longer assigned to any MDM server, so it will not enrol automatically until it is assigned again."
-        case .release:
-            "The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
-        case .scheduleMigration:
-            "The \(model.abmKind.label) assignment changes immediately. Nothing is erased: the device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened))."
-        case .updateDeadline:
-            "A deadline earlier than the current one, or in the past, is enforced immediately without giving the user the option to delay."
-        case .cancelMigration:
-            "Only the scheduled migration is cancelled. The device stays assigned to \(report.abm.value?.mdmServerName ?? "its assigned server") in \(model.abmKind.label) and keeps running under its current service. To undo the assignment as well, assign it back to the previous server."
+        case .applyMDM, .unassignMDM, .release, .scheduleMigration, .updateDeadline, .cancelMigration:
+            appleDialog?.dialogMessage ?? ""
         case .applyPrestage:
             "The device will be removed from its current PreStage scope\(selectedPrestageName == nil ? "." : " and added to the selected one.")"
         case .applySite:
@@ -428,35 +432,11 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private var dialogActions: some View {
         switch pending {
-        case .applyMDM:
-            Button(mdmSelection == nil ? "Unassign Device" : "Assign Device") {
-                run { try await model.setMDMServer(reports: [report], to: mdmSelection) }
-            }
-        case .unassignMDM:
-            Button("Unassign Device") {
-                run { try await model.setMDMServer(reports: [report], to: nil) }
-            }
-        case .release:
-            Button("Release Device", role: .destructive) {
-                run { try await model.releaseFromABM(reports: [report]) }
-            }
-        case .scheduleMigration:
-            Button("Schedule Migration") {
-                let server = mdmSelection
-                let deadline = migrationDeadline
-                run {
-                    guard let server else { return }
-                    try await model.scheduleMigration(reports: [report], to: server, deadline: deadline)
+        case .applyMDM, .unassignMDM, .release, .scheduleMigration, .updateDeadline, .cancelMigration:
+            if let write = pendingAppleWrite, let confirmation = appleDialog {
+                Button(confirmation.actionTitle, role: confirmation.isDestructive ? .destructive : nil) {
+                    run { try await model.perform(write, reports: [report]) }
                 }
-            }
-        case .updateDeadline:
-            Button("Update Deadline") {
-                let deadline = migrationDeadline
-                run { try await model.updateMigrationDeadline(reports: [report], deadline: deadline) }
-            }
-        case .cancelMigration:
-            Button("Cancel Migration", role: .destructive) {
-                run { try await model.cancelMigration(reports: [report]) }
             }
         case .applyPrestage:
             Button("Change PreStage") {
@@ -520,7 +500,9 @@ struct DeviceDetailView: View {
     /// is better spent on the reads it does.
     private var historyDisclosure: some View {
         DisclosureGroup("History", isExpanded: $historyExpanded) {
-            if isLoadingHistory && historyEvents.isEmpty {
+            if let message = appleReadErrors[.history], historyEvents.isEmpty {
+                readFailure(message, alignment: .leading)
+            } else if isLoadingHistory && historyEvents.isEmpty {
                 ProgressView().controlSize(.small)
             } else if historyEvents.isEmpty {
                 Text("No events in the organization's audit log for this device.")
@@ -584,15 +566,33 @@ struct DeviceDetailView: View {
         guard !isLoadingHistory else { return }
         isLoadingHistory = true
         defer { isLoadingHistory = false }
-        if let page = await model.deviceHistory(for: report, cursor: historyLoaded ? historyNextCursor : nil) {
-            if historyLoaded {
-                historyEvents += page.events
-            } else {
-                historyEvents = page.events
+        do {
+            appleReadErrors[.history] = nil
+            if let page = try await model.deviceHistory(for: report, cursor: historyLoaded ? historyNextCursor : nil) {
+                if historyLoaded {
+                    historyEvents += page.events
+                } else {
+                    historyEvents = page.events
+                }
+                historyNextCursor = page.nextCursor
             }
-            historyNextCursor = page.nextCursor
+            historyLoaded = true
+        } catch {
+            appleReadErrors[.history] = error.localizedDescription
         }
-        historyLoaded = true
+    }
+
+    /// A failed Apple read in place of its value: "Couldn’t load" and
+    /// Apple's message, selectable so the Error ID can be copied.
+    private func readFailure(_ message: String, alignment: HorizontalAlignment = .trailing) -> some View {
+        VStack(alignment: alignment, spacing: 2) {
+            Text("Couldn’t load").foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(alignment == .leading ? .leading : .trailing)
+                .textSelection(.enabled)
+        }
     }
 
     /// The hardware identifiers Apple reports, folded away because they are
@@ -693,7 +693,9 @@ struct DeviceDetailView: View {
         }
 
         let coverage = loadedCoverage ?? info.coverage
-        if !info.coverageLoaded && loadedCoverage == nil {
+        if let message = appleReadErrors[.coverage] {
+            LabeledContent("Warranty Coverage") { readFailure(message) }
+        } else if !info.coverageLoaded && loadedCoverage == nil {
             LabeledContent("Warranty Coverage") {
                 ProgressView().controlSize(.small)
             }
@@ -748,6 +750,8 @@ struct DeviceDetailView: View {
         LabeledContent("Activation Lock") {
             if isLoadingActivationLock {
                 ProgressView().controlSize(.small)
+            } else if let message = appleReadErrors[.activationLock] {
+                readFailure(message)
             } else if let lock = activationLock {
                 VStack(alignment: .trailing, spacing: 2) {
                     // Orange for enabled, plain for disabled: a lock can
@@ -773,7 +777,9 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func abmActions(_ info: ABMInfo) -> some View {
         Picker("MDM Server", selection: $mdmSelection) {
-            Text("Unassigned").tag(String?.none)
+            // not "Unassigned" when Apple says it is assigned but the server
+            // couldn't be read (design review, step 9)
+            Text(info.assignmentUnknown ? "Unknown" : "Unassigned").tag(String?.none)
             // The device's own organization: a service ID from another one
             // would be rejected.
             ForEach(model.mdmServers(for: model.appleActionOrg(for: [report]))) { server in
@@ -784,6 +790,11 @@ struct DeviceDetailView: View {
             .disabled(mdmSelection == info.mdmServerID)
         Button("Unassign from MDM Server") { pending = .unassignMDM }
             .disabled(info.mdmServerID == nil)
+        if info.assignmentUnknown {
+            Text("Apple reports the device as assigned, but which MDM server couldn’t be read.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
 
         if info.device.hasActiveMigration {
             DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
@@ -1331,7 +1342,8 @@ struct DeviceDetailView: View {
     }
 
     /// Loads the detail that is fetched per device rather than per lookup.
-    /// Failures are silent: both are supplementary, the LAPS privilege is
+    /// Apple's reads show their error in place of the value (ROADMAP step 9);
+    /// the others stay silent: they are supplementary, the LAPS privilege is
     /// optional, and this runs every time a device is selected.
     private func loadDeviceDetail() async {
         localAdmins = []
@@ -1343,9 +1355,18 @@ struct DeviceDetailView: View {
         schoolDetails = nil
         compliance = nil
         activationLock = nil
+        appleReadErrors = [:]
         isLoadingActivationLock = report.abm.value?.isReleased == false
-        loadedCoverage = await model.appleCareCoverage(for: report)
-        activationLock = await model.activationLock(for: report)
+        do {
+            loadedCoverage = try await model.appleCareCoverage(for: report)
+        } catch {
+            appleReadErrors[.coverage] = error.localizedDescription
+        }
+        do {
+            activationLock = try await model.activationLock(for: report)
+        } catch {
+            appleReadErrors[.activationLock] = error.localizedDescription
+        }
         isLoadingActivationLock = false
         guard report.mdm.value != nil else { return }
         // Only ask each product for what it actually serves: a Jamf School
@@ -1355,8 +1376,14 @@ struct DeviceDetailView: View {
             schoolDetails = await model.jamfSchoolDetails(for: report)
             return
         }
-        appleDetail = report.mdm.value?.managedByApple == true
-            ? await model.appleManagementDetail(for: report) : nil
+        appleDetail = nil
+        if report.mdm.value?.managedByApple == true {
+            do {
+                appleDetail = try await model.appleManagementDetail(for: report)
+            } catch {
+                appleReadErrors[.management] = error.localizedDescription
+            }
+        }
         compliance = await model.deviceCompliance(for: report)
         // Gated rather than left to the client factory to refuse: a product
         // with no declarative reporting should not be asked in the first

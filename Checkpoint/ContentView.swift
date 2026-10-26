@@ -544,7 +544,7 @@ struct ContentView: View {
             .customizationID("appleOrg")
         }
         TableColumn("MDM Server Assignment", value: \.mdmServerText) { (report: DeviceReport) in
-            FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
+            FetchText(state: report.abm) { $0.mdmServerName ?? ($0.isReleased ? "—" : $0.assignmentUnknown ? "Unknown" : "None") }
         }
         .customizationID("mdmServer")
         TableColumn("Migration", value: \.migrationText) { (report: DeviceReport) in
@@ -872,7 +872,7 @@ private extension DeviceReport {
     }
 
     var mdmServerText: String {
-        abm.sortText { $0.mdmServerName ?? ($0.isReleased ? "—" : "None") }
+        abm.sortText { $0.mdmServerName ?? ($0.isReleased ? "—" : $0.assignmentUnknown ? "Unknown" : "None") }
     }
 
     var migrationText: String {
