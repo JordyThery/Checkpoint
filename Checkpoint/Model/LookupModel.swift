@@ -2246,6 +2246,9 @@ final class LookupModel {
         /// serves the whole fleet at once and per-device lookups would only
         /// be slower.
         var schoolFleet: [String: JamfSchoolDevice] = [:]
+        /// Why the device list couldn't be read; every row then shows it
+        /// rather than "not found", as Intune's do.
+        var schoolFailure: String?
         var schoolLocationNames: [String: String] = [:]
         /// The zone the instance reports its timestamps in. Its check-in times
         /// carry no offset, so without this they would be read in whatever
@@ -2258,6 +2261,18 @@ final class LookupModel {
         /// Why the tenant couldn't be read; every row then shows it rather
         /// than "not found".
         var intuneFailure: String?
+
+        /// Reads Jamf School's device list, keeping the error when it fails.
+        mutating func readSchoolFleet() async {
+            guard let schoolClient else { return }
+            do {
+                schoolFleet = try await schoolClient.fleet()
+                schoolFailure = nil
+            } catch {
+                schoolFleet = [:]
+                schoolFailure = error.localizedDescription
+            }
+        }
 
         /// Reads the tenant, keeping the error when it fails (ROADMAP step 8:
         /// a failed read is no longer every device "not found").
@@ -2515,9 +2530,8 @@ final class LookupModel {
             // pagination and no per-device serial route worth using, and has
             // no request quota, so this is both simpler and cheaper than
             // asking device by device.
-            async let fleet = try? school.fleet()
             async let locationList = try? school.locations()
-            target.schoolFleet = await fleet ?? [:]
+            await target.readSchoolFleet()
             var taxonomy = ConnectionTaxonomy()
             taxonomy.locations = await locationList ?? []
             taxonomyByConnection[connection.id] = taxonomy
@@ -2566,7 +2580,7 @@ final class LookupModel {
             target.proMobileDevices = await mobileDevices
         case .jamfSchool:
             guard let school = makeJamfSchoolClient(for: connection), school === target.schoolClient else { return nil }
-            target.schoolFleet = (try? await school.fleet()) ?? [:]
+            await target.readSchoolFleet()
         case .intune:
             guard let intune = makeIntuneClient(for: connection), intune === target.intuneClient else { return nil }
             await target.readIntuneFleet()
@@ -2673,6 +2687,7 @@ final class LookupModel {
     /// read per device when one is selected, the same way AppleCare coverage
     /// is on the Apple side.
     nonisolated private static func fetchJamfSchool(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
+        if let failure = target.schoolFailure { return .failed(failure) }
         guard let device = target.schoolFleet[serial.uppercased()] else { return .notFound }
         return .found(ManagedDeviceInfo(
             recordID: device.udid,
