@@ -331,107 +331,6 @@ struct JamfDeclaration: Sendable, Identifiable {
     }
 }
 
-/// Parses the declaration status value, which is not JSON.
-///
-/// Jamf flattens Apple's `management.declarations` dictionary and renders each
-/// entry with a Java-style `toString`: unquoted keys and values, nested `{}`
-/// and `[]`, and free-text errors containing brackets, colons and commas.
-///
-/// ```
-/// {active=true, identifier=…, valid=valid, server-token=…},{reasons=[{details=
-/// {Error=[kSUCoreErrorDDMInvalidDeclarationFailure] Invalid declaration: target
-/// OS version (15.7.3) is older than current version (15.7.9)}, …}], …}
-/// ```
-///
-/// None of it is documented, so every step degrades rather than fails: an
-/// unparsable record contributes what can be salvaged, and an unreadable
-/// value yields an empty list. A missing warning is bad; losing the software
-/// update row to a parse error is worse.
-nonisolated enum JamfDeclarationParsing {
-    static func declarations(from value: String?) -> [JamfDeclaration] {
-        guard let value, !value.isEmpty else { return [] }
-        return splitTopLevel(value, separator: ",")
-            .compactMap(declaration(from:))
-    }
-
-    private static func declaration(from record: String) -> JamfDeclaration? {
-        let trimmed = record.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("{") else { return nil }
-        let fields = map(from: trimmed)
-
-        // Salvage rather than give up: a record whose identifier cannot be
-        // read is still worth reporting if it says it is invalid.
-        let identifier = fields["identifier"] ?? fields["Identifier"]
-        let validity = fields["valid"].flatMap(JamfDeclarationValidity.init(rawValue:))
-        guard identifier != nil || validity == .invalid else { return nil }
-
-        return JamfDeclaration(
-            identifier: identifier ?? "Unidentified declaration",
-            active: fields["active"] == "true",
-            validity: validity ?? .unknown,
-            reasons: reasons(from: fields["reasons"])
-        )
-    }
-
-    /// The human-readable half of each reason. Apple puts the useful sentence
-    /// in `details.Error`; `description` is the generic form of the same thing.
-    private static func reasons(from value: String?) -> [String] {
-        guard let value else { return [] }
-        let inner = unwrap(value, open: "[", close: "]")
-        return splitTopLevel(inner, separator: ",").compactMap { record in
-            let fields = map(from: record.trimmingCharacters(in: .whitespacesAndNewlines))
-            let details = map(from: fields["details"] ?? "")
-            let text = details["Error"] ?? fields["description"] ?? fields["code"]
-            guard let text, !text.isEmpty else { return nil }
-            return text
-        }
-    }
-
-    /// Reads `{key=value, key=value}` into a dictionary, keeping nested
-    /// structures intact as their raw text.
-    private static func map(from value: String) -> [String: String] {
-        let inner = unwrap(value.trimmingCharacters(in: .whitespacesAndNewlines), open: "{", close: "}")
-        var result: [String: String] = [:]
-        for field in splitTopLevel(inner, separator: ",") {
-            let piece = field.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let equals = piece.firstIndex(of: "=") else { continue }
-            let key = String(piece[piece.startIndex..<equals]).trimmingCharacters(in: .whitespaces)
-            let text = String(piece[piece.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
-            guard !key.isEmpty, result[key] == nil else { continue }
-            result[key] = text
-        }
-        return result
-    }
-
-    private static func unwrap(_ value: String, open: Character, close: Character) -> String {
-        guard value.first == open, value.last == close, value.count >= 2 else { return value }
-        return String(value.dropFirst().dropLast())
-    }
-
-    /// Splits on a separator that is not inside braces or brackets. Free text
-    /// in these values contains both, so a naive split tears records apart.
-    private static func splitTopLevel(_ value: String, separator: Character) -> [String] {
-        var parts: [String] = []
-        var current = ""
-        var depth = 0
-        for character in value {
-            switch character {
-            case "{", "[": depth += 1
-            case "}", "]": depth -= 1
-            default: break
-            }
-            if character == separator, depth <= 0 {
-                parts.append(current)
-                current = ""
-            } else {
-                current.append(character)
-            }
-        }
-        if !current.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append(current) }
-        return parts
-    }
-}
-
 /// A software update enforcement declaration as the server holds it.
 ///
 /// Apple defines no "latest version" declaration: only
@@ -895,300 +794,119 @@ actor JamfClient {
             .filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    // MARK: PreStages
+    // MARK: PreStages (JTKit)
 
     func prestages(family: JamfPrestageFamily) async throws -> [JamfPrestage] {
-        struct Response: Decodable {
-            let totalCount: Int
-            let results: [Item]
-            struct Item: Decodable {
-                let id: String
-                let displayName: String
-                let deviceEnrollmentProgramInstanceId: String?
-            }
+        try await jamf().preStages(family.jtkit).map {
+            JamfPrestage(id: $0.id, displayName: $0.displayName, enrollmentInstanceID: $0.enrollmentInstanceID)
         }
-        var all: [JamfPrestage] = []
-        var page = 0
-        while true {
-            let data = try await send(
-                path: "/api/v3/\(family.pathComponent)",
-                queryItems: [
-                    URLQueryItem(name: "page", value: String(page)),
-                    URLQueryItem(name: "page-size", value: "100"),
-                    URLQueryItem(name: "sort", value: "id:asc"),
-                ]
-            )
-            let decoded = try decode(Response.self, data)
-            all += decoded.results.map {
-                JamfPrestage(id: $0.id, displayName: $0.displayName, enrollmentInstanceID: $0.deviceEnrollmentProgramInstanceId)
-            }
-            if all.count >= decoded.totalCount || decoded.results.isEmpty { break }
-            page += 1
-        }
-        return all
-    }
-
-    // MARK: Device compliance
-
-    /// Whether the Device Compliance integration is switched on for the
-    /// instance. It needs its own privilege, so a failure here is not read
-    /// as "off": the caller falls through to the per-device read.
-    func deviceComplianceEnabled() async throws -> Bool {
-        struct Response: Decodable { let sharedDeviceFeatureEnabled: Bool? }
-        let data = try await send(path: "/api/v1/conditional-access/device-compliance/feature-toggle")
-        return try decode(Response.self, data).sharedDeviceFeatureEnabled ?? false
-    }
-
-    /// Compliance for one device, as the compliance vendor last reported it.
-    /// A device outside the integration's scope comes back with
-    /// `applicable: false` rather than as an error.
-    func deviceCompliance(kind: DeviceKind, deviceID: String) async throws -> JamfDeviceCompliance? {
-        struct Item: Decodable {
-            let applicable: Bool?
-            let complianceState: String?
-            let complianceVendor: String?
-        }
-        let family = kind == .computer ? "computer" : "mobile"
-        let data = try await send(
-            path: "/api/v1/conditional-access/device-compliance-information/\(family)/\(deviceID)",
-            recordsBodies: true
-        )
-        // An array by contract; a single object is accepted too.
-        let items: [Item]
-        if let decoded = try? JSONDecoder().decode([Item].self, from: data) {
-            items = decoded
-        } else if let one = try? JSONDecoder().decode(Item.self, from: data) {
-            items = [one]
-        } else {
-            return nil
-        }
-        guard let item = items.first(where: { $0.applicable == true }) ?? items.first else { return nil }
-        return JamfDeviceCompliance(applicable: item.applicable ?? false, state: item.complianceState, vendor: item.complianceVendor)
-    }
-
-    // MARK: Automated Device Enrollment
-
-    /// The Apple service identity of every ADE token on the instance. A
-    /// token's `serverUuid` is the ID Apple Business or School Manager gives
-    /// the matching device management service.
-    func adeServerUUIDs() async throws -> Set<String> {
-        struct ListResponse: Decodable {
-            let totalCount: Int
-            let results: [Item]
-            struct Item: Decodable { let serverUuid: String? }
-        }
-        var uuids = Set<String>()
-        var count = 0
-        var page = 0
-        while true {
-            let data = try await send(
-                path: "/api/v1/device-enrollments",
-                queryItems: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "page-size", value: "100")]
-            )
-            let decoded = try decode(ListResponse.self, data)
-            for item in decoded.results {
-                if let uuid = item.serverUuid, !uuid.isEmpty { uuids.insert(uuid) }
-            }
-            count += decoded.results.count
-            if count >= decoded.totalCount || decoded.results.isEmpty { break }
-            page += 1
-        }
-        return uuids
-    }
-
-    /// Serial number → device-enrollment (ADE) instance ID for every device
-    /// synced through any of the server's ADE tokens.
-    func adeInstanceBySerial() async throws -> [String: String] {
-        struct ListResponse: Decodable {
-            let totalCount: Int
-            let results: [Item]
-            struct Item: Decodable { let id: String }
-        }
-        struct DevicesResponse: Decodable {
-            let totalCount: Int
-            let results: [Item]
-            struct Item: Decodable { let serialNumber: String? }
-        }
-        var instanceIDs: [String] = []
-        var page = 0
-        while true {
-            let data = try await send(
-                path: "/api/v1/device-enrollments",
-                queryItems: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "page-size", value: "100")]
-            )
-            let decoded = try decode(ListResponse.self, data)
-            instanceIDs += decoded.results.map(\.id)
-            if instanceIDs.count >= decoded.totalCount || decoded.results.isEmpty { break }
-            page += 1
-        }
-        var map: [String: String] = [:]
-        for instanceID in instanceIDs {
-            var page = 0
-            var seen = 0
-            while true {
-                let data = try await send(
-                    path: "/api/v1/device-enrollments/\(instanceID)/devices",
-                    queryItems: [URLQueryItem(name: "page", value: String(page)), URLQueryItem(name: "page-size", value: "500")]
-                )
-                let decoded = try decode(DevicesResponse.self, data)
-                for item in decoded.results {
-                    if let serial = item.serialNumber?.uppercased() { map[serial] = instanceID }
-                }
-                seen += decoded.results.count
-                if seen >= decoded.totalCount || decoded.results.isEmpty { break }
-                page += 1
-            }
-        }
-        return map
     }
 
     /// Serial number → PreStage ID for every scoped device in the family.
     func prestageAssignments(family: JamfPrestageFamily) async throws -> [String: String] {
-        struct Response: Decodable { let serialsByPrestageId: [String: String] }
-        return try decode(Response.self, try await send(path: "/api/v2/\(family.pathComponent)/scope")).serialsByPrestageId
+        try await jamf().preStageScope(family.jtkit)
     }
 
     func addToPrestage(family: JamfPrestageFamily, prestageID: String, serials: [String]) async throws {
-        try await changeScope(family: family, prestageID: prestageID, serials: serials, deleting: false)
+        try await jamf().addToPreStage(family.jtkit, id: prestageID, serials: serials)
     }
 
     func removeFromPrestage(family: JamfPrestageFamily, prestageID: String, serials: [String]) async throws {
-        try await changeScope(family: family, prestageID: prestageID, serials: serials, deleting: true)
+        try await jamf().removeFromPreStage(family.jtkit, id: prestageID, serials: serials)
     }
 
-    private func changeScope(family: JamfPrestageFamily, prestageID: String, serials: [String], deleting: Bool) async throws {
-        struct ScopeResponse: Decodable { let versionLock: Int }
-        let scopePath = "/api/v2/\(family.pathComponent)/\(prestageID)/scope"
-        // Scope writes are optimistic-locked: read the current versionLock first.
-        let versionLock = try decode(ScopeResponse.self, try await send(path: scopePath)).versionLock
-        let body = try JSONSerialization.data(withJSONObject: [
-            "serialNumbers": serials,
-            "versionLock": versionLock,
-        ] as [String: Any])
-        _ = try await send(path: deleting ? "\(scopePath)/delete-multiple" : scopePath, method: "POST", body: body)
+    // MARK: Device compliance (JTKit)
+
+    /// Whether the Device Compliance integration is on. It needs its own
+    /// privilege, so a failure isn't read as "off": the caller falls through
+    /// to the per-device read.
+    func deviceComplianceEnabled() async throws -> Bool {
+        try await jamf().deviceComplianceEnabled()
     }
 
-    // MARK: Recovery secrets
+    /// Compliance for one device, as the compliance vendor last reported it.
+    func deviceCompliance(kind: DeviceKind, deviceID: String) async throws -> JamfDeviceCompliance? {
+        try await jamf().deviceCompliance(kind.commandKind, id: deviceID).map {
+            JamfDeviceCompliance(applicable: $0.applicable, state: $0.state, vendor: $0.vendor)
+        }
+    }
 
-    // Each of these is recorded without its contents (JTKit's sensitive calls).
+    // MARK: Automated Device Enrollment (JTKit)
 
-    /// A computer's FileVault personal recovery key. Nil when Jamf Pro holds no key.
+    /// The Apple service identity of every ADE token, which links a
+    /// connection to Apple's assignment without any configuration.
+    func adeServerUUIDs() async throws -> Set<String> {
+        try await jamf().deviceEnrollmentServerIDs()
+    }
+
+    /// Serial number → ADE instance ID, to filter PreStages to the ones a
+    /// device can join.
+    func adeInstanceBySerial() async throws -> [String: String] {
+        try await jamf().deviceEnrollmentInstanceBySerial()
+    }
+
+    // MARK: Recovery secrets (JTKit)
+
+    // Recorded without contents; a failure carries only the status.
+
     func fileVaultRecoveryKey(computerID: String) async throws -> JamfFileVaultKey? {
-        struct Response: Decodable {
-            let personalRecoveryKey: String?
-            let individualRecoveryKeyValidityStatus: String?
-            let diskEncryptionConfigurationName: String?
+        try await jamf().fileVaultKey(computerID: computerID).map {
+            JamfFileVaultKey(personalRecoveryKey: $0.personalRecoveryKey, validityStatus: $0.validityStatus,
+                             configurationName: $0.configurationName)
         }
-        guard let data = try await send(path: "/api/v4/computers-inventory/\(computerID)/filevault",
-                                        privilege: .viewDiskEncryptionRecoveryKey, absentOn: [404]) else { return nil }
-        let decoded = try decode(Response.self, data)
-        guard let key = decoded.personalRecoveryKey, !key.isEmpty else { return nil }
-        return JamfFileVaultKey(
-            personalRecoveryKey: key,
-            validityStatus: decoded.individualRecoveryKeyValidityStatus,
-            configurationName: decoded.diskEncryptionConfigurationName
-        )
     }
 
-    /// The PIN a Mac was locked with. Nil when the Mac has never been locked.
     func deviceLockPIN(computerID: String) async throws -> String? {
-        struct Response: Decodable { let pin: String? }
-        guard let data = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-device-lock-pin",
-                                        privilege: .viewComputerDeviceLockPin, absentOn: [404]) else { return nil }
-        let pin = try decode(Response.self, data).pin
-        return (pin?.isEmpty ?? true) ? nil : pin
+        try await jamf().deviceLockPIN(computerID: computerID)
     }
 
-    /// A computer's Recovery Lock password. Nil when none is escrowed.
     func recoveryLockPassword(computerID: String) async throws -> String? {
-        struct Response: Decodable { let recoveryLockPassword: String? }
-        guard let data = try await send(path: "/api/v4/computers-inventory/\(computerID)/view-recovery-lock-password",
-                                        privilege: .viewRecoveryLock, absentOn: [404]) else { return nil }
-        let password = try decode(Response.self, data).recoveryLockPassword
-        return (password?.isEmpty ?? true) ? nil : password
+        try await jamf().recoveryLockPassword(computerID: computerID)
     }
 
-    // MARK: Managed local administrator accounts
+    // MARK: Managed local administrator accounts (JTKit)
 
-    /// The managed local administrator accounts Jamf Pro knows for a device.
-    /// Empty when the privilege is missing: they are shown as part of an
-    /// ordinary lookup, and their absence is not an error.
+    /// Empty without the privilege: the accounts are part of an ordinary
+    /// lookup, and their absence is no error.
     func localAdminAccounts(managementID: String) async throws -> [JamfLocalAdminAccount] {
-        struct Response: Decodable {
-            let results: [Item]?
-            struct Item: Decodable {
-                let username: String?
-                let guid: String?
-                let userSource: String?
-            }
-        }
-        guard let data = try await send(path: "/api/v2/local-admin-password/\(managementID)/accounts",
-                                        absentOn: [403, 404]) else { return [] }
-        return (try decode(Response.self, data).results ?? []).compactMap {
-            guard let username = $0.username, !username.isEmpty else { return nil }
-            return JamfLocalAdminAccount(username: username, guid: $0.guid ?? "", source: $0.userSource ?? "")
+        try await jamf().localAdminAccounts(managementID: managementID).map {
+            JamfLocalAdminAccount(username: $0.username, guid: $0.guid, source: $0.source)
         }
     }
 
-    /// The current password for a managed local administrator account.
-    /// Viewing queues a rotation. Nil when Jamf Pro holds no password, which
-    /// it answers with HTTP 400 and code NOT_FOUND rather than a 404.
+    /// Viewing queues a rotation: ask first (`JamfPro.Secret.localAdminPassword`).
     func localAdminPassword(managementID: String, account: JamfLocalAdminAccount) async throws -> String? {
-        struct Response: Decodable { let password: String? }
-        let path = account.guid.isEmpty
-            ? "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/password"
-            : "/api/v2/local-admin-password/\(managementID)/account/\(account.username)/\(account.guid)/password"
-        let data: Data
-        do {
-            guard let found = try await send(path: path, privilege: .viewLocalAdminPassword, absentOn: [404]) else { return nil }
-            data = found
-        } catch let error as JamfPlatformError where error.status == 400 && error.hasCode(.notFound) {
-            return nil
-        }
-        let password = try decode(Response.self, data).password
-        return (password?.isEmpty ?? true) ? nil : password
+        try await jamf().localAdminPassword(managementID: managementID,
+                                            account: JamfPro.LocalAdminAccount(username: account.username, guid: account.guid, source: account.source))
     }
 
-    /// How long after being viewed a password is rotated, in seconds. Nil
-    /// when the setting can't be read.
     func localAdminRotationTime() async throws -> Int? {
-        struct Response: Decodable { let passwordRotationTime: Int? }
-        guard let data = try? await send(path: "/api/v2/local-admin-password/settings") else { return nil }
-        return try? JSONDecoder().decode(Response.self, from: data).passwordRotationTime
+        await (try jamf()).localAdminRotationTime()
     }
 
-    // MARK: Declarative status
+    // MARK: Declarative status (JTKit's reads, Checkpoint's reading of them)
 
-    /// What the device last reported about itself declaratively: its software
-    /// update state and the declarations it has processed, from one report.
-    /// Nil when the device has sent no report (not declaratively managed).
-    func ddmStatus(managementID: String) async throws -> JamfDDMStatus? {
-        struct Response: Decodable {
-            let statusItems: [Item]?
-            struct Item: Decodable {
-                let key: String?
-                let value: String?
-                let lastUpdateTime: String?
-            }
-        }
-        guard let data = try await send(path: "/api/v1/ddm/\(managementID)/status-items", recordsBodies: true,
-                                        absentOn: [403, 404]) else { return nil }
-        let items = try decode(Response.self, data).statusItems ?? []
-        guard !items.isEmpty else { return nil }
-
+    /// What the device last reported declaratively: its software update state
+    /// and the declarations it processed, from one report. Nil when the device
+    /// sent none (not declaratively managed) or it can't be read here.
+    func ddmStatus(managementID: String, kind: DeviceKind = .computer) async throws -> JamfDDMStatus? {
+        guard let items = try await jamf().ddmStatusItems(managementID: managementID, kind: kind.commandKind),
+              !items.isEmpty else { return nil }
         // Exact keys only. The report can also carry malformed leftovers such
         // as softwareupdate.pending-version.softwareupdate.target-local-date-time,
         // which must not be mistaken for the real value.
         var values: [String: (value: String?, reportedAt: Date?)] = [:]
         for item in items {
-            guard let key = item.key else { continue }
-            values[key] = (item.value, item.lastUpdateTime.flatMap(DateFormatting.parseDeviceLocal))
+            values[item.key] = (item.value, item.lastUpdateTime.flatMap(DateFormatting.parseDeviceLocal))
         }
         func text(_ key: String) -> String? {
             guard let value = values[key]?.value, !value.isEmpty else { return nil }
             return value
         }
-        let declarations = JamfDeclarationParsing.declarations(from: values["management.declarations.configurations"]?.value)
+        let declarations = JamfPro.flattenedDeclarations(values["management.declarations.configurations"]?.value).map {
+            JamfDeclaration(identifier: $0.identifier, active: $0.active,
+                            validity: JamfDeclarationValidity(rawValue: $0.validity) ?? .unknown, reasons: $0.reasons)
+        }
         let newestReport = values.values.compactMap(\.reportedAt).max()
         return JamfDDMStatus(softwareUpdate: softwareUpdate(values: values, text: text),
                              declarations: declarations, reportedAt: newestReport)
@@ -1237,9 +955,9 @@ actor JamfClient {
     /// The software update enforcement declaration among those given, or nil.
     /// Nothing here throws: a declaration the server won't hand over is
     /// skipped rather than failing the row.
-    func updateEnforcement(among declarations: [JamfDeclaration]) async -> JamfUpdateEnforcement? {
+    func updateEnforcement(among declarations: [JamfDeclaration], kind: DeviceKind = .computer) async -> JamfUpdateEnforcement? {
         for declaration in declarations {
-            if let found = ((try? await updateEnforcement(declarationID: declaration.identifier)) ?? nil) {
+            if let found = ((try? await updateEnforcement(declarationID: declaration.identifier, kind: kind)) ?? nil) {
                 return found
             }
         }
@@ -1247,27 +965,16 @@ actor JamfClient {
     }
 
     /// Reads one declaration, returning it only if it enforces a software update.
-    private func updateEnforcement(declarationID: String) async throws -> JamfUpdateEnforcement? {
-        struct Response: Decodable {
-            let declarations: [Item]?
-            struct Item: Decodable {
-                let type: String?
-                /// The declaration's payload, a JSON string inside the JSON.
-                let payloadJson: String?
-                let uuid: String?
-            }
-        }
+    private func updateEnforcement(declarationID: String, kind: DeviceKind) async throws -> JamfUpdateEnforcement? {
         struct Payload: Decodable {
             let TargetOSVersion: String?
             let TargetBuildVersion: String?
             let TargetLocalDateTime: String?
         }
-        guard let data = try? await send(path: "/api/v1/dss-declarations/\(declarationID)") else { return nil }
-        let items = (try? JSONDecoder().decode(Response.self, from: data))?.declarations ?? []
-        guard let item = items.first(where: { $0.type == "com.apple.configuration.softwareupdate.enforcement.specific" }) else {
-            return nil
-        }
-        let payload = item.payloadJson
+        guard let details = try? await jamf().declaration(id: declarationID, kind: kind.commandKind),
+              let item = details.first(where: { $0.type == "com.apple.configuration.softwareupdate.enforcement.specific" })
+        else { return nil }
+        let payload = item.payload
             .flatMap { Data($0.utf8) }
             .flatMap { try? JSONDecoder().decode(Payload.self, from: $0) }
         return JamfUpdateEnforcement(
@@ -1279,163 +986,42 @@ actor JamfClient {
         )
     }
 
-    /// Blueprint names, keyed by identifier. Platform API only; empty when
-    /// they can't be read.
+    /// Blueprint names, keyed by identifier (JTKit's Blueprint list).
+    /// Platform API only; empty when they can't be read.
     func blueprintNames() async throws -> [String: String] {
-        struct Response: Decodable {
-            let results: [Item]?
-            struct Item: Decodable {
-                let id: String?
-                let name: String?
-            }
-        }
-        guard let data = try? await send(path: "/blueprints/v1/blueprints",
-                                         queryItems: [URLQueryItem(name: "page-size", value: "200")]) else { return [:] }
-        let items = (try? JSONDecoder().decode(Response.self, from: data))?.results
-            ?? (try? JSONDecoder().decode([Response.Item].self, from: data))
-            ?? []
-        return Dictionary(
-            items.compactMap { item in
-                guard let id = item.id, let name = item.name, !name.isEmpty else { return nil }
-                return (id, name)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
+        guard let blueprints = try? await JamfPlatform.Blueprints(client: jamf()).list() else { return [:] }
+        return Dictionary(blueprints.filter { !$0.name.isEmpty }.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 
-    // MARK: Sites
+    // MARK: Sites, departments, buildings (JTKit)
 
-    /// All sites on the server. The full-access site ("-1") isn't listed.
+    /// All sites on the server; the full-access site ("-1") isn't listed.
     func sites() async throws -> [JamfSite] {
-        struct Item: Decodable {
-            let id: String
-            let name: String
-        }
-        struct Wrapped: Decodable { let results: [Item] }
-        let data = try await send(path: "/api/v1/sites", privilege: .readSites)
-        let items = (try? JSONDecoder().decode([Item].self, from: data))
-            ?? (try? JSONDecoder().decode(Wrapped.self, from: data))?.results
-            ?? []
-        return items.map { JamfSite(id: $0.id, name: $0.name) }
+        try await jamf().sites().compactMap { site in site.id.map { JamfSite(id: $0, name: site.name ?? $0) } }
     }
 
-    /// Moves a computer to the given site ("-1" for none).
+    /// Moves a computer to a site ("-1" for none). Safe to repeat.
     func setComputerSite(computerID: String, siteID: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["general": ["siteId": siteID]])
-        _ = try await send(path: "/api/v4/computers-inventory-detail/\(computerID)", method: "PATCH", body: body,
-                           privilege: .updateComputers)
+        try await jamf().setSite(siteID, computerID: computerID)
     }
 
-    /// Moves a mobile device to the given site ("-1" for none).
+    /// Moves a mobile device to a site ("-1" for none). Safe to repeat.
     func setMobileDeviceSite(deviceID: String, siteID: String) async throws {
-        let body = try JSONSerialization.data(withJSONObject: ["siteId": siteID])
-        _ = try await send(path: "/api/v2/mobile-devices/\(deviceID)", method: "PATCH", body: body,
-                           privilege: .updateMobileDevices)
+        try await jamf().setSite(siteID, mobileDeviceID: deviceID)
     }
 
-    // MARK: Departments and buildings
-
-    /// Department names, keyed by identifier. Needs Read Departments; without
-    /// it the row is omitted rather than shown unresolved.
+    /// Department names, keyed by identifier. Without Read Departments the
+    /// row is omitted rather than shown unresolved, so a failure is no names.
     func departmentNames() async throws -> [String: String] {
-        try await nameMap(path: "/api/v1/departments")
+        (try? await jamf().departmentNames()) ?? [:]
     }
 
-    /// Building names, keyed by identifier; needs Read Buildings.
+    /// Building names, as departments; needs Read Buildings.
     func buildingNames() async throws -> [String: String] {
-        try await nameMap(path: "/api/v1/buildings")
+        (try? await jamf().buildingNames()) ?? [:]
     }
 
-    /// Reads a paged list of identifier and name into a map, following the
-    /// total count (at most ten pages).
-    private func nameMap(path: String) async throws -> [String: String] {
-        struct Response: Decodable {
-            let totalCount: Int?
-            let results: [Item]?
-            struct Item: Decodable {
-                let id: String?
-                let name: String?
-            }
-        }
-        let pageSize = 1000
-        var map: [String: String] = [:]
-        var read = 0
-        for page in 0..<10 {
-            guard let data = try? await send(path: path, queryItems: [
-                URLQueryItem(name: "page", value: String(page)),
-                URLQueryItem(name: "page-size", value: String(pageSize)),
-            ]) else { return map }
-            guard let response = try? JSONDecoder().decode(Response.self, from: data),
-                  let items = response.results, !items.isEmpty else { return map }
-            read += items.count
-            for item in items {
-                guard let id = item.id, let name = item.name, !name.isEmpty else { continue }
-                if map[id] == nil { map[id] = name }
-            }
-            guard let total = response.totalCount, read < total else { return map }
-        }
-        return map
-    }
-
-    // MARK: Plumbing
-
-    /// Every request of Checkpoint's own goes through JTKit's client: the
-    /// token, the shared retry rules (429 for every request, server errors for
-    /// reads, one new sign-in after a 401), JTKit's error format and an
-    /// activity log entry per attempt. Paths are written as Jamf Pro has them
-    /// (`/api/…`) and sent in the gateway's form (`pro/…`), which JTKit maps
-    /// back onto a direct server.
-    ///
-    /// - Parameters:
-    ///   - recordsBodies: record a successful answer too; only for the
-    ///     read-only device lookups (ROADMAP step 5, "Checkpoint").
-    ///   - privilege: named in the hint when Jamf Pro refuses the request.
-    /// - Returns: the answer.
-    private func send(
-        path: String,
-        method: String = "GET",
-        queryItems: [URLQueryItem] = [],
-        body: Data? = nil,
-        recordsBodies: Bool = false,
-        privilege: JamfPro.Privilege? = nil
-    ) async throws -> Data {
-        // non-nil: no status is allowed to come back as "absent"
-        try await send(path: path, method: method, queryItems: queryItems, body: body,
-                       recordsBodies: recordsBodies, privilege: privilege, absentOn: [])!
-    }
-
-    /// As above; nil when the server answers one of `absentOn` (e.g. 404 for
-    /// "Jamf Pro holds none").
-    private func send(
-        path: String,
-        method: String = "GET",
-        queryItems: [URLQueryItem] = [],
-        body: Data? = nil,
-        recordsBodies: Bool = false,
-        privilege: JamfPro.Privilege? = nil,
-        absentOn: Set<Int>
-    ) async throws -> Data? {
-        let mapped = String(Self.gatewayPath(for: path).drop { $0 == "/" })
-        // Encoded as URLComponents encoded a path, so the address is unchanged.
-        guard let encoded = mapped.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) else {
-            throw APIError(message: "Invalid Jamf Pro request URL")
-        }
-        let request = HTTPRequest(method: method, path: encoded, query: queryItems, body: body,
-                                  accept: "application/json", recordsBodies: recordsBodies)
-        do {
-            return try await jamf().send(request, privilege: privilege).data
-        } catch let error as JamfPlatformError where error.status.map(absentOn.contains) == true {
-            return nil
-        }
-    }
-
-    private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
-        do {
-            return try JSONDecoder().decode(type, from: data)
-        } catch {
-            throw APIError(message: "Jamf Pro answered in an unexpected shape: \(error.localizedDescription)")
-        }
-    }
+    // MARK: Paths
 
     /// A Jamf Pro path in the gateway's form: the Jamf Pro API under `/pro`,
     /// the Classic API under `/proclassic`. Both replace the product segment,
@@ -1451,6 +1037,16 @@ actor JamfClient {
             return "/proclassic/" + path.dropFirst("/JSSResource/".count)
         }
         return path
+    }
+}
+
+extension JamfPrestageFamily {
+    /// The same family in JTKit.
+    var jtkit: JamfPro.PreStageFamily {
+        switch self {
+        case .computer: .computer
+        case .mobileDevice: .mobileDevice
+        }
     }
 }
 

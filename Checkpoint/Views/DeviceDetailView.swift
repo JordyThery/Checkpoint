@@ -89,12 +89,7 @@ struct DeviceDetailView: View {
     /// way Jamf Pro words it. The interval is an instance setting, so it is
     /// read from the server rather than assumed.
     private var rotationDescription: String {
-        guard let rotationTime else { return "shortly afterwards" }
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.day, .hour, .minute]
-        formatter.unitsStyle = .full
-        formatter.maximumUnitCount = 2
-        return formatter.string(from: rotationTime).map { "in \($0)" } ?? "shortly afterwards"
+        LookupModel.rotationPhrase(rotationTime)
     }
 
 
@@ -277,10 +272,9 @@ struct DeviceDetailView: View {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(secret.value, forType: .string)
-                    }
+                    // concealed, kept on this Mac, cleared after 60 s (JTKit)
+                    Button("Copy") { SecretPasteboard.copy(secret.value) }
+                        .help("Copies it for 60 seconds, then clears the clipboard if it still holds it.")
                     Spacer()
                     Button("Done") { revealedSecret = nil }
                         .keyboardShortcut(.defaultAction)
@@ -389,8 +383,8 @@ struct DeviceDetailView: View {
             (model.connection(for: info)?.product ?? .jamfPro).removeRecordPrompt(report.serial)
         case .command(let command):
             (model.commandConfirmation(command, reports: [report])?.title ?? "\(command.title) — \(report.serial)") + "?"
-        case .viewLocalAdminPassword:
-            "Rotation after viewing"
+        case .viewLocalAdminPassword(let account):
+            LookupModel.revealConfirmation(.localAdminPassword, account: account.username, rotationTime: rotationTime)?.title ?? ""
         case nil:
             ""
         }
@@ -425,7 +419,7 @@ struct DeviceDetailView: View {
         case .command(let command):
             model.commandConfirmation(command, reports: [report])?.dialogMessage ?? command.message(for: model.product(for: report))
         case .viewLocalAdminPassword(let account):
-            "Viewing the password for \(account.username) will cause Jamf Pro to rotate it \(rotationDescription)."
+            LookupModel.revealConfirmation(.localAdminPassword, account: account.username, rotationTime: rotationTime)?.message ?? ""
         case nil:
             ""
         }

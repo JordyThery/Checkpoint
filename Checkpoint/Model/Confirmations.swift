@@ -63,3 +63,24 @@ extension MDMCommand.Confirmation {
         [connectionLine, message, explanation].compactMap { $0 }.joined(separator: "\n\n")
     }
 }
+
+/// Reading a secret (JTKit's rules, ROADMAP step 7): only a LAPS password
+/// rotates when viewed, so only it is asked about first.
+extension LookupModel {
+    /// "in 1 hour", "shortly afterwards", as Jamf Pro words the rotation. The
+    /// interval is an instance setting, read from the server.
+    nonisolated static func rotationPhrase(_ interval: TimeInterval?) -> String {
+        guard let interval else { return "shortly afterwards" }
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute]
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 2
+        return formatter.string(from: interval).map { "in \($0)" } ?? "shortly afterwards"
+    }
+
+    /// The question before showing a secret; nil when it shows at once.
+    nonisolated static func revealConfirmation(_ secret: JamfPro.Secret, account: String?,
+                                               rotationTime: TimeInterval?) -> (title: String, message: String)? {
+        secret.confirmation(account: account, rotation: rotationPhrase(rotationTime))
+    }
+}

@@ -1179,7 +1179,8 @@ final class LookupModel {
         // The activity log records that a key was read, never the key itself.
         // Jamf Pro keeps its own audit entry for this; ours makes it visible
         // without having to go and look.
-        return try await recording(.jamfPro, "Read the FileVault recovery key for \(report.serial)", serials: [report.serial]) {
+        return try await recording(.jamfPro, JamfPro.Secret.fileVaultRecoveryKey.actionSummary(serial: report.serial),
+                                   serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let key = try await jamf.fileVaultRecoveryKey(computerID: id) else {
                 throw ActionError(message: "Jamf Pro holds no FileVault recovery key for \(report.serial).")
             }
@@ -1192,7 +1193,8 @@ final class LookupModel {
     func recoveryLockPassword(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Recovery Lock passwords")
         guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
-        return try await recording(.jamfPro, "Read the Recovery Lock password for \(report.serial)", serials: [report.serial]) {
+        return try await recording(.jamfPro, JamfPro.Secret.recoveryLockPassword.actionSummary(serial: report.serial),
+                                   serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let password = try await jamf.recoveryLockPassword(computerID: id) else {
                 throw ActionError(message: "Jamf Pro holds no Recovery Lock password for \(report.serial).")
             }
@@ -1205,7 +1207,8 @@ final class LookupModel {
     func deviceLockPIN(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Device lock PINs")
         guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
-        return try await recording(.jamfPro, "Read the device lock PIN for \(report.serial)", serials: [report.serial]) {
+        return try await recording(.jamfPro, JamfPro.Secret.deviceLockPIN.actionSummary(serial: report.serial),
+                                   serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let pin = try await jamf.deviceLockPIN(computerID: id) else {
                 throw ActionError(message: "Jamf Pro holds no device lock PIN for \(report.serial). One exists only after the Mac has been locked through Jamf Pro.")
             }
@@ -1584,7 +1587,7 @@ final class LookupModel {
     func ddmStatus(for report: DeviceReport) async -> JamfDDMStatus? {
         guard let info = report.mdm.value, let jamf = makeJamfClient(for: report),
               let managementID = info.managementID, !managementID.isEmpty else { return nil }
-        guard let status = try? await jamf.ddmStatus(managementID: managementID) else { return nil }
+        guard let status = try? await jamf.ddmStatus(managementID: managementID, kind: info.kind) else { return nil }
         // The status report is still the only source for the software update
         // half, so it is always read. On a gateway connection the platform
         // will also report the declarations as typed JSON, which is worth
@@ -1611,7 +1614,7 @@ final class LookupModel {
         guard let jamf = makeJamfClient(for: report) else { return nil }
         let candidates = status.declarationsWorthResolving()
         guard !candidates.isEmpty else { return nil }
-        return await jamf.updateEnforcement(among: candidates)
+        return await jamf.updateEnforcement(among: candidates, kind: report.mdm.value?.kind ?? .computer)
     }
 
     /// The name of a blueprint, when the connection can resolve one.
@@ -1670,8 +1673,8 @@ final class LookupModel {
         guard let jamf = makeJamfClient(for: report) else {
             throw ActionError(message: "No Jamf Pro server is selected or configured.")
         }
-        let summary = "Read the local administrator password for \(account.username) on \(report.serial), queuing a rotation"
-        return try await recording(.jamfPro, summary, serials: [report.serial]) {
+        let summary = JamfPro.Secret.localAdminPassword.actionSummary(serial: report.serial, account: account.username)
+        return try await recording(.jamfPro, summary, serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let password = try await jamf.localAdminPassword(managementID: managementID, account: account) else {
                 throw ActionError(message: "Jamf Pro holds no password for \(account.username) on \(report.serial).")
             }
