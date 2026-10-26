@@ -64,10 +64,10 @@ struct ConnectionsTab: View {
             let count = try await client.verify()
             return "Connected · \(count) MDM server\(count == 1 ? "" : "s") visible"
         case .mdm(let server) where server.product == .intune:
-            guard let client = IntuneClient(config: server, secret: secret, log: log) else {
+            guard let client = LookupModel.intuneClient(for: server, secret: { secret }, log: log) else {
                 throw ConnectionTestError("Enter a tenant ID, client ID and client secret first.")
             }
-            try await client.verify()
+            try await client.intuneTestConnection()
             return "Connected"
         case .mdm(let server) where server.product == .jamfSchool:
             guard let client = JamfSchoolClient(config: server, secret: secret, log: log) else {
@@ -158,8 +158,8 @@ private struct ConnectionNotes: View {
             case .intune:
                 Section {
                     note("Requests go to Microsoft Graph, so no URL is needed. The tenant ID can be the GUID or a verified domain name.")
-                    note("Create an app registration in Entra, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, and PrivilegedOperations.All to send commands. Application permissions need admin consent before any of them work.")
-                    note("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Remove MDM Profile retires it.")
+                    note("Create an app registration in Entra, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, PrivilegedOperations.All to send commands, and ReadWrite.All to delete records. Application permissions need admin consent before any of them work.")
+                    note("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Retire Device unmanages it.")
                 }
             default:
                 EmptyView()

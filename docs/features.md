@@ -25,7 +25,7 @@ Double-clicking a row, or the arrow at the end of it, opens the device's record 
 
 **Jamf School** — Update Inventory, Restart, Wipe, Remove MDM Profile. Jamf School draws no distinction between computers and mobile devices, so all four reach Macs as well as iPads. Its API defines no lock, shut down or lost mode, and serves clearing a passcode only through a teacher session rather than an administrative one.
 
-**Intune** — computers: Update Inventory, Restart, Shut Down, Wipe, Remove MDM Profile. Mobile devices: the same, plus Lock and Clear Passcode. Intune keeps one collection for every platform, so the split is inferred from the platform rather than reported. Remove MDM Profile sends Intune's retire, which also removes the record — the one place where the same command means something different from the Jamf products, and the confirmation says so.
+**Intune** — computers: Sync Device, Restart, Shut Down, Wipe, Retire Device. Mobile devices: the same, plus Lock and Clear Passcode. Intune keeps one collection for every platform, so the split is inferred from the platform rather than reported. Retire Device sends Intune's retire, which also removes the record — unlike Remove MDM Profile on the Jamf products, and the confirmation says so.
 
 ## Looking up a group or an order
 

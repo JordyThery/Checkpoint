@@ -382,7 +382,7 @@ struct DeviceDetailView: View {
         case .removeOtherRecord(let info):
             (model.connection(for: info)?.product ?? .jamfPro).removeRecordPrompt(report.serial)
         case .command(let command):
-            (model.commandConfirmation(command, reports: [report])?.title ?? "\(command.title) — \(report.serial)") + "?"
+            (model.commandConfirmation(command, reports: [report])?.title ?? "\(command.title(for: model.product(for: report))) — \(report.serial)") + "?"
         case .viewLocalAdminPassword(let account):
             LookupModel.revealConfirmation(.localAdminPassword, account: account.username, rotationTime: rotationTime)?.title ?? ""
         case nil:
@@ -496,7 +496,7 @@ struct DeviceDetailView: View {
                 run { try await model.removeRecord(info, serial: report.serial) }
             }
         case .command(let command):
-            Button(command.title, role: command.isDestructive ? .destructive : nil) {
+            Button(command.title(for: model.product(for: report)), role: command.isDestructive ? .destructive : nil) {
                 execute(command, pin: nil)
             }
         case .viewLocalAdminPassword(let account):
@@ -1403,7 +1403,7 @@ struct DeviceDetailView: View {
         ForEach(MDMCommand.commands(for: info.kind, product: product), id: \.self) { command in
             let unavailable = model.unavailabilityReason(for: command, reports: [report])
                 ?? command.inapplicabilityReason(for: info)
-            Button(command.title, role: command.isDestructive ? .destructive : nil) {
+            Button(command.title(for: model.product(for: report)), role: command.isDestructive ? .destructive : nil) {
                 guard let confirmation = model.commandConfirmation(command, reports: [report]) else { return }
                 if confirmation.needsTyping {
                     typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
@@ -1425,7 +1425,7 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, pin: String?) {
-        run(successMessage: "\(command.title) was queued in \(model.product(for: report).label).") {
+        run(successMessage: "\(command.title(for: model.product(for: report))) was queued in \(model.product(for: report).label).") {
             try await model.sendCommand(command, reports: [report], passcode: pin)
         }
     }

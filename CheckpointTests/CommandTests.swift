@@ -189,8 +189,9 @@ struct CommandAvailabilityTests {
             .shutDownMobile: "The device will shut down immediately and stay off until someone powers it back on.",
             .wipeMobile: "All data on the device will be erased. This cannot be undone.",
         ]
+        // Intune has its own texts (IntuneTests, ROADMAP step 8)
         for (command, message) in messages {
-            for product in [MDMProduct.jamfPro, .jamfSchool, .intune] {
+            for product in [MDMProduct.jamfPro, .jamfSchool] {
                 #expect(command.message(for: product) == message)
             }
         }

@@ -136,8 +136,8 @@ extension MDMCommand {
     /// passcode are offered for mobile devices only: Graph accepts both
     /// against a Mac, and neither does what the name suggests there.
     /// Bypassing Activation Lock is left out for the same reason as in Jamf
-    /// School. Remove MDM Profile maps to Intune's retire, which is the
-    /// closest equivalent — see its message.
+    /// School. Remove MDM Profile is Intune's retire, shown as "Retire
+    /// Device" (JTKit's `title(on:)`).
     ///
     /// Adding or removing a command means a row in the privileges table in
     /// `docs/permissions.md`, and one in `docs/platform-api.md` if the gateway
@@ -188,27 +188,28 @@ extension MDMCommand {
     }
 
     /// Computer lock and wipe require a 6-digit PIN, on Jamf Pro only: Jamf
-    /// School's wipe takes no PIN.
+    /// School's and Intune's wipes take no PIN.
     func needsPIN(product: MDMProduct = .jamfPro) -> Bool {
-        product.commandProduct.map { needsPIN(on: $0) } ?? false
+        needsPIN(on: product.commandProduct)
     }
 
     func message(for product: MDMProduct = .jamfPro) -> String {
-        if self == .unmanage, product == .intune {
-            return "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Unlike the Jamf products, the record goes too once the device acknowledges."
-        }
-        return consequence(on: product.commandProduct ?? .jamfPro)
+        consequence(on: product.commandProduct)
+    }
+
+    /// The command's name on the product: Intune's own for Sync and Retire.
+    func title(for product: MDMProduct) -> String {
+        title(on: product.commandProduct)
     }
 }
 
 extension MDMProduct {
-    /// The product in JTKit's command list; nil for Intune, whose commands
-    /// stay Checkpoint's until step 8.
-    nonisolated var commandProduct: MDMCommand.Product? {
+    /// The product in JTKit's command list.
+    nonisolated var commandProduct: MDMCommand.Product {
         switch self {
         case .jamfPro: .jamfPro
         case .jamfSchool: .jamfSchool
-        case .intune: nil
+        case .intune: .intune
         }
     }
 }
@@ -453,7 +454,7 @@ final class LookupModel {
     private var abmClients: [UUID: (config: ABMConfig, client: ABMClient)] = [:]
     private var jamfClients: [UUID: (config: MDMConnection, client: JamfClient)] = [:]
     private var jamfSchoolClients: [UUID: (config: MDMConnection, client: JamfSchoolClient)] = [:]
-    private var intuneClients: [UUID: (config: MDMConnection, client: IntuneClient)] = [:]
+    private var intuneClients: [UUID: (config: MDMConnection, client: Graph.Client)] = [:]
     /// Where the clients send; replaced in tests.
     private let session: URLSession
     /// LAPS rotation time per server, cached because it is server-wide.
@@ -1801,7 +1802,7 @@ final class LookupModel {
                 if let school {
                     try await school.trash(udid: entry.info.recordID)
                 } else if let intune {
-                    try await intune.deleteDevice(id: entry.info.recordID)
+                    try await intune.perform(.deleteRecord, intuneDeviceID: entry.info.recordID)
                 } else if let jamf {
                     switch entry.info.kind {
                     case .computer:
@@ -2015,16 +2016,8 @@ final class LookupModel {
         guard mdmActionUnavailableReason(for: reports) == nil,
               let connection = mdmActionConnection(for: reports) else { return nil }
         let targets = commandTargets(reports)
-        let plan: MDMCommand.Plan
-        if let product = connection.product.commandProduct {
-            plan = command.plan(for: targets, on: product, overPlatformAPI: connection.isUsingPlatformGateway)
-        } else {
-            // Intune (Checkpoint's own until step 8): only the kind decides.
-            plan = MDMCommand.Plan(
-                receiving: targets.filter { command.applies(to: DeviceKind($0.kind), product: connection.product) },
-                skipped: targets.filter { !command.applies(to: DeviceKind($0.kind), product: connection.product) }
-                    .map { MDMCommand.Skipped(target: $0, reason: .notApplicable($0.kind)) })
-        }
+        let plan = command.plan(for: targets, on: connection.product.commandProduct,
+                                overPlatformAPI: connection.isUsingPlatformGateway)
         return CommandPlan(connection: connection, targets: targets, plan: plan,
                            withoutRecord: reports.count - targets.count)
     }
@@ -2036,7 +2029,7 @@ final class LookupModel {
         guard let planned = commandPlan(command, reports: reports) else { return nil }
         let product = planned.connection.product
         var confirmation = MDMCommand.Confirmation(
-            command, plan: planned.plan, on: product.commandProduct ?? .jamfPro,
+            command, plan: planned.plan, on: product.commandProduct,
             connectionName: planned.connection.displayName,
             extra: planned.withoutRecord > 0 ? [.noRecord: planned.withoutRecord] : [:])
         confirmation.message = command.message(for: product)
@@ -2045,7 +2038,7 @@ final class LookupModel {
     }
 
     /// Sends an MDM command to every selected device it applies to, through
-    /// JTKit (Jamf Pro, Jamf School) or Checkpoint's Intune client. Returns
+    /// JTKit (Jamf Pro, Jamf School, Intune). Returns
     /// the number of devices it was sent to. One Action entry says how many
     /// it reached and names every other device with the reason.
     @discardableResult
@@ -2080,72 +2073,22 @@ final class LookupModel {
             if let school {
                 result = try await school.send(command, to: targets)
             } else if let intune {
-                result = try await routeIntune(command, intune: intune, targets: targets)
+                result = try await intune.send(command, to: targets)
             } else if let jamf {
                 result = try await jamf.send(command, to: targets, pin: command.needsPIN(product: product) ? passcode : nil)
             } else {
                 result = MDMCommand.Result(command: command.title, outcomes: [])
             }
         } catch {
-            log.recordCommand(command.title, outcomes: targets.map { .init(target: $0, outcome: .failed(error.localizedDescription)) },
+            log.recordCommand(command.title(for: product), outcomes: targets.map { .init(target: $0, outcome: .failed(error.localizedDescription)) },
                               failure: error.localizedDescription,
                               service: product.activityService.rawValue, connection: connection.displayName)
             throw error
         }
-        log.recordCommand(command.title, outcomes: result.outcomes, warning: result.warning,
+        log.recordCommand(command.title(for: product), outcomes: result.outcomes, warning: result.warning,
                           service: product.activityService.rawValue, connection: connection.displayName)
         if let problems = result.problems { throw ActionError(message: problems) }
         return result.sent.count
-    }
-
-    /// Routes a command to its Intune action.
-    ///
-    /// One request per device, because Graph's device actions take no device
-    /// list. Every action answers 204 with no body, so there is no per-device
-    /// outcome hidden inside a success; whether the device then acts on it is
-    /// reported by Intune as a device action result, which Checkpoint does
-    /// not poll.
-    private func routeIntune(
-        _ command: MDMCommand,
-        intune: IntuneClient,
-        targets: [MDMCommand.Target]
-    ) async throws -> MDMCommand.Result {
-        var outcomes: [MDMCommand.DeviceOutcome] = []
-        for target in targets {
-            guard command.applies(to: DeviceKind(target.kind), product: .intune) else {
-                outcomes.append(.init(target: target, outcome: .skipped(.notApplicable(target.kind))))
-                continue
-            }
-            let id = target.recordID
-            do {
-                switch command {
-                case .updateInventory:
-                    try await intune.perform(.sync, deviceID: id)
-                case .restartMobile:
-                    try await intune.perform(.restart, deviceID: id)
-                case .shutDownMobile:
-                    try await intune.perform(.shutDown, deviceID: id)
-                case .lockMobile:
-                    try await intune.perform(.remoteLock, deviceID: id)
-                case .clearPasscode:
-                    try await intune.perform(.resetPasscode, deviceID: id)
-                case .unmanage:
-                    try await intune.perform(.retire, deviceID: id)
-                case .wipeComputer, .wipeMobile:
-                    try await intune.wipe(deviceID: id)
-                default:
-                    // Not offered for Intune, so unreachable through the
-                    // interface; refused here rather than silently skipped.
-                    throw ActionError(message: "\(command.title) is not available in Intune.")
-                }
-                outcomes.append(.init(target: target, outcome: .sent))
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                outcomes.append(.init(target: target, outcome: .failed(error.localizedDescription)))
-            }
-        }
-        return MDMCommand.Result(command: command.title, outcomes: outcomes)
     }
 
     // MARK: Clients & shared context
@@ -2209,17 +2152,36 @@ final class LookupModel {
         return client
     }
 
-    private func makeIntuneClient() -> IntuneClient? {
-        selectedConnection.flatMap { makeIntuneClient(for: $0) }
-    }
-
-    func makeIntuneClient(for config: MDMConnection) -> IntuneClient? {
+    /// JTKit's Graph client for an Intune tenant, signing in with the app
+    /// registration's client secret (JTKit's `EntraTokenProvider`).
+    func makeIntuneClient(for config: MDMConnection) -> Graph.Client? {
         guard config.product == .intune,
-              let secret = settings.secret(for: .mdm(config)), !secret.isEmpty else { return nil }
+              let saved = settings.secret(for: .mdm(config)), !saved.isEmpty else { return nil }
         if let kept = intuneClients[config.id], kept.config == config { return kept.client }
-        guard let client = IntuneClient(config: config, secret: secret, log: log, session: session) else { return nil }
+        // Read from the Keychain at each sign-in, so a changed secret is used
+        // at the next one.
+        let store = settings.secretStore
+        let account = CheckpointSecrets.account(for: CheckpointConnection.mdm(config).connection)
+        let name = config.displayName
+        guard let client = Self.intuneClient(for: config, secret: {
+            guard let secret = store.secret(for: account), !secret.isEmpty else {
+                throw ActionError(message: "No secret is saved for “\(name)”.")
+            }
+            return secret
+        }, log: log, session: session) else { return nil }
         intuneClients[config.id] = (config, client)
         return client
+    }
+
+    /// A Graph client for an Intune connection; nil when its tenant or
+    /// client ID can't be used. Also for Test Connection, with the typed secret.
+    nonisolated static func intuneClient(for config: MDMConnection, secret: @escaping @Sendable () throws -> String,
+                                         log: ActivityLog?, session: URLSession = .shared) -> Graph.Client? {
+        let recorder = Graph.recorder(session: session, log: log, connection: config.displayName)
+        guard let tokens = try? EntraTokenProvider(connection: config.connection, secret: secret, recorder: recorder) else {
+            return nil
+        }
+        return Graph.Client(tokens: tokens, access: .application, recorder: recorder)
     }
 
     private func makeJamfSchoolClient() -> JamfSchoolClient? {
@@ -2263,7 +2225,7 @@ final class LookupModel {
         let consoleBaseURL: String?
         var proClient: JamfClient?
         var schoolClient: JamfSchoolClient?
-        var intuneClient: IntuneClient?
+        var intuneClient: Graph.Client?
         // Jamf Pro: PreStage scope, and the name lists that resolve the
         // identifiers inventory reports. The name maps are empty when the
         // account cannot read the lists, which leaves the rows out rather
@@ -2292,7 +2254,23 @@ final class LookupModel {
         /// Every managed device in the Intune tenant, keyed by serial. Read in
         /// pages rather than per device because Graph documents no $filter on
         /// serialNumber, so there is no per-serial query to make.
-        var intuneFleet: [String: IntuneDevice] = [:]
+        var intuneFleet: [String: IntuneManagedDevice] = [:]
+        /// Why the tenant couldn't be read; every row then shows it rather
+        /// than "not found".
+        var intuneFailure: String?
+
+        /// Reads the tenant, keeping the error when it fails (ROADMAP step 8:
+        /// a failed read is no longer every device "not found").
+        mutating func readIntuneFleet() async {
+            guard let intuneClient else { return }
+            do {
+                intuneFleet = try await intuneClient.intuneDevicesBySerial()
+                intuneFailure = nil
+            } catch {
+                intuneFleet = [:]
+                intuneFailure = error.localizedDescription
+            }
+        }
     }
 
     private struct LookupContext: Sendable {
@@ -2556,7 +2534,7 @@ final class LookupModel {
             // One read for the tenant, however many serials are being looked
             // up. Graph pages at a thousand, so a few thousand devices cost a
             // handful of requests against a per-device cost of one each.
-            target.intuneFleet = (try? await intune.fleet()) ?? [:]
+            await target.readIntuneFleet()
             taxonomyByConnection[connection.id] = ConnectionTaxonomy()
         }
         return target
@@ -2591,7 +2569,7 @@ final class LookupModel {
             target.schoolFleet = (try? await school.fleet()) ?? [:]
         case .intune:
             guard let intune = makeIntuneClient(for: connection), intune === target.intuneClient else { return nil }
-            target.intuneFleet = (try? await intune.fleet()) ?? [:]
+            await target.readIntuneFleet()
         }
         return target
     }
@@ -2736,11 +2714,13 @@ final class LookupModel {
     /// single-device request, and every Intune action is addressed by the
     /// managed device ID instead, so neither is needed.
     nonisolated private static func fetchIntune(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
+        if let failure = target.intuneFailure { return .failed(failure) }
         guard let device = target.intuneFleet[serial.uppercased()] else { return .notFound }
+        let kind = DeviceKind(device.kind)
         return .found(ManagedDeviceInfo(
             recordID: device.id,
             connectionID: target.connectionID,
-            kind: device.kind,
+            kind: kind,
             name: device.deviceName,
             enrolledViaADE: device.enrolledViaADE,
             enrollmentMethod: device.deviceEnrollmentType,
@@ -2751,7 +2731,7 @@ final class LookupModel {
             // iOS enables exactly when a passcode is set, so it fills the
             // same Passcode row the Jamf products fill. On any other mobile
             // platform it is storage encryption and is shown as that.
-            encryption: device.kind == .mobileDevice && device.isApplePlatform ? nil : device.isEncrypted.map {
+            encryption: kind == .mobileDevice && device.isApplePlatform ? nil : device.isEncrypted.map {
                 DiskEncryptionState(
                     fileVaultEnabled: $0,
                     bootPartitionState: nil,
@@ -2759,7 +2739,7 @@ final class LookupModel {
                     recoveryKeyValidity: nil
                 )
             },
-            security: device.kind == .mobileDevice && device.isApplePlatform ? device.isEncrypted.map {
+            security: kind == .mobileDevice && device.isApplePlatform ? device.isEncrypted.map {
                 MobileSecurityState(
                     passcodePresent: $0,
                     passcodeCompliant: nil,
@@ -2777,7 +2757,7 @@ final class LookupModel {
             mdmProfileExpiration: device.managementCertificateExpirationDate,
             // The Intune console addresses a device by the same managed device
             // ID every action uses, so the link needs nothing extra.
-            webURL: URL(string: "https://intune.microsoft.com/#view/Microsoft_Intune_ManagedDevices/ManagedDeviceMenu.MenuView/~/overview/managedDeviceId/\(device.id)"),
+            webURL: device.consoleURL,
             isManaged: device.isManaged,
             isSupervised: device.isSupervised,
             complianceSummary: device.complianceSummary

@@ -65,9 +65,13 @@ Every action answers `204 No Content`, which means Intune accepted it — not th
 These are two different things in Intune, and Checkpoint keeps them apart:
 
 - **Delete Record** removes the Intune record and leaves the device alone. It stays enrolled and reappears at its next check-in.
-- **Remove MDM Profile** sends Intune's *retire*, which removes company data and the management profile. The record goes too, once the device acknowledges.
+- **Retire Device** sends Intune's *retire*, which removes company data and the management profile. The record goes too, once the device acknowledges.
 
-On the Jamf products, removing the MDM profile leaves the record in place, which is why the confirmation spells out what happens instead of relying on the command's name.
+On the Jamf products the same command is Remove MDM Profile, which leaves the record in place; on Intune it carries Intune's own name, and **Sync Device** (Intune's sync) takes the place of Update Inventory. Wipe, Retire Device and Delete Record can't be undone: their confirmation names the tenant, and from two devices asks for the number.
+
+## When the tenant can't be read
+
+Checkpoint reads the whole tenant once per lookup. If that read fails (a missing permission, throttling that doesn't end, a sign-in problem), every Intune row shows the error, with Microsoft's Request ID, rather than "not found". A refusal names the permission it needs.
 
 ## Device groups
 

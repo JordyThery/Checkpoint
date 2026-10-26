@@ -127,7 +127,7 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         switch self {
         case .jamfPro: "The record will be deleted from the selected Jamf Pro server."
         case .jamfSchool: "The record moves to the trash in Jamf School. It stops being managed, and can be restored there."
-        case .intune: "The record will be deleted from Intune. The device itself stays enrolled and will reappear at its next check-in; Remove MDM Profile is what unmanages it."
+        case .intune: MDMCommand.deleteRecord.consequence(on: .intune)
         }
     }
 

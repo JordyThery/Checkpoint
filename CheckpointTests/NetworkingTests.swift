@@ -436,12 +436,12 @@ struct RecorderTests {
         }
         var config = MDMConnection(name: "Contoso", product: .intune, authMethod: .entraApp)
         config.tenantID = "contoso.onmicrosoft.com"
-        config.account = "app-1"
+        config.account = "6F1B2C3D-0000-1111-2222-333344445555"
         let log = ActivityLog()
-        let intune = try #require(IntuneClient(config: config, secret: "SECRET-entra", log: log, session: server.session))
-        _ = try? await intune.fleet()
+        let intune = try #require(LookupModel.intuneClient(for: config, secret: { "SECRET-entra" }, log: log, session: server.session))
+        _ = try? await intune.intuneDevices()
 
-        #expect(log.entries.map(\.category) == ["Sign-in", "API"])
+        #expect(log.entries.map(\.category) == ["Sign-in", "Intune"])
         #expect(log.entries.allSatisfy { $0.service == "Intune" && $0.connection == "Contoso" })
         #expect(log.entries.last?.request?.responseBody?.contains("Lab Mac") == true)
         #expect(!everything(log).contains("SECRET-"))
