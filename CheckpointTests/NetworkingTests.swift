@@ -470,7 +470,8 @@ struct RecorderTests {
 
     @Test("Apple keeps its own waits: 5, 15 and 45 s")
     func appleWaits() {
-        #expect((0..<4).map(ABMClient.backoff) == [5, 15, 45, 45])
+        // JTKit's Apple rules since step 9
+        #expect((1...4).map { RetryRules.appleBusiness.backoff(afterAttempt: $0, random: 1) } == [5, 15, 45, 45])
     }
 }
 

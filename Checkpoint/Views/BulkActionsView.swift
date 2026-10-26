@@ -237,24 +237,24 @@ struct BulkActionsView: View {
             noneLabel: "Unassigned",
             options: appleServers.map { ($0.id, $0.name) }
         )
-        Button("Apply MDM Assignment to \(count(abmCount))") { pending = .applyMDM }
+        Button("Apply MDM Assignment to \(count(abmCount))") { ask(.applyMDM) }
             .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
-        Button("Unassign \(count(assignedCount)) from MDM Server") { pending = .unassignMDM }
+        Button("Unassign \(count(assignedCount)) from MDM Server") { ask(.unassignMDM) }
             .disabled(assignedCount == 0)
         if migratableCount > 0 {
             DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
-            Button("Assign with Migration Deadline to \(count(migratableCount))") { pending = .scheduleMigration }
+            Button("Assign with Migration Deadline to \(count(migratableCount))") { ask(.scheduleMigration) }
                 .disabled(mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
         }
         if migratingCount > 0 {
-            Button("Update Deadline for \(count(migratingCount))") { pending = .updateDeadline }
-            Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { pending = .cancelMigration }
+            Button("Update Deadline for \(count(migratingCount))") { ask(.updateDeadline) }
+            Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { ask(.cancelMigration) }
         }
         let releaseUnavailable = model.releaseUnavailabilityReason(for: reports)
         // Named after the organization being released from, as the
         // single-device button is, rather than after the service.
         let releaseFrom = model.appleActionOrg(for: reports)?.displayName ?? model.appleScopeLabel
-        Button("Release \(count(abmCount)) from \(releaseFrom)", role: .destructive) { pending = .release }
+        Button("Release \(count(abmCount)) from \(releaseFrom)", role: .destructive) { ask(.release) }
             .disabled(abmCount == 0 || releaseUnavailable != nil)
             .help(releaseUnavailable ?? "")
     }
@@ -477,24 +477,39 @@ struct BulkActionsView: View {
         choice.appliedID.map { id in prestages.first { $0.id == id }?.displayName ?? id }
     }
 
+    /// The Apple write an action stands for, nil for the others.
+    private func appleWrite(for action: PendingAction?) -> AppleWrite? {
+        switch action {
+        case .applyMDM: .setServer(mdmSelection.appliedID)
+        case .unassignMDM: .setServer(nil)
+        case .release: .release
+        case .scheduleMigration: mdmSelection.appliedID.map { .scheduleMigration(server: $0, deadline: migrationDeadline) }
+        case .updateDeadline: .updateDeadline(migrationDeadline)
+        case .cancelMigration: .cancelMigration
+        default: nil
+        }
+    }
+
+    /// The pending Apple write's confirmation (JTKit's rules).
+    private var appleDialog: MDMCommand.Confirmation? {
+        appleWrite(for: pending).flatMap { model.appleConfirmation($0, reports: reports) }
+    }
+
+    /// Asks before an Apple write: a sheet when the number has to be typed,
+    /// otherwise the dialog.
+    private func ask(_ action: PendingAction) {
+        if let write = appleWrite(for: action), let confirmation = model.appleConfirmation(write, reports: reports),
+           confirmation.needsTyping {
+            typed = TypedConfirmation(confirmation: confirmation, action: .apple(write))
+        } else {
+            pending = action
+        }
+    }
+
     private var pendingTitle: String {
         switch pending {
-        case .applyMDM:
-            if let selectedServerName {
-                "Assign \(count(abmCount)) to “\(selectedServerName)”?"
-            } else {
-                "Unassign \(count(abmCount)) from their MDM server?"
-            }
-        case .unassignMDM:
-            "Unassign \(count(assignedCount)) from their MDM server?"
-        case .release:
-            "Release \(count(abmCount)) from \(model.abmKind.label)?"
-        case .scheduleMigration:
-            "Migrate \(count(migratableCount)) to “\(selectedServerName ?? "the selected server")”?"
-        case .updateDeadline:
-            "Change the migration deadline for \(count(migratingCount))?"
-        case .cancelMigration:
-            "Cancel the migration for \(count(migratingCount))?"
+        case .applyMDM, .unassignMDM, .release, .scheduleMigration, .updateDeadline, .cancelMigration:
+            (appleDialog?.title).map { $0 + "?" } ?? ""
         case .applyComputerPrestage:
             if let name = selectedPrestageName(computerPrestageSelection, in: actionPrestages(kind: .computer)) {
                 "Move \(count(computerCount)) to PreStage “\(name)”?"
@@ -532,18 +547,8 @@ struct BulkActionsView: View {
 
     private var pendingMessage: String {
         switch pending {
-        case .applyMDM:
-            "Devices that are released or not in \(model.abmKind.label) are skipped. Apple processes assignments asynchronously."
-        case .unassignMDM:
-            "The devices stay in your organization but are no longer assigned to any MDM server, so they will not enrol automatically until assigned again. Devices with no assignment are skipped."
-        case .release:
-            "The devices will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API."
-        case .scheduleMigration:
-            "The \(model.abmKind.label) assignments change immediately. Nothing is erased: each device keeps running under its current service until it migrates, and Apple prompts the user to migrate before \(migrationDeadline.formatted(date: .abbreviated, time: .shortened)). Devices Apple reports as not migration-capable are skipped."
-        case .updateDeadline:
-            "A deadline earlier than the current one, or in the past, is enforced immediately without giving users the option to delay. Devices with no migration in progress are skipped."
-        case .cancelMigration:
-            "Only the scheduled migrations are cancelled. The devices stay assigned to their new server in \(model.abmKind.label) and keep running under their current service. To undo the assignments as well, assign them back to the previous server."
+        case .applyMDM, .unassignMDM, .release, .scheduleMigration, .updateDeadline, .cancelMigration:
+            appleDialog?.dialogMessage ?? ""
         case .applyComputerPrestage, .applyMobilePrestage:
             "Devices are removed from their current PreStage scope and added to the selected one. Devices already in the selected PreStage, and devices of the other type, are skipped."
         case .applySite:
@@ -564,35 +569,11 @@ struct BulkActionsView: View {
     @ViewBuilder
     private var dialogActions: some View {
         switch pending {
-        case .applyMDM:
-            Button(mdmSelection == .none ? "Unassign Devices" : "Assign Devices") {
-                run { try await model.setMDMServer(reports: reports, to: mdmSelection.appliedID) }
-            }
-        case .unassignMDM:
-            Button("Unassign Devices") {
-                run { try await model.setMDMServer(reports: reports, to: nil) }
-            }
-        case .release:
-            Button("Release Devices", role: .destructive) {
-                run { try await model.releaseFromABM(reports: reports) }
-            }
-        case .scheduleMigration:
-            Button("Schedule Migration") {
-                let server = mdmSelection.appliedID
-                let deadline = migrationDeadline
-                run {
-                    guard let server else { return }
-                    try await model.scheduleMigration(reports: reports, to: server, deadline: deadline)
+        case .applyMDM, .unassignMDM, .release, .scheduleMigration, .updateDeadline, .cancelMigration:
+            if let write = appleWrite(for: pending), let confirmation = appleDialog {
+                Button(confirmation.actionTitle, role: confirmation.isDestructive ? .destructive : nil) {
+                    run { try await model.perform(write, reports: reports) }
                 }
-            }
-        case .updateDeadline:
-            Button("Update Deadline") {
-                let deadline = migrationDeadline
-                run { try await model.updateMigrationDeadline(reports: reports, deadline: deadline) }
-            }
-        case .cancelMigration:
-            Button("Cancel Migration", role: .destructive) {
-                run { try await model.cancelMigration(reports: reports) }
             }
         case .applyComputerPrestage:
             Button("Change PreStage") {
@@ -651,6 +632,7 @@ struct BulkActionsView: View {
         case .command(let command): execute(command, pin: pin)
         case .deleteRecord: run { try await model.deleteMDMRecord(reports: reports) }
         case .removeStaleRecords: run { try await model.removeStaleRecords(reports: reports) }
+        case .apple(let write): run { try await model.perform(write, reports: reports) }
         }
     }
 

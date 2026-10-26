@@ -28,6 +28,9 @@ struct ABMInfo: Sendable {
     /// False when the lookup came from an organization snapshot, which has no
     /// bulk source for AppleCare. Coverage is then read on demand instead.
     var coverageLoaded: Bool = true
+    /// Apple says the device is assigned, but which service couldn't be read
+    /// (ROADMAP step 9, decided by Jordy): shown as unknown, not unassigned.
+    var assignmentUnknown: Bool = false
 
     var isReleased: Bool { device.releasedFromOrgDateTime != nil }
 }
@@ -457,6 +460,8 @@ final class LookupModel {
     private var intuneClients: [UUID: (config: MDMConnection, client: Graph.Client)] = [:]
     /// Where the clients send; replaced in tests.
     private let session: URLSession
+    /// The Apple client's time and waits; a virtual clock in tests.
+    private let abmClock: ABMClock
     /// LAPS rotation time per server, cached because it is server-wide.
     private var rotationTimes: [UUID: TimeInterval] = [:]
     /// Blueprint names per server, cached for the same reason.
@@ -499,10 +504,11 @@ final class LookupModel {
     private(set) var snapshotStatus: String?
     private(set) var isBuildingSnapshot = false
 
-    init(settings: AppSettings, log: ActivityLog? = nil, session: URLSession = .shared) {
+    init(settings: AppSettings, log: ActivityLog? = nil, session: URLSession = .shared, abmClock: ABMClock = .live) {
         self.settings = settings
         self.log = log ?? ActivityLog()
         self.session = session
+        self.abmClock = abmClock
         // One organization and one connection at launch: the last single
         // ones chosen. Searching them all is a choice per session rather than
         // the default: most fleets are served by one organization at a time
@@ -575,6 +581,36 @@ final class LookupModel {
                 connectionName: connectionName
             )
             throw error
+        }
+    }
+
+    /// Runs Apple writes and logs one Action entry with what Apple made of
+    /// them (ROADMAP step 9): done; a warning when Apple is still processing
+    /// or gave no answer to follow; a failure, also shown, when Apple reports
+    /// the job failed, partly failed or stopped. Before, accepting the write
+    /// was logged as done.
+    private func recordingActivity(
+        _ org: ABMConfig,
+        _ summary: String,
+        serials: [String],
+        operation: () async throws -> [ABM.ActivityOutcome]
+    ) async throws {
+        let service = org.kind.activityService
+        let outcomes: [ABM.ActivityOutcome]
+        do {
+            outcomes = try await operation()
+        } catch {
+            recordAction(service, "\(summary) — \(error.localizedDescription)", serials: serials,
+                         outcome: .failed, orgName: org.displayName)
+            throw error
+        }
+        let sentences = Array(NSOrderedSet(array: outcomes.compactMap { $0.sentence(org.kind.service) })) as? [String] ?? []
+        let failed = outcomes.contains(where: \.isFailure)
+        let warns = outcomes.contains(where: \.isWarning)
+        log.recordAction(([summary] + sentences).joined(separator: " — "), failed: failed, isWarning: warns && !failed,
+                         service: service.rawValue, connection: org.displayName, devices: serials)
+        if failed {
+            throw ActionError(message: ([summary + "."] + sentences).joined(separator: " "))
         }
     }
 
@@ -1039,14 +1075,12 @@ final class LookupModel {
         let (org, abm) = try actingOrg(for: reports)
         let serials = reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.map(\.serial)
         guard !serials.isEmpty else { throw ActionError(message: "None of the selected devices are in \(org.displayName).") }
-        try await recording(
-            org.kind.activityService,
+        try await recordingActivity(
+            org,
             "Released \(Self.deviceCount(serials)) from \(org.displayName)",
-            serials: serials,
-            orgName: org.displayName
+            serials: serials
         ) {
-            let activityID = try await abm.submitActivity(.release, serials: serials)
-            if let activityID { await abm.waitForActivity(id: activityID) }
+            [try await abm.watch(activityID: try await abm.submitActivity(.release, serials: serials))]
         }
         invalidateSnapshot(for: org)
         await refreshRows(serials)
@@ -1076,22 +1110,21 @@ final class LookupModel {
         let summary = serverName.map { "Assigned \(Self.deviceCount(serials)) to \($0)" }
             ?? "Unassigned \(Self.deviceCount(serials)) from device management"
 
-        try await recording(org.kind.activityService, summary, serials: serials, orgName: org.displayName) {
-            var activityIDs: [String] = []
+        try await recordingActivity(org, summary, serials: serials) {
+            var activityIDs: [String?] = []
             if let serverID {
-                if let id = try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID) {
-                    activityIDs.append(id)
-                }
+                activityIDs.append(try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID))
             } else {
-                for (server, batch) in unassignByServer {
-                    if let id = try await abm.submitActivity(.unassign, serials: batch, mdmServerID: server) {
-                        activityIDs.append(id)
-                    }
+                for (server, batch) in unassignByServer.sorted(by: { $0.key < $1.key }) {
+                    activityIDs.append(try await abm.submitActivity(.unassign, serials: batch, mdmServerID: server))
                 }
             }
-            // ABM applies activities asynchronously; wait for them so the refresh
-            // below reads the new assignment instead of the old one.
-            for id in activityIDs { await abm.waitForActivity(id: id) }
+            // Apple applies activities asynchronously; watch them so the
+            // refresh below reads the new assignment, and the log says what
+            // Apple made of each.
+            var outcomes: [ABM.ActivityOutcome] = []
+            for id in activityIDs { outcomes.append(try await abm.watch(activityID: id)) }
+            return outcomes
         }
         invalidateSnapshot(for: org)
         await refreshRows(inOrg.map(\.serial))
@@ -1155,15 +1188,15 @@ final class LookupModel {
             summary += ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
         }
 
-        try await recording(org.kind.activityService, summary, serials: serials, orgName: org.displayName) {
+        try await recordingActivity(org, summary, serials: serials) {
             let activityID = try await abm.submitActivity(
                 type,
                 serials: serials,
                 mdmServerID: mdmServerID,
                 migrationDeadline: deadline
             )
-            // Apple applies activities asynchronously, so wait before re-reading.
-            if let activityID { await abm.waitForActivity(id: activityID) }
+            // Apple applies activities asynchronously, so watch it before re-reading.
+            return [try await abm.watch(activityID: activityID)]
         }
         invalidateSnapshot(for: org)
         await refreshRows(serials)
@@ -1507,12 +1540,12 @@ final class LookupModel {
     /// AppleCare coverage for one device. Apple has no bulk endpoint for it,
     /// so a lookup that read the organization in bulk leaves it out and the
     /// inspector fetches it for whichever device is selected.
-    func appleCareCoverage(for report: DeviceReport) async -> [AppleCareCoverage]? {
+    /// - Throws: when Apple can't be read; the inspector shows it rather
+    ///   than "No coverage found" (ROADMAP step 9, decided by Jordy).
+    func appleCareCoverage(for report: DeviceReport) async throws -> [AppleCareCoverage]? {
         guard let info = report.abm.value, !info.coverageLoaded, !info.isReleased,
               let abm = clientForOrg(of: info) else { return nil }
-        // Empty rather than nil on failure: nil keeps the inspector's
-        // progress indicator up, and it would never resolve.
-        return (try? await abm.appleCareCoverage(serial: report.serial)) ?? []
+        return try await abm.appleCareCoverage(serial: report.serial)
     }
 
     /// Whether the device is Activation Locked, and by whom.
@@ -1521,10 +1554,13 @@ final class LookupModel {
     /// time, the same as AppleCare coverage. It comes from the Apple
     /// organization deliberately — the organization knows the live state and
     /// distinguishes an MDM lock from a user's, which no MDM inventory does.
-    func activationLock(for report: DeviceReport) async -> ABMActivationLock? {
+    ///
+    /// Nil when the organization won't say (Apple's documented server error
+    /// for an internal lock state); throws when Apple can't be read.
+    func activationLock(for report: DeviceReport) async throws -> ABMActivationLock? {
         guard let info = report.abm.value, !info.isReleased,
               let abm = clientForOrg(of: info) else { return nil }
-        return try? await abm.activationLock(serial: report.serial)
+        return try await abm.activationLock(serial: report.serial)
     }
 
     /// Whether the device's organization serves audit events: Apple Business
@@ -1540,7 +1576,7 @@ final class LookupModel {
     /// the inspector's History disclosure opens, never during a lookup: it
     /// costs one request against the same per-minute budget the coverage and
     /// Activation Lock reads already draw on.
-    func deviceHistory(for report: DeviceReport, cursor: String? = nil) async -> ABMAuditPage? {
+    func deviceHistory(for report: DeviceReport, cursor: String? = nil) async throws -> ABMAuditPage? {
         guard supportsDeviceHistory(for: report),
               let info = report.abm.value,
               let abm = clientForOrg(of: info) else { return nil }
@@ -1548,17 +1584,17 @@ final class LookupModel {
         // added date is unknown still gets a year of history.
         let start = info.device.addedToOrgDateTime.flatMap(DateFormatting.parseISO)
             ?? Date().addingTimeInterval(-365 * 24 * 3600)
-        return try? await abm.auditEvents(serial: report.serial, start: start, end: Date(), cursor: cursor)
+        return try await abm.auditEvents(serial: report.serial, start: start, end: Date(), cursor: cursor)
     }
 
     /// The management state of a device under Apple's built-in management,
     /// read on selection — the per-device detail is where check-in, FileVault
     /// and the lock, Lost Mode and erase statuses live.
-    func appleManagementDetail(for report: DeviceReport) async -> ABMManagedDeviceDetail? {
+    func appleManagementDetail(for report: DeviceReport) async throws -> ABMManagedDeviceDetail? {
         guard let info = report.mdm.value, info.managedByApple,
               let abmInfo = report.abm.value,
               let abm = clientForOrg(of: abmInfo) else { return nil }
-        return try? await abm.appleManagedDeviceDetails(id: info.recordID)
+        return try await abm.appleManagedDeviceDetails(id: info.recordID)
     }
 
     /// The client for the organization a device was found in, falling back to
@@ -2101,14 +2137,25 @@ final class LookupModel {
         guard config.isConfigured,
               let pem = settings.secret(for: .apple(config)), !pem.isEmpty else { return nil }
         if let kept = abmClients[config.id], kept.config == config { return kept.client }
+        // Read from the Keychain at each sign-in, so a new key is used at the
+        // next one, and the key isn't kept in the client.
+        let store = settings.secretStore
+        let account = CheckpointSecrets.account(for: CheckpointConnection.apple(config).connection)
+        let name = config.displayName
         let client = ABMClient(
             clientID: config.clientID,
             keyID: config.keyID,
-            privateKeyPEM: pem,
+            privateKey: {
+                guard let pem = store.secret(for: account), !pem.isEmpty else {
+                    throw ActionError(message: "No private key is saved for “\(name)”.")
+                }
+                return pem
+            },
             kind: config.kind,
             connectionName: config.displayName,
             log: log,
-            session: session
+            session: session,
+            clock: abmClock
         )
         abmClients[config.id] = (config, client)
         return client
@@ -2659,20 +2706,32 @@ final class LookupModel {
                 mdmServerID: serverID,
                 mdmServerName: serverID.map { org.mdmServerNames[$0] ?? $0 },
                 coverage: [],
-                coverageLoaded: false
+                coverageLoaded: false,
+                assignmentUnknown: snapshot.unknownAssignments.contains(serial.uppercased())
             ))
         }
         do {
             guard let device = try await org.client.device(serial: serial) else { return .notFound }
-            let coverage = (try? await org.client.appleCareCoverage(serial: serial)) ?? []
-            let serverID = try? await org.client.assignedServerID(serial: serial)
+            // A failed coverage read is left for the inspector, which reads
+            // it again and shows the error; a failed server read is an
+            // unknown assignment, never "unassigned" (decided by Jordy).
+            let coverage = try? await org.client.appleCareCoverage(serial: serial)
+            var serverID: String?
+            var assignmentUnknown = false
+            do {
+                serverID = try await org.client.assignedServerID(serial: serial)
+            } catch {
+                assignmentUnknown = true
+            }
             return .found(ABMInfo(
                 device: device,
                 orgID: org.id,
                 orgName: org.name,
-                mdmServerID: serverID ?? nil,
-                mdmServerName: (serverID ?? nil).map { org.mdmServerNames[$0] ?? $0 },
-                coverage: coverage
+                mdmServerID: serverID,
+                mdmServerName: serverID.map { org.mdmServerNames[$0] ?? $0 },
+                coverage: coverage ?? [],
+                coverageLoaded: coverage != nil,
+                assignmentUnknown: assignmentUnknown
             ))
         } catch {
             return .failed(error.localizedDescription)
