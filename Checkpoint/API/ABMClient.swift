@@ -880,17 +880,17 @@ actor ABMClient {
 
     private func fetchToken() async throws -> String {
         let assertion = try makeClientAssertion()
-        let params: [(String, String)] = [
-            ("grant_type", "client_credentials"),
-            ("client_id", clientID),
-            ("client_assertion_type", "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
-            ("client_assertion", assertion),
-            ("scope", kind.scope),
+        let params = [
+            URLQueryItem(name: "grant_type", value: "client_credentials"),
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "client_assertion_type", value: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"),
+            URLQueryItem(name: "client_assertion", value: assertion),
+            URLQueryItem(name: "scope", value: kind.scope),
         ]
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = FormURLEncoding.body(params)
+        request.httpBody = Data(FormEncoding.encode(params).utf8)
 
         let (data, response) = try await recorder.send(request, category: "Sign-in")
         guard response.statusCode == 200 else {

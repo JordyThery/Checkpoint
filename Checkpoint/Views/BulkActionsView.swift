@@ -309,7 +309,7 @@ struct BulkActionsView: View {
         let product = actionProduct
         let unavailable = model.mdmActionUnavailableReason(for: reports)
             ?? model.unavailabilityReason(for: command, reports: reports)
-        Button("\(command.title) (\(commandCount(command)))", role: command.isDestructive ? .destructive : nil) {
+        Button("\(command.title(for: actionProduct)) (\(commandCount(command)))", role: command.isDestructive ? .destructive : nil) {
             guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
             if confirmation.needsTyping {
                 typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
@@ -516,7 +516,7 @@ struct BulkActionsView: View {
         case .removeStaleRecords:
             "Remove \(staleEntries.count) stale record\(staleEntries.count == 1 ? "" : "s")?"
         case .command(let command):
-            (model.commandConfirmation(command, reports: reports)?.title ?? command.title) + "?"
+            (model.commandConfirmation(command, reports: reports)?.title ?? command.title(for: actionProduct)) + "?"
         case nil:
             ""
         }
@@ -627,7 +627,7 @@ struct BulkActionsView: View {
                 run { try await model.removeStaleRecords(reports: reports) }
             }
         case .command(let command):
-            Button(command.title, role: command.isDestructive ? .destructive : nil) {
+            Button(command.title(for: actionProduct), role: command.isDestructive ? .destructive : nil) {
                 execute(command, pin: nil)
             }
         case nil:
@@ -658,7 +658,7 @@ struct BulkActionsView: View {
         let product = actionProduct
         runReporting {
             let sent = try await model.sendCommand(command, reports: reports, passcode: pin)
-            return "\(command.title) was queued for \(count(sent)) in \(product.label)."
+            return "\(command.title(for: actionProduct)) was queued for \(count(sent)) in \(product.label)."
         }
     }
 
