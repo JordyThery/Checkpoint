@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/JordyThery/JTKit.git",
       "state" : {
-        "revision" : "97de1e9a0d2c23dbf93c694d4acff6875c15fc78",
-        "version" : "0.11.3"
+        "revision" : "a97abaccf371e0a4aac3f755771d459095177fbc",
+        "version" : "0.11.4"
       }
     },
     {

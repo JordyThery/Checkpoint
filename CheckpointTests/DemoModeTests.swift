@@ -96,14 +96,15 @@ struct DemoModeTests {
         #expect(harness.settings.appleChoiceID == SavedData.schoolID)
     }
 
-    @Test("All 41 devices with every organization and connection: each gap shows as designed")
+    @Test("Every sample device with every organization and connection: each gap shows as designed")
     func gaps() async throws {
         let harness = DemoHarness()
         harness.useAll()
         let model = harness.model
         #expect(model.needsOrganizationRead(forDeviceCount: LookupModel.demoSerials.count), "the consent dialog still comes")
         await model.lookUp(serialsText: LookupModel.demoSerials.joined(separator: "\n"))
-        #expect(model.reports.count == 41)
+        // As many as JTKit's sample devices, whatever their number (42 from JTKit 0.11.4).
+        #expect(model.reports.count == DemoWorld.devices.count)
 
         for device in DemoWorld.missingFromIntune {
             let report = try harness.report(device)

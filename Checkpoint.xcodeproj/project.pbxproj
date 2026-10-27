@@ -540,7 +540,7 @@
 			repositoryURL = "https://github.com/JordyThery/JTKit.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.11.3;
+				minimumVersion = 0.11.4;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
