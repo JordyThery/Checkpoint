@@ -35,7 +35,7 @@ nonisolated enum SavedData {
     {"id":"\(platformID)","baseURL":"https://jamf.example.com","name":"Platform Jamf Pro","region":"eu","environmentID":"0F2C1B0A-1111-2222-3333-444455556666","account":"platform-client","tenantID":"","authMethod":"platformGateway","product":"pro"},\
     {"id":"\(schoolServerID)","baseURL":"https://school.jamfcloud.com","name":"Jamf School","region":"us","environmentID":"","account":"067680","tenantID":"","authMethod":"apiClient","product":"school"},\
     {"id":"\(intuneID)","baseURL":"","name":"Intune Test","region":"us","environmentID":"","account":"6F1B2C3D-0000-1111-2222-333344445555","tenantID":"contoso.onmicrosoft.com","authMethod":"entraApp","product":"intune"},\
-    {"id":"\(proClientID)","baseURL":"https://aviobook.jamfcloud.com/","name":"Jamf Pro sandbox","region":"us","environmentID":"","account":"client-1","tenantID":"","authMethod":"apiClient","product":"pro"},\
+    {"id":"\(proClientID)","baseURL":"https://example.jamfcloud.com/","name":"Jamf Pro sandbox","region":"us","environmentID":"","account":"client-1","tenantID":"","authMethod":"apiClient","product":"pro"},\
     {"id":"\(flavorID)","baseURL":"https://old.jamfcloud.com","name":"Old School","authMethod":"apiClient","account":"1234","flavor":"school"}]
     """
 }

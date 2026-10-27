@@ -248,7 +248,7 @@ nonisolated enum Route: String, CaseIterable, Sendable, CustomTestStringConverti
 
     var host: String {
         switch self {
-        case .apiClient: "aviobook.jamfcloud.com"
+        case .apiClient: "example.jamfcloud.com"
         case .usernamePassword: "jamf.example.com"
         case .platform: "eu.api.jamfcloud.com"
         }
