@@ -15,13 +15,16 @@ import SwiftUI
                 .environment(model)
                 .environment(updates)
                 .frame(minWidth: 900, minHeight: 420)
-                .task { await updates.checkAutomatically() }
+                // A sandbox run (UI tests) makes no update check.
+                .task { if !settings.demo.isSandbox { await updates.checkAutomatically() } }
         }
         .commands {
             AppInfoCommands(appName: "Checkpoint") { updates.checkManually() }
             // The same items as the two toolbar pickers: Apple, then MDM.
             ConnectionCommands(store: settings.connections, roles: [model.appleRole, model.mdmRole],
-                               itemTitle: \.displayName)
+                               itemTitle: \.displayName) {
+                DemoModeToggle(demo: settings.demo)
+            }
         }
         // JTKit's General tab starts with Appearance; Checkpoint's own general
         // settings go below it.
@@ -32,6 +35,7 @@ import SwiftUI
         } tabs: {
             ConnectionsTab()
             .environment(settings)
+            .environment(settings.demo)
             .environment(model)
             .environment(model.log)
         }
