@@ -482,7 +482,11 @@ extension ABMConfig {
 @MainActor
 @Observable
 final class AppSettings {
-    static let shared = AppSettings()
+    /// A sandbox run (`-JTKitSandbox YES`, UI tests) keeps connections and
+    /// secrets in memory, so the real ones are never read or written.
+    static let shared = ProcessInfo.processInfo.arguments.contains(DemoMode.sandboxArgument)
+        ? AppSettings(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
+        : AppSettings()
 
     /// The Apple organizations and MDM connections, in JTKit's shared list.
     /// Saved in `abmOrgs` and `jamfServers`, as before.
@@ -511,6 +515,10 @@ final class AppSettings {
     // the keys this class used. Saving a copy here too would overwrite them
     // whenever another setting changed.
 
+    /// Demo Mode: sample organizations and connections instead of the saved
+    /// ones (JTKit's `DemoWorld`). Saved under `demoMode`.
+    let demo: DemoMode
+
     /// Told when a connection or its secret is saved or deleted (the lookup
     /// model drops that connection's client).
     let edits: ConnectionEdits
@@ -534,6 +542,7 @@ final class AppSettings {
         appleChoiceID = defaults.string(forKey: ConnectionChoiceKeys.apple).flatMap(UUID.init(uuidString:))
         mdmChoiceID = defaults.string(forKey: ConnectionChoiceKeys.mdm).flatMap(UUID.init(uuidString:))
         configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")
+        demo = DemoMode(key: "demoMode", defaults: defaults)
     }
 
     /// A connection's secret: an MDM connection's client secret, password or

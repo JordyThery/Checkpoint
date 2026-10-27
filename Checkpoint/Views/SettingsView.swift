@@ -98,7 +98,7 @@ extension LookupModel {
             get: { ConnectionChoiceResolver.single(saved: self.settings.appleChoiceID,
                                                    among: self.settings.abmOrgs.map(\.id)) },
             set: { self.settings.appleChoiceID = $0 }
-        ), services: CheckpointConnection.appleServices, all: appleAll)
+        ), services: CheckpointConnection.appleServices, all: appleAll, demo: appleDemo)
     }
 
     /// The MDM connection in use, as for `appleRole`.
@@ -107,7 +107,7 @@ extension LookupModel {
             get: { ConnectionChoiceResolver.single(saved: self.settings.mdmChoiceID,
                                                    among: self.settings.mdmConnections.map(\.id)) },
             set: { self.settings.mdmChoiceID = $0 }
-        ), services: CheckpointConnection.mdmServices, all: mdmAll)
+        ), services: CheckpointConnection.mdmServices, all: mdmAll, demo: mdmDemo)
     }
 }
 

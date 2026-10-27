@@ -58,10 +58,10 @@ struct ContentView: View {
             reports: model.reports,
             capabilities: model.mdmCapabilities,
             connectionNames: Dictionary(
-                settings.mdmConnections.map { ($0.id, $0.displayName) }
+                model.mdmConnections.map { ($0.id, $0.displayName) }
                     // Apple's built-in management records carry their
                     // organization's ID; name them for the filter.
-                    + settings.abmOrgs.filter { $0.kind == .business }
+                    + model.abmOrgs.filter { $0.kind == .business }
                         .map { ($0.id, "Apple Device Management") }
             ) { first, _ in first },
             combinedLookup: model.readsAllConnections
@@ -88,7 +88,7 @@ struct ContentView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 inputBar
-                if (!model.isABMConfigured || settings.mdmConnections.isEmpty) && !settings.configurationHintDismissed {
+                if (!model.isABMConfigured || model.mdmConnections.isEmpty) && !settings.configurationHintDismissed {
                     configurationHint
                 }
                 Divider()
@@ -121,22 +121,27 @@ struct ContentView: View {
                 // unexplained chrome, and the hint below already points at Settings.
                 // JTKit's pickers, one per role; "All" is offered once there is
                 // more than one to search.
-                if !settings.abmOrgs.isEmpty {
+                // Demo Mode in both pickers' own slot, as in the Connection menu.
+                if !model.abmOrgs.isEmpty {
                     ToolbarItem {
                         ConnectionPicker(
                             store: settings.connections, role: model.appleRole, itemTitle: \.displayName,
                             help: model.readsAllABMOrgs
                                 ? "Every configured Apple organization is searched. Apple actions need one organization, so they apply to a selection within a single one."
-                                : "\(model.abmKind.label) organization used for lookups and actions")
+                                : "\(model.abmKind.label) organization used for lookups and actions") {
+                            DemoModeToggle(demo: settings.demo)
+                        }
                     }
                 }
-                if !settings.mdmConnections.isEmpty {
+                if !model.mdmConnections.isEmpty {
                     ToolbarItem {
                         ConnectionPicker(
                             store: settings.connections, role: model.mdmRole, itemTitle: \.displayName,
                             help: model.readsAllConnections
                                 ? "Every configured connection is searched, and devices with records on several are flagged. MDM actions apply to a selection whose records are on one connection."
-                                : "\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions")
+                                : "\(model.mdmProduct.label) \(model.mdmProduct.connectionNoun) used for lookups and actions") {
+                            DemoModeToggle(demo: settings.demo)
+                        }
                     }
                 }
                 ToolbarItem {
@@ -171,6 +176,11 @@ struct ContentView: View {
         // and searching them all makes no sense once one is left.
         .onChange(of: settings.abmOrgs.map(\.id)) { model.reconcileABMScope() }
         .onChange(of: settings.mdmConnections.map(\.id)) { model.reconcileMDMScope() }
+        // Demo and real results never share the table.
+        .onChange(of: settings.demo.isOn) {
+            model.demoModeChanged()
+            selection.removeAll()
+        }
         .sheet(isPresented: Binding(
             get: { updates.isPresented },
             set: { updates.isPresented = $0 }
@@ -234,7 +244,13 @@ struct ContentView: View {
             if model.mdmCapabilities.contains(.deviceGroups), model.selectedConnection != nil {
                 Button("Group…") { showingGroupPicker = true }
                     .help("Look up every device in a \(model.mdmProduct.label) group")
-                    .disabled(model.isLoading || settings.mdmConnections.isEmpty)
+                    .disabled(model.isLoading || model.mdmConnections.isEmpty)
+            }
+            // Demo mode only: every device of the demo, to look up in one go.
+            if settings.demo.isOn {
+                Button("Sample Serials") { serialsText = LookupModel.demoSerials.joined(separator: "\n") }
+                    .help("Fill in the serial numbers of every demo device")
+                    .disabled(model.isLoading)
             }
             Button("Order…") { showingOrderPicker = true }
                 .help("Look up every device on an \(model.appleScopeLabel) order")
@@ -277,7 +293,7 @@ struct ContentView: View {
         HStack {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
-            if !model.isABMConfigured && settings.mdmConnections.isEmpty {
+            if !model.isABMConfigured && model.mdmConnections.isEmpty {
                 Text("\(model.appleScopeLabel) and \(model.mdmScopeLabel) are not configured yet.")
             } else if !model.isABMConfigured {
                 Text("\(model.appleScopeLabel) is not configured, so its columns will be empty.")
@@ -286,6 +302,9 @@ struct ContentView: View {
             }
             Button("Open Settings…") { openSettings() }
                 .buttonStyle(.link)
+            Button("Try Demo Mode") { settings.demo.isOn = true }
+                .buttonStyle(.link)
+                .help(DemoMode.helpText)
             Spacer()
             Button {
                 settings.configurationHintDismissed = true

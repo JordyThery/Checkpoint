@@ -166,13 +166,14 @@ nonisolated final class ABMClient: Sendable {
         connectionName: String = "",
         log: ActivityLog? = nil,
         session: URLSession = .shared,
-        clock: ABMClock = .live
+        clock: ABMClock = .live,
+        rateLimit: RateLimit? = ABM.rateLimit
     ) {
         let recorder = ABM.recorder(kind.service, session: session, log: log, connection: connectionName)
         tokens = ABM.TokenProvider(service: kind.service, clientID: clientID, keyID: keyID, privateKey: privateKey,
                                    recorder: recorder, now: clock.now)
         let sleep = clock.sleep
-        client = ABM.Client(service: kind.service, tokens: tokens, recorder: recorder,
+        client = ABM.Client(service: kind.service, tokens: tokens, recorder: recorder, rateLimit: rateLimit,
                             sleep: { try await sleep(Double($0.components.seconds) + Double($0.components.attoseconds) / 1e18) },
                             now: clock.now)
     }

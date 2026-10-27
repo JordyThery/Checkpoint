@@ -182,3 +182,16 @@ Every service is logged the same way, including Microsoft Graph. The log is held
 ![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
 
 Copy and export each come in a masked form, replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognisable without being named. Use it when attaching a log to a bug report.
+
+## Demo mode
+
+Demo Mode shows Checkpoint with sample data and no tenant. Turn it on from either toolbar picker or the Connection menu, or with Try Demo Mode in the hint shown while nothing is configured. While it is on, every window's title ends in "— Demo" and both pickers show the demo connections, with a test tube, above your own:
+
+- Apple: **Contoso (Demo)** in Apple Business Manager and **Contoso Academy (Demo)** in Apple School Manager, plus All Organizations.
+- MDM: **Contoso Jamf Pro (Demo)**, **Contoso Intune (Demo)** and **Contoso Academy (Demo)** on Jamf School, plus All Connections.
+
+It starts on Contoso and Contoso Jamf Pro; All is one click away, as with your own connections. Sample Serials fills in all 41 demo devices. They appear the same way in every service and include the gaps a real fleet has: three iPhones Apple sends to Intune that Intune doesn't know, a Mac with expired AppleCare, a new iPad assigned to no server, a Mac Apple has released that Jamf Pro still manages, a Mac Jamf Pro hasn't heard from in over four months, and a Mac in Jamf Pro that is in no Apple organization.
+
+Lookups, MDM commands, Apple's assignments and migrations, asset tags, sites, PreStages and record deletions all work, with the usual confirmations naming the demo connection. Recovery secrets read back obviously fake values. Everything is answered inside Checkpoint: nothing is sent to Apple, Jamf or Microsoft, and changes last until Checkpoint quits. Apple's request limit applies only to real organizations, so demo lookups don't wait.
+
+Your saved connections, the ones in use and their Keychain items are left untouched; Settings › Connections still shows and edits your real connections, and Test Connection there always uses the real service. Choosing one of your own connections in a picker leaves demo mode. Checking for updates still works.
