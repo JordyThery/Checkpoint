@@ -10,15 +10,15 @@ import Testing
 
 /// Saved data as Checkpoint writes it today.
 nonisolated enum SavedData {
-    static let businessID = UUID(uuidString: "221C8C35-39FE-46E6-8180-901EB03E7666")!
-    static let schoolID = UUID(uuidString: "85885B36-6AA0-4199-B9A7-6A350D9FF830")!
-    static let olderOrgID = UUID(uuidString: "83DD4E5C-675F-484F-9F02-A1279A12D770")!
+    static let businessID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000A001")!
+    static let schoolID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000A002")!
+    static let olderOrgID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000A003")!
 
-    static let proPasswordID = UUID(uuidString: "A56B95A9-F251-4E89-93DE-75D18119AA11")!
-    static let platformID = UUID(uuidString: "F960ECC5-08B0-45B9-A7BC-067125C0D69A")!
-    static let schoolServerID = UUID(uuidString: "4ABFD4C0-D153-4814-9895-3047F6CC5963")!
-    static let intuneID = UUID(uuidString: "E51E496D-2A76-4546-8458-3ABF5273D387")!
-    static let proClientID = UUID(uuidString: "77DAF8BA-C8F0-41FD-BF6A-3240D071F29F")!
+    static let proPasswordID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000B001")!
+    static let platformID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000B002")!
+    static let schoolServerID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000B003")!
+    static let intuneID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000B004")!
+    static let proClientID = UUID(uuidString: "EEEEEEEE-0000-4000-8000-00000000B005")!
     static let flavorID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
 
     /// The third organization was saved before Apple School Manager support: no `kind`.
@@ -31,11 +31,11 @@ nonisolated enum SavedData {
     /// One of each kind, plus a Jamf School server saved by 2.0.0–2.2.0
     /// under `flavor`, before region, environment and tenant existed.
     static let jamfServers = """
-    [{"id":"\(proPasswordID)","baseURL":"https://jamf.example.com","name":"API Jamf Pro","region":"us","environmentID":"","account":"admin","tenantID":"","authMethod":"usernamePassword","product":"pro"},\
-    {"id":"\(platformID)","baseURL":"https://jamf.example.com","name":"Platform Jamf Pro","region":"eu","environmentID":"0F2C1B0A-1111-2222-3333-444455556666","account":"platform-client","tenantID":"","authMethod":"platformGateway","product":"pro"},\
-    {"id":"\(schoolServerID)","baseURL":"https://school.jamfcloud.com","name":"Jamf School","region":"us","environmentID":"","account":"067680","tenantID":"","authMethod":"apiClient","product":"school"},\
-    {"id":"\(intuneID)","baseURL":"","name":"Intune Test","region":"us","environmentID":"","account":"6F1B2C3D-0000-1111-2222-333344445555","tenantID":"contoso.onmicrosoft.com","authMethod":"entraApp","product":"intune"},\
-    {"id":"\(proClientID)","baseURL":"https://example.jamfcloud.com/","name":"Jamf Pro sandbox","region":"us","environmentID":"","account":"client-1","tenantID":"","authMethod":"apiClient","product":"pro"},\
+    [{"id":"\(proPasswordID)","baseURL":"https://jamf.example.com","name":"Example Password Jamf Pro","region":"us","environmentID":"","account":"admin","tenantID":"","authMethod":"usernamePassword","product":"pro"},\
+    {"id":"\(platformID)","baseURL":"https://jamf.example.com","name":"Example Gateway","region":"eu","environmentID":"0F2C1B0A-1111-2222-3333-444455556666","account":"platform-client","tenantID":"","authMethod":"platformGateway","product":"pro"},\
+    {"id":"\(schoolServerID)","baseURL":"https://school.jamfcloud.com","name":"Jamf School","region":"us","environmentID":"","account":"999001","tenantID":"","authMethod":"apiClient","product":"school"},\
+    {"id":"\(intuneID)","baseURL":"","name":"Example Intune","region":"us","environmentID":"","account":"6F1B2C3D-0000-1111-2222-333344445555","tenantID":"contoso.onmicrosoft.com","authMethod":"entraApp","product":"intune"},\
+    {"id":"\(proClientID)","baseURL":"https://example.jamfcloud.com/","name":"Example Jamf Pro","region":"us","environmentID":"","account":"client-1","tenantID":"","authMethod":"apiClient","product":"pro"},\
     {"id":"\(flavorID)","baseURL":"https://old.jamfcloud.com","name":"Old School","authMethod":"apiClient","account":"1234","flavor":"school"}]
     """
 }
@@ -216,7 +216,7 @@ struct MappingTests {
         let school = try shared(SavedData.schoolServerID)
         #expect(school.service == .jamfSchool)
         #expect(school.signIn == .schoolAPIKey)
-        #expect(school.clientID == "067680")
+        #expect(school.clientID == "999001")
 
         let intune = try shared(SavedData.intuneID)
         #expect(intune.service == .intune)

@@ -175,7 +175,7 @@ struct IntunePagingTests {
         _ = await harness.lookUp("C02XK1JHJG5H")
         let requests = harness.log.entries.filter { $0.request != nil }
         #expect(requests.map(\.category) == ["Sign-in", "Intune"]) // was "API"
-        #expect(requests.allSatisfy { $0.service == "Intune" && $0.connection == "Intune Test" })
+        #expect(requests.allSatisfy { $0.service == "Intune" && $0.connection == "Example Intune" })
         #expect(requests.last?.request?.responseBody?.contains("Lab Mac") == true)
         let all = ActivityLogExport.text(harness.log.entries, masked: false)
         #expect(!all.contains("SECRET-"))
@@ -382,7 +382,7 @@ struct IntuneCommandSendTests {
         let harness = IntuneHarness()
         await harness.send(.updateInventory, [harness.device()])
         let action = try #require(harness.log.entries.filter { $0.category == "Action" }.only)
-        #expect(action.service == "Intune" && action.connection == "Intune Test")
+        #expect(action.service == "Intune" && action.connection == "Example Intune")
         #expect(action.detail == "Sent Sync Device to 1 device") // was "Update Inventory"
     }
 }
@@ -398,7 +398,7 @@ struct IntuneConfirmationTests {
     func irreversibleOne(command: MDMCommand) throws {
         let harness = IntuneHarness()
         let confirmation = try #require(harness.model.commandConfirmation(command, reports: [harness.device()]))
-        #expect(confirmation.connectionLine == "On “Intune Test”.")
+        #expect(confirmation.connectionLine == "On “Example Intune”.")
         #expect(confirmation.typedCount == nil)
         #expect(!confirmation.asksPINTwice)
         #expect(confirmation.isDestructive)
@@ -409,7 +409,7 @@ struct IntuneConfirmationTests {
         let harness = IntuneHarness()
         let confirmation = try #require(harness.model.commandConfirmation(
             command, reports: [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")]))
-        #expect(confirmation.connectionLine == "On “Intune Test”.")
+        #expect(confirmation.connectionLine == "On “Example Intune”.")
         #expect(confirmation.typedCount == 2)
         #expect(confirmation.problem(typedCount: "1") == "Type 2 to confirm.")
         #expect(confirmation.problem(typedCount: "2") == nil)
@@ -421,7 +421,7 @@ struct IntuneConfirmationTests {
         let confirmation = try #require(harness.model.commandConfirmation(
             .wipeComputer, reports: [harness.device("C02XK1JHJG5H", kind: .computer)]))
         #expect(!confirmation.asksPINTwice)
-        #expect(confirmation.connectionLine == "On “Intune Test”.")
+        #expect(confirmation.connectionLine == "On “Example Intune”.")
     }
 
     @Test("Delete Record names the connection, and asks for the number from two records")
@@ -429,7 +429,7 @@ struct IntuneConfirmationTests {
         let harness = IntuneHarness()
         let one = try #require(harness.model.deleteConfirmation(reports: [harness.device()]))
         #expect(one.title == "Delete Record — DMPXK1JHJG5H")
-        #expect(one.connectionLine == "On “Intune Test”.")
+        #expect(one.connectionLine == "On “Example Intune”.")
         #expect(one.typedCount == nil)
         #expect(one.message == "The record will be deleted from Intune. The device itself stays enrolled and will reappear at its next check-in; Retire Device is what unmanages it.")
         let two = try #require(harness.model.deleteConfirmation(reports: [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")]))

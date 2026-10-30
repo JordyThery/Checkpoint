@@ -632,6 +632,8 @@ final class LookupModel {
     /// lookup forgets its token too, so its next request signs in with the
     /// secret saved now.
     func forgetClients(for id: UUID) {
+        hasPrivateKey[id] = nil
+        keyRevision += 1
         abmClients[id] = nil
         jamfSchoolClients[id] = nil
         intuneClients[id] = nil
@@ -819,9 +821,25 @@ final class LookupModel {
         return result
     }
 
+    /// Whether an organization in scope has its private key. Read in the
+    /// window's body, so the Keychain answer is kept per organization until
+    /// that organization or its key is saved or deleted (`forgetClients`);
+    /// before, every redraw read the Keychain.
     var isABMConfigured: Bool {
-        abmOrgsInScope.contains { secret(for: .apple($0)) != nil }
+        _ = keyRevision    // redraws once a saved key changes
+        return abmOrgsInScope.contains { org in
+            if let known = hasPrivateKey[org.id] { return known }
+            let has = secret(for: .apple(org)) != nil
+            hasPrivateKey[org.id] = has
+            return has
+        }
     }
+
+    /// Whether each organization has a private key, as last read. Not
+    /// observed: filled while the window draws.
+    @ObservationIgnored private var hasPrivateKey: [UUID: Bool] = [:]
+    /// Bumped when a connection or its secret changes, so the window reads again.
+    private var keyRevision = 0
 
     /// Brings the scope back to something that exists, after organizations
     /// are added or removed. A deleted organization already falls back to the
@@ -885,16 +903,38 @@ final class LookupModel {
         readsAllConnections ? "Device Name" : "\(mdmProduct.label) Device Name"
     }
 
-    /// The connection a record came from, else the selected one. A record
-    /// from Apple's built-in management has no connection at all: it must
-    /// never inherit the selected one, or its record would be offered
-    /// another product's actions.
+    /// The connection a record came from. A record from a connection that
+    /// has since been removed has none: it never falls back to the toolbar's
+    /// connection, or an action on it would reach another server under the
+    /// same record ID. Neither does a record from Apple's built-in management,
+    /// or it would be offered another product's actions. Only without a
+    /// record at all (or one that names no connection) is it the selected one.
     func connection(for info: ManagedDeviceInfo?) -> MDMConnection? {
         if info?.managedByApple == true { return nil }
-        if let id = info?.connectionID, let match = mdmConnections.first(where: { $0.id == id }) {
-            return match
+        if let id = info?.connectionID {
+            return mdmConnections.first { $0.id == id }
         }
         return selectedConnection
+    }
+
+    /// Whether the record names a connection that is no longer configured.
+    func isFromRemovedConnection(_ info: ManagedDeviceInfo?) -> Bool {
+        guard let info, !info.managedByApple, let id = info.connectionID else { return false }
+        return !mdmConnections.contains { $0.id == id }
+    }
+
+    /// The refusal for an action on such a record: the same sentence everywhere.
+    static let removedConnectionMessage = "The connection this record came from is no longer configured. Look the device up again."
+
+    /// The connection an action on this record acts through: the record's
+    /// own, or a refusal when it has been removed.
+    func actingConnection(for info: ManagedDeviceInfo) throws -> MDMConnection {
+        guard let connection = connection(for: info) else {
+            throw ActionError(message: isFromRemovedConnection(info)
+                              ? Self.removedConnectionMessage
+                              : "No MDM connection is selected or configured.")
+        }
+        return connection
     }
 
     /// What to call the place a record lives, for sentences and cells:
@@ -919,6 +959,8 @@ final class LookupModel {
         // Apple's built-in management is read-only reporting: none of the
         // capability-gated rows, pickers or commands apply to its records.
         if report.mdm.value?.managedByApple == true { return [] }
+        // A record whose connection was removed offers nothing to act on.
+        if isFromRemovedConnection(report.mdm.value) { return [] }
         return connection(for: report)?.capabilities ?? mdmCapabilities
     }
 
@@ -940,6 +982,9 @@ final class LookupModel {
     /// Why the MDM actions are unavailable for this selection, or nil.
     func mdmActionUnavailableReason(for reports: [DeviceReport]) -> String? {
         guard mdmActionConnection(for: reports) == nil else { return nil }
+        if reports.contains(where: { isFromRemovedConnection($0.mdm.value) }) {
+            return Self.removedConnectionMessage
+        }
         if reports.allSatisfy({ $0.mdm.value?.managedByApple != false }) {
             return "These devices are enrolled in Apple's built-in device management, which takes no MDM commands. The Apple actions above still apply."
         }
@@ -1248,7 +1293,9 @@ final class LookupModel {
     func scheduleMigration(reports: [DeviceReport], to serverID: String, deadline: Date) async throws {
         try await submitMigrationActivity(
             .assignWithMigrationDeadline,
-            reports: reports.filter { $0.abm.value?.device.isMdmMigrationCapable == true },
+            // A released device has left the organization: nothing to migrate,
+            // as Assign and Unassign skip it too.
+            reports: reports.filter { $0.abm.value.map { !$0.isReleased && $0.device.isMdmMigrationCapable == true } ?? false },
             mdmServerID: serverID,
             deadline: deadline,
             emptyMessage: "None of the selected devices can be migrated."
@@ -1822,6 +1869,7 @@ final class LookupModel {
         guard let managementID = info.managementID, !managementID.isEmpty else {
             throw ActionError(message: "\(report.serial) has no management ID. Run a fresh lookup first.")
         }
+        _ = try actingConnection(for: info)
         try checkSecretRead("Local administrator password", for: report)
         guard let jamf = makeJamfClient(for: report) else {
             throw ActionError(message: "No Jamf Pro server is selected or configured.")
@@ -1839,6 +1887,7 @@ final class LookupModel {
         guard let info = report.mdm.value else {
             throw ActionError(message: "\(report.serial) has no Jamf Pro record.")
         }
+        _ = try actingConnection(for: info)
         guard info.kind == .computer else {
             throw ActionError(message: "\(action) apply to Macs only.")
         }
@@ -1872,9 +1921,7 @@ final class LookupModel {
     /// Removes one record wherever it lives — the inspector's path for a
     /// stale record found beside the working one. Routed by the record.
     func removeRecord(_ info: ManagedDeviceInfo, serial: String) async throws {
-        guard let connection = connection(for: info) else {
-            throw ActionError(message: "The connection this record came from is no longer configured.")
-        }
+        let connection = try actingConnection(for: info)
         let failures = await removeRecords([(serial, info)], connection: connection)
         await refreshRows([serial])
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
@@ -1907,7 +1954,7 @@ final class LookupModel {
         let byConnection = Dictionary(grouping: entries) { $0.info.connectionID }
         for (id, group) in byConnection.sorted(by: { ($0.key?.uuidString ?? "") < ($1.key?.uuidString ?? "") }) {
             guard let connection = id.flatMap({ id in mdmConnections.first { $0.id == id } }) else {
-                failures += group.map { "\($0.serial): the record's connection is no longer configured." }
+                failures += group.map { "\($0.serial): \(Self.removedConnectionMessage)" }
                 continue
             }
             failures += await removeRecords(group, connection: connection)
@@ -1917,7 +1964,7 @@ final class LookupModel {
     }
 
     /// How the stale records distribute over connections, for the
-    /// confirmation: "2 on Jamf School and 1 on Intune Test".
+    /// confirmation: "2 on Jamf School and 1 on Example Intune".
     func staleRecordSummary(in reports: [DeviceReport]) -> String {
         let entries = staleRecords(in: reports)
         let counts = Dictionary(grouping: entries) { entry in
@@ -2064,9 +2111,10 @@ final class LookupModel {
     /// the record. A single-device action: tags identify devices one by one,
     /// so writing one tag across a selection would answer no real question.
     func setAssetTag(_ assetTag: String, for report: DeviceReport) async throws {
-        guard let info = report.mdm.value, let connection = connection(for: report) else {
+        guard let info = report.mdm.value else {
             throw ActionError(message: "\(report.serial) has no MDM record.")
         }
+        let connection = try actingConnection(for: info)
         let tag = assetTag.trimmingCharacters(in: .whitespaces)
         let summary = tag.isEmpty
             ? "Cleared the asset tag on \(report.serial)"

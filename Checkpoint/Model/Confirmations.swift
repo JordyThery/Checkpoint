@@ -46,7 +46,7 @@ extension LookupModel {
     }
 
     /// The stale-record cleanup. It can span connections, which its message
-    /// names ("2 on Jamf School and 1 on Intune Test").
+    /// names ("2 on Jamf School and 1 on Example Intune").
     func staleRemovalConfirmation(reports: [DeviceReport]) -> MDMCommand.Confirmation {
         let entries = staleRecords(in: reports)
         let deletes = entries.contains { connection(for: $0.info)?.product != .jamfSchool }

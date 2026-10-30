@@ -222,7 +222,8 @@ struct DeviceDetailView: View {
             // Records beside the working one, each with the way out that
             // fits its product. This is where a stale record gets cleaned up
             // from the place it was discovered.
-            ForEach(report.otherRecords, id: \.recordID) { info in
+            // Identified by connection and record ID: record IDs repeat across connections.
+            ForEach(report.otherRecords, id: \.key) { info in
                 Section("Also on \(model.connection(for: info)?.displayName ?? "another connection")") {
                     otherRecordRows(info)
                 }

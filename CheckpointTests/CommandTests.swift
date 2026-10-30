@@ -583,7 +583,7 @@ struct JamfSchoolCommandTests {
         if !form.isEmpty {
             #expect(request.header("Content-Type") == "application/x-www-form-urlencoded; charset=utf-8")
         }
-        let basic = Data("067680:SECRET-client".utf8).base64EncodedString()
+        let basic = Data("999001:SECRET-client".utf8).base64EncodedString()
         #expect(request.header("Authorization") == "Basic \(basic)")
     }
 
@@ -704,7 +704,7 @@ struct CommandLogTests {
         await harness.send(.lockMobile, [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13", managementID: "M-13")])
         let action = try #require(harness.actions.only)
         #expect(action.service == "Jamf Pro")
-        #expect(action.connection == "Jamf Pro sandbox")
+        #expect(action.connection == "Example Jamf Pro")
         #expect(!action.isFailure)
         let masked = ActivityLogExport.text(harness.log.entries, masked: true)
         #expect(!masked.contains("DMPXK1JHJG5H") && !masked.contains("DMPAAAAAAAAA"))
@@ -754,9 +754,9 @@ struct ConfirmationRuleTests {
         let harness = CommandHarness()
         let confirmation = try #require(harness.model.commandConfirmation(.wipeMobile, reports: [Devices.mobile()]))
         #expect(confirmation.title == "Wipe Device — DMPXK1JHJG5H")
-        #expect(confirmation.connectionLine == "On “Jamf Pro sandbox”.")
+        #expect(confirmation.connectionLine == "On “Example Jamf Pro”.")
         #expect(!confirmation.needsTyping)
-        #expect(confirmation.dialogMessage == "On “Jamf Pro sandbox”.\n\nAll data on the device will be erased. This cannot be undone.")
+        #expect(confirmation.dialogMessage == "On “Example Jamf Pro”.\n\nAll data on the device will be erased. This cannot be undone.")
     }
 
     @Test("Remove MDM Profile on three devices asks for the number")
@@ -799,7 +799,7 @@ struct ConfirmationRuleTests {
     func deleteRecords() throws {
         let harness = CommandHarness()
         let one = try #require(harness.model.deleteConfirmation(reports: [Devices.mac()]))
-        #expect(one.connectionLine == "On “Jamf Pro sandbox”." && !one.needsTyping)
+        #expect(one.connectionLine == "On “Example Jamf Pro”." && !one.needsTyping)
         let two = try #require(harness.model.deleteConfirmation(reports: [Devices.mac(), Devices.mobile()]))
         #expect(two.typedCount == 2)
     }

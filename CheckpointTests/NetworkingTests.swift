@@ -414,7 +414,7 @@ struct RecorderTests {
         }
         var config = MDMConnection(name: "School", product: .jamfSchool)
         config.baseURL = "https://school.jamfcloud.com"
-        config.account = "067680"
+        config.account = "999001"
         let log = ActivityLog()
         let school = try #require(JamfSchoolClient(config: config, secret: "SECRET-api-key", log: log, session: server.session))
         _ = try await school.fleet()
@@ -484,7 +484,7 @@ struct ClientCacheTests {
     private var account: String { "jamf.\(id.uuidString)" }
 
     /// Checkpoint with today's saved connections and a secret for the
-    /// "Jamf Pro sandbox" API client, against the fake server.
+    /// "Example Jamf Pro" API client, against the fake server.
     private func setUp(_ server: MockServer) throws -> (AppSettings, LookupModel, MDMConnection) {
         let fixture = Fixture()
         fixture.secrets.setSecret("first-secret", for: account)
