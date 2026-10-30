@@ -14,7 +14,17 @@ nonisolated enum UnderTest {
     /// Whether this launch is under tests.
     static let isActive: Bool = isUnitTestHost
         || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
-        || ProcessInfo.processInfo.arguments.contains(DemoMode.sandboxArgument)
+        || isSandboxLaunch()
+
+    /// Started with `-JTKitSandbox YES` (UI tests), read as JTKit's
+    /// `DemoMode.isSandbox` reads it: YES, true or 1. `-JTKitSandbox NO` is
+    /// an ordinary launch, with the saved settings and the update check.
+    static func isSandboxLaunch(_ arguments: [String] = ProcessInfo.processInfo.arguments) -> Bool {
+        guard let index = arguments.lastIndex(of: DemoMode.sandboxArgument), arguments.indices.contains(index + 1) else {
+            return false
+        }
+        return ["yes", "true", "1"].contains(arguments[index + 1].lowercased())
+    }
 
     /// Whether this process is the host of the unit tests.
     static var isUnitTestHost: Bool {

@@ -487,7 +487,7 @@ final class AppSettings {
     /// the host of the unit tests, in a throwaway domain (`UnderTest`).
     static let shared = UnderTest.isUnitTestHost
         ? UnderTest.unitTestHostSettings()
-        : ProcessInfo.processInfo.arguments.contains(DemoMode.sandboxArgument)
+        : UnderTest.isSandboxLaunch()
             ? AppSettings(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
             : AppSettings()
 

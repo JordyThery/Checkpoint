@@ -104,7 +104,7 @@ struct PrestageTests {
         let writes = harness.sent.filter { $0.method == "POST" }.map(\.path)
         #expect(writes == ["/api/v2/computer-prestages/1/scope/delete-multiple", "/api/v2/computer-prestages/2/scope"])
         let action = try #require(harness.actions.only)
-        #expect(action.service == "Jamf Pro" && action.connection == "Jamf Pro sandbox")
+        #expect(action.service == "Jamf Pro" && action.connection == "Example Jamf Pro")
     }
 }
 

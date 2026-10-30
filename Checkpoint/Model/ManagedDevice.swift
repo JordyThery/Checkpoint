@@ -11,11 +11,21 @@ nonisolated enum DeviceKind: String, Sendable {
     case mobileDevice
 }
 
+/// A record's identity: the connection it came from and its ID there.
+/// Record IDs are unique per connection only (two Jamf Pro servers can both
+/// have record 7), so neither alone tells two records apart.
+nonisolated struct RecordKey: Hashable, Sendable {
+    var connectionID: UUID?
+    var recordID: String
+}
+
 struct ManagedDeviceInfo: Sendable {
     /// The record's identifier in the product it came from: a Jamf Pro
     /// computer or mobile device ID, a Jamf School UDID, or an Intune managed
     /// device ID. Opaque here — only that product's client interprets it.
     var recordID: String
+    /// The record's identity across connections (see `RecordKey`).
+    var key: RecordKey { RecordKey(connectionID: connectionID, recordID: recordID) }
     /// The configured connection the record came from, which is what routes
     /// an action on it back to the right server. For a record from Apple's
     /// built-in device management this is the Apple organization's ID, and
