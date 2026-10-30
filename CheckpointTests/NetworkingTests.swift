@@ -489,7 +489,7 @@ struct ClientCacheTests {
         let fixture = Fixture()
         fixture.secrets.setSecret("first-secret", for: account)
         let settings = fixture.settings()
-        let model = LookupModel(settings: settings, session: server.session)
+        let model = LookupModel(settings: settings, session: server.session, underTest: .off)
         let config = try #require(settings.mdmConnections.first { $0.id == id })
         return (settings, model, config)
     }

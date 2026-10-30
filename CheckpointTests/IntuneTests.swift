@@ -48,7 +48,7 @@ struct IntuneHarness {
         self.server = server
         let fixture = Fixture()
         fixture.secrets.setSecret("SECRET-entra", for: "jamf.\(SavedData.intuneID.uuidString)")
-        model = LookupModel(settings: fixture.settings(), log: log, session: server.session)
+        model = LookupModel(settings: fixture.settings(), log: log, session: server.session, underTest: .off)
         model.mdmScope = .connection(SavedData.intuneID)
     }
 

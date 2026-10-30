@@ -44,12 +44,12 @@ nonisolated enum SavedData {
 @MainActor
 final class Fixture {
     let defaults: UserDefaults
+    /// A file path in the temporary folder, never a file in Preferences (`TestSettings`).
+    let domain: String
     let secrets = InMemorySecretStore()
 
     init(apple: String? = SavedData.abmOrgs, mdm: String? = SavedData.jamfServers) {
-        let name = "CheckpointTests.\(UUID().uuidString)"
-        defaults = UserDefaults(suiteName: name)!
-        defaults.removePersistentDomain(forName: name)
+        (domain, defaults) = TestSettings.makeDefaults("fixture")
         if let apple { defaults.set(Data(apple.utf8), forKey: "abmOrgs") }
         if let mdm { defaults.set(Data(mdm.utf8), forKey: "jamfServers") }
     }

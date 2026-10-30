@@ -156,6 +156,8 @@ nonisolated final class ABMClient: Sendable {
 
     let client: ABM.Client
     let tokens: ABM.TokenProvider
+    /// Refuses every write under tests (a second check after the model's).
+    let writeGuard: ActionGuard
 
     /// - Parameter privateKey: read at each sign-in, so a new key is used at once.
     init(
@@ -167,8 +169,10 @@ nonisolated final class ABMClient: Sendable {
         log: ActivityLog? = nil,
         session: URLSession = .shared,
         clock: ABMClock = .live,
-        rateLimit: RateLimit? = ABM.rateLimit
+        rateLimit: RateLimit? = ABM.rateLimit,
+        writeGuard: ActionGuard = .off
     ) {
+        self.writeGuard = writeGuard
         let recorder = ABM.recorder(kind.service, session: session, log: log, connection: connectionName)
         tokens = ABM.TokenProvider(service: kind.service, clientID: clientID, keyID: keyID, privateKey: privateKey,
                                    recorder: recorder, now: clock.now)
@@ -208,7 +212,8 @@ nonisolated final class ABMClient: Sendable {
     @discardableResult
     func submitActivity(_ type: ActivityType, serials: [String], mdmServerID: String? = nil,
                         migrationDeadline: Date? = nil) async throws -> String? {
-        try await client.submit(try ABM.Activity(type, serials: serials, serverID: mdmServerID, deadline: migrationDeadline))
+        try writeGuard.check("Apple \(type.rawValue), \(serials.count) device(s)")
+        return try await client.submit(try ABM.Activity(type, serials: serials, serverID: mdmServerID, deadline: migrationDeadline))
     }
 
     /// Watches a write until Apple has finished with it (2 minutes at most).

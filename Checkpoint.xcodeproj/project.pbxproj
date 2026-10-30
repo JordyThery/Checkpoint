@@ -9,10 +9,19 @@
 /* Begin PBXBuildFile section */
 		087B3063308E3BFA00D0CB8A /* JTKit in Frameworks */ = {isa = PBXBuildFile; productRef = 087B3062308E3BFA00D0CB8A /* JTKit */; };
 		087B40E9308E9E6200D0CB8A /* JTKitTestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 087B40E8308E9E6200D0CB8A /* JTKitTestSupport */; };
+		088B8B303093D0EA00F87877 /* JTKitLiveCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 088B8B2F3093D0EA00F87877 /* JTKitLiveCheck */; };
+		088B8B3F3093D12A00F87877 /* JTKitUITestSupport in Frameworks */ = {isa = PBXBuildFile; productRef = 088B8B3E3093D12A00F87877 /* JTKitUITestSupport */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		087B40E2308E9E5800D0CB8A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000000 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000100000000;
+			remoteInfo = Checkpoint;
+		};
+		088B8B393093D12200F87877 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000000 /* Project object */;
 			proxyType = 1;
@@ -24,6 +33,7 @@
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* Checkpoint.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Checkpoint.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		087B40DE308E9E5800D0CB8A /* CheckpointTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CheckpointTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		088B8B353093D12200F87877 /* CheckpointUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CheckpointUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -55,6 +65,11 @@
 			path = CheckpointTests;
 			sourceTree = "<group>";
 		};
+		088B8B363093D12200F87877 /* CheckpointUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = CheckpointUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -67,7 +82,14 @@
 		087B40DB308E9E5800D0CB8A /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				088B8B303093D0EA00F87877 /* JTKitLiveCheck in Frameworks */,
 				087B40E9308E9E6200D0CB8A /* JTKitTestSupport in Frameworks */,
+			);
+		};
+		088B8B323093D12200F87877 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				088B8B3F3093D12A00F87877 /* JTKitUITestSupport in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -79,6 +101,7 @@
 				000000000000000000000010 /* Checkpoint */,
 				087B40CF308E97B700D0CB8A /* CheckpointTests */,
 				087B40DF308E9E5800D0CB8A /* CheckpointTests */,
+				088B8B363093D12200F87877 /* CheckpointUITests */,
 				087B40D5308E97C000D0CB8A /* Frameworks */,
 				000000000000000000000020 /* Products */,
 			);
@@ -89,6 +112,7 @@
 			children = (
 				000000000000000000000120 /* Checkpoint.app */,
 				087B40DE308E9E5800D0CB8A /* CheckpointTests.xctest */,
+				088B8B353093D12200F87877 /* CheckpointUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -143,10 +167,35 @@
 			name = CheckpointTests;
 			packageProductDependencies = (
 				087B40E8308E9E6200D0CB8A /* JTKitTestSupport */,
+				088B8B2F3093D0EA00F87877 /* JTKitLiveCheck */,
 			);
 			productName = CheckpointTests;
 			productReference = 087B40DE308E9E5800D0CB8A /* CheckpointTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		088B8B343093D12200F87877 /* CheckpointUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 088B8B3B3093D12200F87877 /* Build configuration list for PBXNativeTarget "CheckpointUITests" */;
+			buildPhases = (
+				088B8B313093D12200F87877 /* Sources */,
+				088B8B323093D12200F87877 /* Frameworks */,
+				088B8B333093D12200F87877 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				088B8B3A3093D12200F87877 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				088B8B363093D12200F87877 /* CheckpointUITests */,
+			);
+			name = CheckpointUITests;
+			packageProductDependencies = (
+				088B8B3E3093D12A00F87877 /* JTKitUITestSupport */,
+			);
+			productName = CheckpointUITests;
+			productReference = 088B8B353093D12200F87877 /* CheckpointUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 /* End PBXNativeTarget section */
 
@@ -162,6 +211,10 @@
 						CreatedOnToolsVersion = 26.3;
 					};
 					087B40DD308E9E5800D0CB8A = {
+						CreatedOnToolsVersion = 27.1;
+						TestTargetID = 000000000000000100000000;
+					};
+					088B8B343093D12200F87877 = {
 						CreatedOnToolsVersion = 27.1;
 						TestTargetID = 000000000000000100000000;
 					};
@@ -186,6 +239,7 @@
 			targets = (
 				000000000000000100000000 /* Checkpoint */,
 				087B40DD308E9E5800D0CB8A /* CheckpointTests */,
+				088B8B343093D12200F87877 /* CheckpointUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -197,6 +251,11 @@
 			);
 		};
 		087B40DC308E9E5800D0CB8A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		088B8B333093D12200F87877 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -214,6 +273,11 @@
 			files = (
 			);
 		};
+		088B8B313093D12200F87877 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -221,6 +285,11 @@
 			isa = PBXTargetDependency;
 			target = 000000000000000100000000 /* Checkpoint */;
 			targetProxy = 087B40E2308E9E5800D0CB8A /* PBXContainerItemProxy */;
+		};
+		088B8B3A3093D12200F87877 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000100000000 /* Checkpoint */;
+			targetProxy = 088B8B393093D12200F87877 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -471,6 +540,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = K3LQ9NPBMG;
 				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = be.jordythery.CheckpointTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -492,6 +562,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = K3LQ9NPBMG;
 				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = be.jordythery.CheckpointTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -502,6 +573,48 @@
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Checkpoint.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Checkpoint";
+			};
+			name = Release;
+		};
+		088B8B3C3093D12200F87877 /* Debug configuration for PBXNativeTarget "CheckpointUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = K3LQ9NPBMG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = be.jordythery.CheckpointUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Checkpoint;
+			};
+			name = Debug;
+		};
+		088B8B3D3093D12200F87877 /* Release configuration for PBXNativeTarget "CheckpointUITests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = K3LQ9NPBMG;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = be.jordythery.CheckpointUITests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TEST_TARGET_NAME = Checkpoint;
 			};
 			name = Release;
 		};
@@ -532,6 +645,14 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		088B8B3B3093D12200F87877 /* Build configuration list for PBXNativeTarget "CheckpointUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				088B8B3C3093D12200F87877 /* Debug configuration for PBXNativeTarget "CheckpointUITests" */,
+				088B8B3D3093D12200F87877 /* Release configuration for PBXNativeTarget "CheckpointUITests" */,
+			);
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -540,7 +661,7 @@
 			repositoryURL = "https://github.com/JordyThery/JTKit.git";
 			requirement = {
 				kind = upToNextMajorVersion;
-				minimumVersion = 0.11.7;
+				minimumVersion = 0.12.4;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -555,6 +676,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */;
 			productName = JTKitTestSupport;
+		};
+		088B8B2F3093D0EA00F87877 /* JTKitLiveCheck */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */;
+			productName = JTKitLiveCheck;
+		};
+		088B8B3E3093D12A00F87877 /* JTKitUITestSupport */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 087B3061308E3BFA00D0CB8A /* XCRemoteSwiftPackageReference "JTKit" */;
+			productName = JTKitUITestSupport;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

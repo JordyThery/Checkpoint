@@ -477,6 +477,18 @@ final class LookupModel {
         record.connection.isDemo ? demo.source(for: record.connection) : nil
     }
 
+    /// The guards for one connection: none for a demo connection, whose
+    /// requests reach the in-app demo servers only.
+    private func guards(for record: CheckpointConnection) -> UnderTestGuards {
+        demoSource(for: record) == nil ? underTest : .off
+    }
+
+    /// Refuses a device secret read under tests, before any request.
+    private func checkSecretRead(_ secret: String, for report: DeviceReport) throws {
+        guard let connection = connection(for: report) else { return }
+        try guards(for: .mdm(connection)).secretReads.check("\(secret) (\(connection.product.label))")
+    }
+
     /// Called when demo mode is switched: the table is emptied, so demo and
     /// real results never mix. Clients are kept per connection ID, which never
     /// overlap between the two.
@@ -547,7 +559,7 @@ final class LookupModel {
     private var jamfSchoolClients: [UUID: (config: MDMConnection, client: JamfSchoolClient)] = [:]
     private var intuneClients: [UUID: (config: MDMConnection, client: Graph.Client)] = [:]
     /// Where the clients send; replaced in tests.
-    private let session: URLSession
+    let session: URLSession
     /// The Apple client's time and waits; a virtual clock in tests.
     private let abmClock: ABMClock
     /// LAPS rotation time per server, cached because it is server-wide.
@@ -592,11 +604,19 @@ final class LookupModel {
     private(set) var snapshotStatus: String?
     private(set) var isBuildingSnapshot = false
 
-    init(settings: AppSettings, log: ActivityLog? = nil, session: URLSession = .shared, abmClock: ABMClock = .live) {
+    /// What is refused under tests on saved (non-demo) connections.
+    let underTest: UnderTestGuards
+
+    /// - Parameter underTest: `.off` only for unit tests whose requests go to
+    ///   a mock server.
+    init(settings: AppSettings, log: ActivityLog? = nil, session: URLSession = .shared, abmClock: ABMClock = .live,
+         underTest: UnderTestGuards = .shared) {
         self.settings = settings
         self.log = log ?? ActivityLog()
-        self.session = session
+        // Under tests the saved connections are never reached (step 11).
+        self.session = UnderTest.isActive && settings.holdsSavedConnections ? SavedConnectionGuard.refusingSession() : session
         self.abmClock = abmClock
+        self.underTest = underTest
         appleDemo = DemoConnectionChoice(mode: settings.demo, connections: Self.demoOrgs.map(\.connection))
         mdmDemo = DemoConnectionChoice(mode: settings.demo, connections: Self.demoMDMConnections.map(\.connection))
         // One organization and one connection at launch: the last single
@@ -685,6 +705,8 @@ final class LookupModel {
         serials: [String],
         operation: () async throws -> [ABM.ActivityOutcome]
     ) async throws {
+        // Under tests no Apple write is ever sent.
+        try guards(for: .apple(org)).appleWrites.check("\(summary) (\(org.kind.label))")
         let service = org.kind.activityService
         let outcomes: [ABM.ActivityOutcome]
         do {
@@ -1299,6 +1321,7 @@ final class LookupModel {
     /// stored on the report.
     func fileVaultRecoveryKey(for report: DeviceReport) async throws -> JamfFileVaultKey {
         let id = try computerID(for: report, action: "FileVault recovery keys")
+        try checkSecretRead("FileVault recovery key", for: report)
         guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         // The activity log records that a key was read, never the key itself.
         // Jamf Pro keeps its own audit entry for this; ours makes it visible
@@ -1316,6 +1339,7 @@ final class LookupModel {
     /// on the same terms as the FileVault key.
     func recoveryLockPassword(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Recovery Lock passwords")
+        try checkSecretRead("Recovery Lock password", for: report)
         guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         return try await recording(.jamfPro, JamfPro.Secret.recoveryLockPassword.actionSummary(serial: report.serial),
                                    serials: [report.serial], connectionName: connection(for: report)?.displayName) {
@@ -1330,6 +1354,7 @@ final class LookupModel {
     /// recovery secrets.
     func deviceLockPIN(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Device lock PINs")
+        try checkSecretRead("Device lock PIN", for: report)
         guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
         return try await recording(.jamfPro, JamfPro.Secret.deviceLockPIN.actionSummary(serial: report.serial),
                                    serials: [report.serial], connectionName: connection(for: report)?.displayName) {
@@ -1797,6 +1822,7 @@ final class LookupModel {
         guard let managementID = info.managementID, !managementID.isEmpty else {
             throw ActionError(message: "\(report.serial) has no management ID. Run a fresh lookup first.")
         }
+        try checkSecretRead("Local administrator password", for: report)
         guard let jamf = makeJamfClient(for: report) else {
             throw ActionError(message: "No Jamf Pro server is selected or configured.")
         }
@@ -2178,6 +2204,9 @@ final class LookupModel {
             throw ActionError(message: "No MDM connection is selected or configured.")
         }
         let product = connection.product
+        // Under tests no command reaches a tenant, test records included.
+        try guards(for: .mdm(connection)).commands.check(
+            "\(command.title(for: product)) (\(product.label)), \(Self.deviceCount(reports.map(\.serial)))")
         let school = makeJamfSchoolClient(for: connection)
         let intune = makeIntuneClient(for: connection)
         let jamf = (school == nil && intune == nil) ? makeJamfClient(for: connection) : nil
@@ -2249,7 +2278,8 @@ final class LookupModel {
             session: demoSource?.session ?? session,
             clock: abmClock,
             // Apple's limit for every real organization; only a demo one goes without.
-            rateLimit: ABM.rateLimit(for: connection)
+            rateLimit: ABM.rateLimit(for: connection),
+            writeGuard: guards(for: .apple(config)).appleWrites
         )
         abmClients[config.id] = (config, client)
         return client
@@ -2289,7 +2319,8 @@ final class LookupModel {
                 throw JamfClient.APIError(message: "No secret is saved for “\(name)”.")
             }
             return secret
-        }, log: log, session: demoSource?.session ?? session) else { return nil }
+        }, log: log, session: demoSource?.session ?? session,
+           commandGuard: guards(for: .mdm(config)).commands) else { return nil }
         jamfClients[config.id] = (config, client)
         return client
     }
@@ -2336,7 +2367,8 @@ final class LookupModel {
               let secret = secret(for: .mdm(config)), !secret.isEmpty else { return nil }
         if let kept = jamfSchoolClients[config.id], kept.config == config { return kept.client }
         let session = demoSource(for: .mdm(config))?.session ?? session
-        guard let client = JamfSchoolClient(config: config, secret: secret, log: log, session: session) else { return nil }
+        guard let client = JamfSchoolClient(config: config, secret: secret, log: log, session: session,
+                                            commandGuard: guards(for: .mdm(config)).commands) else { return nil }
         jamfSchoolClients[config.id] = (config, client)
         return client
     }

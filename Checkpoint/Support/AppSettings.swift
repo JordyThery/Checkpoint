@@ -483,10 +483,24 @@ extension ABMConfig {
 @Observable
 final class AppSettings {
     /// A sandbox run (`-JTKitSandbox YES`, UI tests) keeps connections and
-    /// secrets in memory, so the real ones are never read or written.
-    static let shared = ProcessInfo.processInfo.arguments.contains(DemoMode.sandboxArgument)
-        ? AppSettings(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
-        : AppSettings()
+    /// secrets in memory, so the real ones are never read or written. So does
+    /// the host of the unit tests, in a throwaway domain (`UnderTest`).
+    static let shared = UnderTest.isUnitTestHost
+        ? UnderTest.unitTestHostSettings()
+        : ProcessInfo.processInfo.arguments.contains(DemoMode.sandboxArgument)
+            ? AppSettings(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
+            : AppSettings()
+
+    /// Whether these settings are the saved connections: the app's own
+    /// settings or its Keychain items. Under tests, every request for them is
+    /// refused (`SavedConnectionGuard`).
+    nonisolated let holdsSavedConnections: Bool
+
+    /// The network for connections of these settings outside a lookup model
+    /// (Test Connection): refused under tests when they are the saved ones.
+    nonisolated var testConnectionSession: URLSession {
+        UnderTest.isActive && holdsSavedConnections ? SavedConnectionGuard.refusingSession() : .shared
+    }
 
     /// The Apple organizations and MDM connections, in JTKit's shared list.
     /// Saved in `abmOrgs` and `jamfServers`, as before.
@@ -530,6 +544,7 @@ final class AppSettings {
 
     init(defaults: UserDefaults = .standard, secrets: any SecretStore = CheckpointSecrets.keychain) {
         self.defaults = defaults
+        holdsSavedConnections = defaults === UserDefaults.standard || secrets is KeychainSecretStore
         let edits = ConnectionEdits()
         let reporting = ReportingSecretStore(base: secrets, edits: edits)
         self.edits = edits

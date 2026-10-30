@@ -85,8 +85,12 @@ actor JamfSchoolClient {
     }
 
     private let client: JamfSchool.Client
+    /// Refuses every MDM command under tests (a second check after the model's).
+    private let commandGuard: ActionGuard
 
-    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil, session: URLSession = .shared) {
+    init?(config: MDMConnection, secret: String, log: ActivityLog? = nil, session: URLSession = .shared,
+          commandGuard: ActionGuard = .off) {
+        self.commandGuard = commandGuard
         let recorder = RequestRecorder(session: session, log: log,
                                        service: ActivityService.jamfSchool.rawValue, connection: config.displayName)
         // The device list and a device's details are recorded also when they
@@ -186,7 +190,8 @@ actor JamfSchoolClient {
     // MARK: Commands and record changes (JTKit)
 
     func send(_ command: MDMCommand, to targets: [MDMCommand.Target]) async throws -> MDMCommand.Result {
-        try await client.send(command, to: targets)
+        try commandGuard.check("\(command.title) (Jamf School client), \(targets.count) device(s)")
+        return try await client.send(command, to: targets)
     }
 
     /// Sets or clears the device's asset tag; only the tag is sent.

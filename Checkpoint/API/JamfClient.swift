@@ -564,6 +564,8 @@ actor JamfClient {
     }
 
     private let authMethod: MDMAuthMethod
+    /// Refuses every MDM command under tests (a second check after the model's).
+    private let commandGuard: ActionGuard
     /// JTKit's client, or why the connection can't make one (e.g. an
     /// Environment ID that isn't a UUID), thrown at the first request.
     private let client: Result<JamfPlatform.Client, JamfPlatformError>
@@ -573,7 +575,7 @@ actor JamfClient {
     ///   - log: where requests are recorded; nil records nothing.
     ///   - session: replaced in tests.
     init?(config: MDMConnection, secret: @escaping @Sendable () throws -> String,
-          log: ActivityLog? = nil, session: URLSession = .shared) {
+          log: ActivityLog? = nil, session: URLSession = .shared, commandGuard: ActionGuard = .off) {
         // An Entra app registration can't sign in to Jamf Pro; the editor
         // offers it only for Intune.
         guard config.authMethod != .entraApp,
@@ -581,6 +583,7 @@ actor JamfClient {
         let recorder = RequestRecorder(session: session, log: log,
                                        service: ActivityService.jamfPro.rawValue, connection: config.displayName)
         authMethod = config.authMethod
+        self.commandGuard = commandGuard
         do {
             client = .success(try JamfPlatform.Client(connection: config.connection, secret: secret, recorder: recorder))
         } catch let error as JamfPlatformError {
@@ -726,7 +729,8 @@ actor JamfClient {
 
     /// Sends an MDM command; JTKit routes it, per device.
     func send(_ command: MDMCommand, to targets: [MDMCommand.Target], pin: String?) async throws -> MDMCommand.Result {
-        try await jamf().send(command, to: targets, pin: pin)
+        try commandGuard.check("\(command.title) (Jamf Pro client), \(targets.count) device(s)")
+        return try await jamf().send(command, to: targets, pin: pin)
     }
 
     /// Where the requests go, which decides how Restart and Shut Down are sent.

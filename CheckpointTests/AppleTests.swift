@@ -777,13 +777,15 @@ struct AppleHarness {
     let log = ActivityLog()
     let time = VirtualClock()
 
-    init(_ server: MockServer = AppleActivityTests.activityServer()) {
+    /// Off: the fake Apple is the only server (the guards have their own tests).
+    init(_ server: MockServer = AppleActivityTests.activityServer(), underTest: UnderTestGuards = .off) {
         self.server = server
         let fixture = Fixture()
         for id in [SavedData.businessID, SavedData.schoolID] {
             fixture.secrets.setSecret(P256.Signing.PrivateKey().pemRepresentation, for: "abm.\(id.uuidString)")
         }
-        model = LookupModel(settings: fixture.settings(), log: log, session: server.session, abmClock: time.clock)
+        model = LookupModel(settings: fixture.settings(), log: log, session: server.session, abmClock: time.clock,
+                            underTest: underTest)
     }
 
     var activities: [RecordedRequest] {

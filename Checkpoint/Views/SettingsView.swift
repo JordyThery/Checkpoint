@@ -57,26 +57,28 @@ struct ConnectionsTab: View {
                                       ? "Import the private key first."
                                       : "Enter the \(record.connection.signIn.secretName?.lowercased() ?? "secret") first.")
         }
+        // Under tests the saved connections are never reached (step 11).
+        let session = settings.testConnectionSession
         switch record {
         case .apple(let org):
             let client = ABMClient(clientID: org.clientID, keyID: org.keyID, privateKeyPEM: secret,
-                                   kind: org.kind, connectionName: org.displayName, log: log)
+                                   kind: org.kind, connectionName: org.displayName, log: log, session: session)
             let count = try await client.verify()
             return "Connected · \(count) MDM server\(count == 1 ? "" : "s") visible"
         case .mdm(let server) where server.product == .intune:
-            guard let client = LookupModel.intuneClient(for: server, secret: { secret }, log: log) else {
+            guard let client = LookupModel.intuneClient(for: server, secret: { secret }, log: log, session: session) else {
                 throw ConnectionTestError("Enter a tenant ID, client ID and client secret first.")
             }
             try await client.intuneTestConnection()
             return "Connected"
         case .mdm(let server) where server.product == .jamfSchool:
-            guard let client = JamfSchoolClient(config: server, secret: secret, log: log) else {
+            guard let client = JamfSchoolClient(config: server, secret: secret, log: log, session: session) else {
                 throw ConnectionTestError("Enter a valid server URL, Network ID and API key first.")
             }
             let locations = try await client.verify()
             return "Connected · \(locations) location\(locations == 1 ? "" : "s")"
         case .mdm(let server):
-            guard let client = JamfClient(config: server, secret: { secret }, log: log) else {
+            guard let client = JamfClient(config: server, secret: { secret }, log: log, session: session) else {
                 throw ConnectionTestError("Enter a valid server URL first.")
             }
             try await client.verify()

@@ -15,8 +15,9 @@ import SwiftUI
                 .environment(model)
                 .environment(updates)
                 .frame(minWidth: 900, minHeight: 420)
-                // A sandbox run (UI tests) makes no update check.
-                .task { if !settings.demo.isSandbox { await updates.checkAutomatically() } }
+                // No update check under tests: neither as the unit tests'
+                // host nor in a sandbox run (UI tests).
+                .task { if !settings.demo.isSandbox && !UnderTest.isActive { await updates.checkAutomatically() } }
         }
         .commands {
             AppInfoCommands(appName: "Checkpoint") { updates.checkManually() }
