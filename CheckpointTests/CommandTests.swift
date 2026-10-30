@@ -68,14 +68,15 @@ struct CommandHarness {
     let model: LookupModel
     let log = ActivityLog()
 
-    init(_ server: MockServer = commandServer()) {
+    /// Off: the fake server is the only server (the guards have their own tests).
+    init(_ server: MockServer = commandServer(), underTest: UnderTestGuards = .off) {
         self.server = server
         let fixture = Fixture()
         for id in [SavedData.proClientID, SavedData.proPasswordID, SavedData.platformID,
                    SavedData.schoolServerID, SavedData.intuneID] {
             fixture.secrets.setSecret("SECRET-client", for: "jamf.\(id.uuidString)")
         }
-        model = LookupModel(settings: fixture.settings(), log: log, session: server.session)
+        model = LookupModel(settings: fixture.settings(), log: log, session: server.session, underTest: underTest)
     }
 
     /// Every request but the sign-ins.

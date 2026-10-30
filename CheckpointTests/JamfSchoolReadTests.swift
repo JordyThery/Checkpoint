@@ -23,7 +23,7 @@ private struct SchoolHarness {
         }
         let fixture = Fixture()
         fixture.secrets.setSecret("SECRET-api-key", for: "jamf.\(SavedData.schoolServerID.uuidString)")
-        model = LookupModel(settings: fixture.settings(), log: ActivityLog(), session: server.session)
+        model = LookupModel(settings: fixture.settings(), log: ActivityLog(), session: server.session, underTest: .off)
         model.mdmScope = .connection(SavedData.schoolServerID)
     }
 
