@@ -4,7 +4,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// Checkpoint's saved connections in JTKit's shared list (ROADMAP step 4).
+// Checkpoint's saved connections in JTKit's shared list.
 // Every test uses its own settings domain and an in-memory Keychain, never
 // the real ones.
 
@@ -32,11 +32,11 @@ nonisolated enum SavedData {
     /// under `flavor`, before region, environment and tenant existed.
     static let jamfServers = """
     [{"id":"\(proPasswordID)","baseURL":"https://jamf.example.com","name":"Example Password Jamf Pro","region":"us","environmentID":"","account":"admin","tenantID":"","authMethod":"usernamePassword","product":"pro"},\
-    {"id":"\(platformID)","baseURL":"https://jamf.example.com","name":"Example Gateway","region":"eu","environmentID":"0F2C1B0A-1111-2222-3333-444455556666","account":"platform-client","tenantID":"","authMethod":"platformGateway","product":"pro"},\
-    {"id":"\(schoolServerID)","baseURL":"https://school.jamfcloud.com","name":"Jamf School","region":"us","environmentID":"","account":"999001","tenantID":"","authMethod":"apiClient","product":"school"},\
-    {"id":"\(intuneID)","baseURL":"","name":"Example Intune","region":"us","environmentID":"","account":"6F1B2C3D-0000-1111-2222-333344445555","tenantID":"contoso.onmicrosoft.com","authMethod":"entraApp","product":"intune"},\
+    {"id":"\(platformID)","baseURL":"https://jamf.example.com","name":"Example Gateway","region":"eu","environmentID":"EEEEEEEE-1111-4000-8000-00000000E001","account":"platform-client","tenantID":"","authMethod":"platformGateway","product":"pro"},\
+    {"id":"\(schoolServerID)","baseURL":"https://example-school.jamfcloud.com","name":"Jamf School","region":"us","environmentID":"","account":"999001","tenantID":"","authMethod":"apiClient","product":"school"},\
+    {"id":"\(intuneID)","baseURL":"","name":"Example Intune","region":"us","environmentID":"","account":"EEEEEEEE-2222-4000-8000-00000000C001","tenantID":"contoso.onmicrosoft.com","authMethod":"entraApp","product":"intune"},\
     {"id":"\(proClientID)","baseURL":"https://example.jamfcloud.com/","name":"Example Jamf Pro","region":"us","environmentID":"","account":"client-1","tenantID":"","authMethod":"apiClient","product":"pro"},\
-    {"id":"\(flavorID)","baseURL":"https://old.jamfcloud.com","name":"Old School","authMethod":"apiClient","account":"1234","flavor":"school"}]
+    {"id":"\(flavorID)","baseURL":"https://old.example.jamfcloud.com","name":"Old School","authMethod":"apiClient","account":"1234","flavor":"school"}]
     """
 }
 
@@ -209,7 +209,7 @@ struct MappingTests {
         #expect(platform.service == .jamfPlatform)
         #expect(platform.signIn == .apiClient)
         #expect(platform.region == .eu)
-        #expect(platform.environmentID == "0F2C1B0A-1111-2222-3333-444455556666")
+        #expect(platform.environmentID == "EEEEEEEE-1111-4000-8000-00000000E001")
         #expect(platform.clientID == "platform-client")
         #expect(platform.jamfProWebURL == "https://jamf.example.com")
 
@@ -257,12 +257,67 @@ struct MappingTests {
 
         record.connection.service = .jamfPlatform
         record.connection.region = .apac
-        record.connection.environmentID = " 0F2C1B0A-1111-2222-3333-444455556666 "
+        record.connection.environmentID = " EEEEEEEE-1111-4000-8000-00000000E001 "
         guard case .mdm(let gateway) = record else { Issue.record("not MDM"); return }
         #expect(gateway.authMethod == .platformGateway)
         #expect(gateway.region == JamfRegion.apac)
-        #expect(gateway.environmentID == "0F2C1B0A-1111-2222-3333-444455556666")
+        #expect(gateway.environmentID == "EEEEEEEE-1111-4000-8000-00000000E001")
         #expect(gateway.baseURL == "https://jamf.example.com")
+    }
+
+    @Test func switchingBetweenJamfProAndIntuneKeepsWhatApplies() throws {
+        let settings = Fixture().settings()
+        var record = try #require(settings.connections.record(id: SavedData.proClientID))
+        record.connection.service = .intune
+        record.connection.tenantID = " fabrikam.onmicrosoft.com "
+        guard case .mdm(let intune) = record else { Issue.record("not MDM"); return }
+        #expect(intune.product == .intune)
+        #expect(intune.authMethod == .entraApp)
+        #expect(intune.account == "client-1")
+        #expect(intune.tenantID == "fabrikam.onmicrosoft.com")
+        // Intune has no server address; the saved one is kept for a switch back.
+        #expect(intune.baseURL == "https://example.jamfcloud.com/")
+
+        record.connection.service = .jamfPro
+        guard case .mdm(let pro) = record else { Issue.record("not MDM"); return }
+        #expect(pro.product == .jamfPro)
+        #expect(pro.authMethod == .apiClient)
+        #expect(pro.baseURL == "https://example.jamfcloud.com/")
+        #expect(pro.account == "client-1")
+        #expect(record.connection.service == .jamfPro)
+        #expect(record.connection.signIn == .apiClient)
+    }
+
+    @Test func switchingBetweenJamfSchoolAndJamfProKeepsWhatApplies() throws {
+        let settings = Fixture().settings()
+        var record = try #require(settings.connections.record(id: SavedData.schoolServerID))
+        record.connection.service = .jamfPro
+        guard case .mdm(let pro) = record else { Issue.record("not MDM"); return }
+        #expect(pro.product == .jamfPro)
+        #expect(pro.authMethod == .apiClient)
+        #expect(pro.baseURL == "https://example-school.jamfcloud.com")
+        #expect(pro.account == "999001")
+        #expect(record.connection.signIn == .apiClient)
+
+        record.connection.service = .jamfSchool
+        guard case .mdm(let school) = record else { Issue.record("not MDM"); return }
+        #expect(school.product == .jamfSchool)
+        #expect(school.authMethod == .apiClient)
+        #expect(school.baseURL == "https://example-school.jamfcloud.com")
+        #expect(school.account == "999001")
+        #expect(record.connection.signIn == .schoolAPIKey)
+    }
+
+    @Test func aJamfProPasswordConnectionBecomesJamfSchoolWithAnAPIKey() throws {
+        let settings = Fixture().settings()
+        var record = try #require(settings.connections.record(id: SavedData.proPasswordID))
+        record.connection.service = .jamfSchool
+        guard case .mdm(let school) = record else { Issue.record("not MDM"); return }
+        #expect(school.product == .jamfSchool)
+        // Jamf School has no username-and-password sign-in.
+        #expect(school.authMethod == .apiClient)
+        #expect(school.baseURL == "https://jamf.example.com")
+        #expect(school.account == "admin")
     }
 
     @Test func editsWriteTheFieldsCheckpointSaves() throws {
@@ -318,7 +373,6 @@ struct KeychainNameTests {
                 #expect(CheckpointSecrets.account(for: record.connection) == org.privateKeyKeychainKey)
             case .mdm(let server):
                 #expect(CheckpointSecrets.account(for: record.connection) == "jamf.\(server.id.uuidString)")
-                #expect(CheckpointSecrets.account(for: record.connection) == server.secretKeychainKey)
             }
         }
     }
@@ -391,8 +445,15 @@ struct LegacyKeyMoveTests {
         fixture.secrets.refusesWrites = true
         let settings = fixture.settings()
 
-        #expect(settings.abmOrgs.count == 1)
+        // Nothing saved, the old setup kept: the move is tried again.
+        #expect(settings.abmOrgs.isEmpty)
         #expect(fixture.secrets.all == ["abm.privateKey": "legacy-pem"])
+        #expect(fixture.data("abmConfig") != nil)
+
+        fixture.secrets.refusesWrites = false
+        let org = try #require(fixture.settings().abmOrgs.first)
+        #expect(fixture.secrets.all == ["abm.\(org.id.uuidString)": "legacy-pem"])
+        #expect(fixture.data("abmConfig") == nil)
     }
 
     @Test func anEmptyLegacySetupIsJustRemoved() {

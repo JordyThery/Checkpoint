@@ -5,7 +5,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// Checkpoint on JTKit's networking (ROADMAP step 5): Jamf Pro sign-in and
+// Checkpoint on JTKit's networking: Jamf Pro sign-in and
 // sending through JTKit, the other services through its request recorder,
 // one client per connection, and what the activity log may record. Every
 // test uses its own fake server, settings domain and in-memory Keychain.
@@ -25,9 +25,9 @@ nonisolated enum Laced {
     ].joined(separator: ",")
 
     static let computers = #"""
-    {"totalCount":1,"results":[{"id":"7","udid":"5D3B6C1A-0000-1111-2222-333344445555",
+    {"totalCount":1,"results":[{"id":"7","udid":"AAAAAAAA-0000-4000-8000-0000000000D1",
      "general":{"name":"Lab Mac","managementId":"M-7",\#(fields)},
-     "hardware":{"serialNumber":"C02XK1JHJG5H",\#(fields)},
+     "hardware":{"serialNumber":"TESTMAC0001",\#(fields)},
      "diskEncryption":{"fileVault2Enabled":true,\#(fields)},
      "operatingSystem":{"version":"15.1",\#(fields)},
      "userAndLocation":{"email":"SECRET-user@example.com","departmentId":"1"},
@@ -39,8 +39,8 @@ nonisolated enum Laced {
 
     static let mobileDevices = #"""
     {"totalCount":1,"results":[{"mobileDeviceId":"12","deviceType":"iOS",
-     "general":{"displayName":"Lab iPad","udid":"00008103-001A2C3E0C38001E",\#(fields)},
-     "hardware":{"serialNumber":"DMPXK1JHJG5H"},
+     "general":{"displayName":"Lab iPad","udid":"00001111-0000000000000001",\#(fields)},
+     "hardware":{"serialNumber":"TESTIPAD001"},
      "security":{"passcodePresent":true,\#(fields)},
      "userAndLocation":{"username":"SECRET-pupil"},
      "ios":{"unlockToken":"SECRET-ios-unlock"},
@@ -78,7 +78,7 @@ nonisolated func jamfServer(signInStatus: Int = 200) -> MockServer {
             return .json(200, #"[{"applicable":true,"complianceState":"COMPLIANT",\#(Laced.fields)}]"#)
         }
         if path.hasSuffix("/devices/v1/devices") {
-            return .json(200, #"{"results":[{"id":"d-1","serialNumber":"C02XK1JHJG5H",\#(Laced.fields)}]}"#)
+            return .json(200, #"{"results":[{"id":"d-1","serialNumber":"TESTMAC0001",\#(Laced.fields)}]}"#)
         }
         if path.hasSuffix("/declarations") {
             return .json(200, #"{"results":[{"identifier":"x",\#(Laced.fields)}]}"#)
@@ -94,7 +94,7 @@ nonisolated func proConnection(_ method: MDMAuthMethod = .apiClient) -> MDMConne
     connection.baseURL = "https://jamf.example.com"
     connection.account = "client-1"
     connection.region = .eu
-    connection.environmentID = "0F2C1B0A-1111-2222-3333-444455556666"
+    connection.environmentID = "EEEEEEEE-1111-4000-8000-00000000E001"
     return connection
 }
 
@@ -147,7 +147,7 @@ struct JamfProTests {
         let sites = try #require(server.requests.last)
         #expect(sites.url.host() == "eu.api.jamfcloud.com")
         #expect(sites.path == "/pro/v1/sites")
-        #expect(sites.header("X-Environment-Id") == "0F2C1B0A-1111-2222-3333-444455556666")
+        #expect(sites.header("X-Environment-Id") == "EEEEEEEE-1111-4000-8000-00000000E001")
         #expect(server.requests.first?.url.host() == "eu.api.jamfcloud.com")
     }
 
@@ -159,8 +159,7 @@ struct JamfProTests {
         #expect(server.requests.last?.url.host() == "jamf.example.com")
     }
 
-    // Step 7: JTKit's format and hints replace Checkpoint's (decided by
-    // Jordy); a direct Jamf Pro server's hint names no region.
+    // A direct Jamf Pro server's hint names no region.
     @Test("A refused sign-in shows JTKit's format and hint",
           arguments: [(MDMAuthMethod.apiClient, "Check the client ID and client secret, and that the API client is enabled in Jamf Pro under Settings › API Roles and Clients."),
                       (.usernamePassword, "Check the username and password."),
@@ -220,10 +219,10 @@ struct JamfProTests {
             return filter.contains("=in=") ? .json(400, "{}") : .json(200, Laced.computers)
         }
         let jamf = try makeJamf(server, log: ActivityLog())
-        let batch = await jamf.computers(serials: ["C02XK1JHJG5H", "C02AAAAAAAAA"])
+        let batch = await jamf.computers(serials: ["TESTMAC0001", "TESTMAC0002"])
         #expect(filters.value.count == 3)
         #expect(filters.value.dropFirst().allSatisfy { $0.hasPrefix("hardware.serialNumber==") })
-        #expect(batch.records["C02XK1JHJG5H"]?.name == "Lab Mac")
+        #expect(batch.records["TESTMAC0001"]?.name == "Lab Mac")
     }
 }
 
@@ -260,8 +259,8 @@ nonisolated final class Locked<Value>: @unchecked Sendable {
 @MainActor
 struct RecordedBodyTests {
 
-    /// The calls that carry a device secret, which used to withhold their
-    /// bodies in Checkpoint itself and are now recognised by JTKit.
+    /// The calls that carry a device secret, recognized by JTKit so their
+    /// bodies are withheld from the log.
     static let sensitivePaths = [
         "/api/v2/mobile-devices/12/detail",
         "/api/v4/computers-inventory/7/erase",
@@ -270,37 +269,45 @@ struct RecordedBodyTests {
         "/api/v4/computers-inventory/7/view-recovery-lock-password",
         "/api/v2/local-admin-password/M-7/account/admin/password",
         "/api/v2/local-admin-password/M-7/account/admin/guid-1/password",
-        // step 7: the command addresses
+        // The command addresses
         "/api/v2/mdm/commands",
         "/api/v2/mobile-devices/12/erase",
         "/JSSResource/mobiledevicecommands/command/UpdateInventory/id/12",
     ]
 
-    @Test("The sensitive calls are recognised, directly and through the Platform API")
+    /// A Jamf Pro path in the gateway's form, as JTKit maps it: the Jamf Pro
+    /// API under `/pro`, the Classic API under `/proclassic`.
+    private static func gatewayPath(for path: String) -> String {
+        if path.hasPrefix("/api/") { return "/pro/" + path.dropFirst("/api/".count) }
+        if path.hasPrefix("/JSSResource/") { return "/proclassic/" + path.dropFirst("/JSSResource/".count) }
+        return path
+    }
+
+    @Test("The sensitive calls are recognized, directly and through the Platform API")
     func sensitiveCallsAreKnown() {
         for path in Self.sensitivePaths {
             #expect(SensitiveRequests.isSensitive(path: path), "\(path)")
-            #expect(SensitiveRequests.isSensitive(path: JamfClient.gatewayPath(for: path)), "\(path) via the gateway")
+            #expect(SensitiveRequests.isSensitive(path: Self.gatewayPath(for: path)), "\(path) via the gateway")
         }
     }
 
     /// Every Jamf Pro request whose answer is recorded, and every sensitive
     /// one, against answers full of secrets.
     private func runEveryLookup(_ jamf: JamfClient) async {
-        _ = await jamf.computers(serials: ["C02XK1JHJG5H"])
-        _ = await jamf.mobileDevices(serials: ["DMPXK1JHJG5H"])
+        _ = await jamf.computers(serials: ["TESTMAC0001"])
+        _ = await jamf.mobileDevices(serials: ["TESTIPAD001"])
         _ = try? await jamf.ddmStatus(managementID: "M-7")
         _ = try? await jamf.deviceCompliance(kind: .computer, deviceID: "7")
-        _ = try? await jamf.platformDeviceID(serial: "C02XK1JHJG5H")
-        _ = try? await jamf.platformDeclarations(serial: "C02XK1JHJG5H")
-        let iPad = MDMCommand.Target(serial: "DMPXK1JHJG5H", recordID: "12", kind: .mobileDevice, managementID: "M-12")
+        _ = try? await jamf.platformDeviceID(serial: "TESTMAC0001")
+        _ = try? await jamf.platformDeclarations(serial: "TESTMAC0001")
+        let iPad = MDMCommand.Target(serial: "TESTIPAD001", recordID: "12", kind: .mobileDevice, managementID: "M-12")
         _ = try? await jamf.send(.clearPasscode, to: [iPad], approval: nil)
         _ = try? await jamf.fileVaultRecoveryKey(computerID: "7")
         _ = try? await jamf.deviceLockPIN(computerID: "7")
         _ = try? await jamf.recoveryLockPassword(computerID: "7")
         _ = try? await jamf.localAdminPassword(managementID: "M-7",
                                                account: JamfLocalAdminAccount(username: "admin", guid: "", source: "MDM"))
-        let mac = MDMCommand.Target(serial: "C02XK1JHJG5H", recordID: "7", kind: .computer, managementID: "M-7")
+        let mac = MDMCommand.Target(serial: "TESTMAC0001", recordID: "7", kind: .computer, managementID: "M-7")
         for command in [MDMCommand.wipeComputer, .lockComputer] {
             let approval = try? MDMCommand.Confirmation(command, plan: command.plan(for: [mac], on: .jamfPro), on: .jamfPro,
                                                         connectionName: nil).approve(pin: "246813", pinAgain: "246813")
@@ -330,7 +337,7 @@ struct RecordedBodyTests {
     func mobileDeviceLookupIsTrimmed() async throws {
         let log = ActivityLog()
         let jamf = try makeJamf(jamfServer(), log: log)
-        _ = await jamf.mobileDevices(serials: ["DMPXK1JHJG5H"])
+        _ = await jamf.mobileDevices(serials: ["TESTIPAD001"])
 
         let entry = try #require(log.entries.first { $0.detail.contains("/mobile-devices/detail") })
         let body = try #require(entry.request?.responseBody)
@@ -350,7 +357,7 @@ struct RecordedBodyTests {
     func computerLookupIsTrimmed() async throws {
         let log = ActivityLog()
         let jamf = try makeJamf(jamfServer(), log: log)
-        _ = await jamf.computers(serials: ["C02XK1JHJG5H"])
+        _ = await jamf.computers(serials: ["TESTMAC0001"])
 
         let body = try #require(log.entries.first { $0.detail.contains("/computers-inventory") }?.request?.responseBody)
         let page = try #require(try JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any])
@@ -369,7 +376,7 @@ struct RecordedBodyTests {
         }
         let log = ActivityLog()
         let jamf = try makeJamf(server, log: log)
-        _ = await jamf.computers(serials: ["C02XK1JHJG5H"])
+        _ = await jamf.computers(serials: ["TESTMAC0001"])
         let entry = try #require(log.entries.first { $0.detail.contains("/computers-inventory") })
         #expect(entry.request?.responseBody == nil)
         #expect(entry.request?.bodyNote == "Response body not recorded: not JSON.")
@@ -379,7 +386,7 @@ struct RecordedBodyTests {
     @Test("The mobile device detail with the unlock token is recorded without contents")
     func unlockTokenCallIsWithheld() async throws {
         let log = ActivityLog()
-        let iPad = MDMCommand.Target(serial: "DMPXK1JHJG5H", recordID: "12", kind: .mobileDevice, managementID: "M-12")
+        let iPad = MDMCommand.Target(serial: "TESTIPAD001", recordID: "12", kind: .mobileDevice, managementID: "M-12")
         // Clear Passcode reads the token, then sends it (both withheld)
         _ = try await makeJamf(jamfServer(), log: log).send(.clearPasscode, to: [iPad], approval: nil)
 
@@ -413,10 +420,10 @@ struct RecorderTests {
     @Test("Jamf School: the device list is recorded, with the API key hidden")
     func jamfSchool() async throws {
         let server = MockServer { _ in
-            .json(200, #"{"devices":[{"UDID":"u-1","serialNumber":"DMPXK1JHJG5H","name":"Cart iPad",\#(Laced.fields)}]}"#)
+            .json(200, #"{"devices":[{"UDID":"u-1","serialNumber":"TESTIPAD001","name":"Cart iPad",\#(Laced.fields)}]}"#)
         }
         var config = MDMConnection(name: "School", product: .jamfSchool)
-        config.baseURL = "https://school.jamfcloud.com"
+        config.baseURL = "https://example-school.jamfcloud.com"
         config.account = "999001"
         let log = ActivityLog()
         let school = try #require(JamfSchoolClient(config: config, secret: "SECRET-api-key", log: log, session: server.session))
@@ -435,11 +442,11 @@ struct RecorderTests {
             if request.path.hasSuffix("/oauth2/v2.0/token") {
                 return .json(200, #"{"access_token":"SECRET-graph-token","expires_in":3600}"#)
             }
-            return .json(200, #"{"value":[{"id":"i-1","serialNumber":"C02XK1JHJG5H","deviceName":"Lab Mac",\#(Laced.fields)}]}"#)
+            return .json(200, #"{"value":[{"id":"i-1","serialNumber":"TESTMAC0001","deviceName":"Lab Mac",\#(Laced.fields)}]}"#)
         }
         var config = MDMConnection(name: "Contoso", product: .intune, authMethod: .entraApp)
         config.tenantID = "contoso.onmicrosoft.com"
-        config.account = "6F1B2C3D-0000-1111-2222-333344445555"
+        config.account = "EEEEEEEE-2222-4000-8000-00000000C001"
         let log = ActivityLog()
         let intune = try #require(LookupModel.intuneClient(for: config, secret: { "SECRET-entra" }, log: log, session: server.session))
         _ = try? await intune.intuneDevices()
@@ -456,24 +463,24 @@ struct RecorderTests {
             if request.path.hasSuffix("/oauth2/v2/token") {
                 return .json(200, #"{"access_token":"SECRET-apple-token","expires_in":3600}"#)
             }
-            return .json(200, #"{"data":{"attributes":{"serialNumber":"C02XK1JHJG5H",\#(Laced.fields)}}}"#)
+            return .json(200, #"{"data":{"attributes":{"serialNumber":"TESTMAC0001",\#(Laced.fields)}}}"#)
         }
         let log = ActivityLog()
         let abm = ABMClient(clientID: "BUSINESSAPI.abc", keyID: "key-1",
                             privateKeyPEM: P256.Signing.PrivateKey().pemRepresentation,
                             kind: .business, connectionName: "Apple Business", log: log, session: server.session)
-        _ = try? await abm.device(serial: "C02XK1JHJG5H")
+        _ = try? await abm.device(serial: "TESTMAC0001")
 
         #expect(log.entries.map(\.category) == ["Sign-in", "API"])
         #expect(log.entries.allSatisfy { $0.service == "Apple Business" && $0.connection == "Apple Business" })
         #expect(log.entries.first?.request?.requestBody == nil)
-        #expect(log.entries.last?.request?.responseBody?.contains("C02XK1JHJG5H") == true)
+        #expect(log.entries.last?.request?.responseBody?.contains("TESTMAC0001") == true)
         #expect(!everything(log).contains("SECRET-"))
     }
 
     @Test("Apple keeps its own waits: 5, 15 and 45 s")
     func appleWaits() {
-        // JTKit's Apple rules since step 9
+        // JTKit's Apple rules
         #expect((1...4).map { RetryRules.appleBusiness.backoff(afterAttempt: $0, random: 1) } == [5, 15, 45, 45])
     }
 }
@@ -508,7 +515,7 @@ struct ClientCacheTests {
         let first = try #require(model.makeJamfClient(for: config))
         #expect(model.makeJamfClient(for: config) === first)
         // Two reads, one sign-in. (Test Connection, `verify`, always signs in
-        // afresh since step 7, as JTKit's does.)
+        // afresh, as JTKit's does.)
         _ = try await first.sites()
         _ = try await first.sites()
         #expect(signIns(server).count == 1)
@@ -607,16 +614,16 @@ struct ActionEntryTests {
     @Test("An action names its service and connection, and its serials are masked in the bug report")
     func actionsAreMasked() throws {
         let log = ActivityLog()
-        log.recordAction(service: .jamfPro, connection: "Lab Jamf", summary: "Erase C02XK1JHJG5H",
-                         outcome: .failed, serials: ["C02XK1JHJG5H"])
+        log.recordAction(service: .jamfPro, connection: "Lab Jamf", summary: "Erase TESTMAC0001",
+                         outcome: .failed, serials: ["TESTMAC0001"])
         let entry = try #require(log.entries.first)
         #expect(entry.category == "Action")
         #expect(entry.service == "Jamf Pro" && entry.connection == "Lab Jamf")
         #expect(entry.isFailure)
 
         let masked = ActivityLogExport.text(log.entries, masked: true)
-        #expect(!masked.contains("C02XK1JHJG5H"))
+        #expect(!masked.contains("TESTMAC0001"))
         #expect(masked.contains("<device 1>"))
-        #expect(ActivityLogExport.text(log.entries, masked: false).contains("C02XK1JHJG5H"))
+        #expect(ActivityLogExport.text(log.entries, masked: false).contains("TESTMAC0001"))
     }
 }

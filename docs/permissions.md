@@ -10,19 +10,19 @@ For what each feature actually does, see [Features](features.md).
 
 ## Apple Business and Apple School Manager
 
-The two are the same API behind different hosts, so most of the setup is identical. In either service, select your name at the bottom of the sidebar, then **Preferences → API → Get Started**. Name the account, create it, and choose **Generate Private Key**: the `.pem` file downloads once and cannot be downloaded again.
+The two are the same API behind different hosts, so most of the setup is identical. In either service, select your name at the bottom of the sidebar, then **Preferences → API → Get Started**. Name the account, create it, and choose **Generate Private Key**: the `.pem` file downloads once and can’t be downloaded again.
 
-They differ in one respect. **Apple Business** asks for a role — set it to **Device Enrollment Manager** or higher, otherwise the account cannot manage device assignments. **Apple School Manager** asks for no role at all; creating the account is enough, and only an Administrator or Site Manager can create one.
+They differ in one respect. **Apple Business** asks for a role — set it to **Device Enrollment Manager** or higher, otherwise the account can’t manage device assignments. **Apple School Manager** asks for no role at all; creating the account is enough, and only an Administrator or Site Manager can create one.
 
-Choose the service when adding the organization in Checkpoint: it selects the host and the OAuth scope. Credentials for one will not work against the other — the token request is refused with `invalid_scope`.
+Choose the service when adding the organization in Checkpoint: it selects the host and the OAuth scope. Credentials for one won’t work against the other — the token request is refused with `invalid_scope`.
 
 Activation Lock state and AppleCare coverage need no privilege beyond the API account itself.
 
-**Apple School Manager cannot release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
+**Apple School Manager can’t release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
 
 Each organization needs its own API account. You need the Client ID, the Key ID, and the downloaded `.pem` private key.
 
-Apple limits an organization to roughly **twenty requests a minute**, and does not signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, and reads the whole organization in bulk rather than per device once a lookup exceeds fifteen devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
+Apple limits an organization to roughly **twenty requests a minute**, and doesn’t signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, and reads the whole organization in bulk rather than per device once a lookup reaches 15 devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
 
 ## Jamf School
 
@@ -46,13 +46,13 @@ Each key carries its own list of permitted methods, chosen when you create it. G
 | Move to Trash | Delete device |
 | Findings across connections | Get Automated Device Enrollment devices |
 
-**What Jamf School cannot report**, and therefore what Checkpoint leaves out entirely for it: FileVault state, MDM profile expiration, software update state, last enrollment date, last inventory update, sites, PreStage scope, and all four recovery secrets. `hardwareEncryptionEnabled` is not FileVault and is not used.
+**What Jamf School can’t report**, and therefore what Checkpoint leaves out entirely for it: FileVault state, MDM profile expiration, software update state, last enrollment date, last inventory update, sites, PreStage scope, and all four recovery secrets. `hardwareEncryptionEnabled` isn’t FileVault and isn’t used.
 
-Three differences worth knowing. There is no computer/mobile split: one device resource serves both, so Wipe and Remove MDM Profile reach a Mac through the same call as an iPad, and Restart is offered for Macs too. **Move to Trash is not Jamf Pro's delete**: the record is recoverable in Jamf School, and the device stops being managed. And **a device with an assigned owner cannot change location** unless the owner is in the district or Cross Location Enrollment is enabled — Jamf School refuses the move, and Checkpoint names the devices it would not move rather than reporting a success.
+Three differences worth knowing. There is no computer/mobile split: one device resource serves both, so Wipe and Remove MDM Profile reach a Mac through the same call as an iPad, and Restart is offered for Macs too. **Move to Trash isn’t Jamf Pro’s delete**: the record is recoverable in Jamf School, and the device stops being managed. And **a device with an assigned owner can’t change location** unless the owner is in the district or Cross Location Enrollment is enabled — Jamf School refuses the move, and Checkpoint names the devices it wouldn’t move rather than reporting a success.
 
-Location changes are sent twenty devices at a time, which is the API's own limit, so a larger selection is split across several requests.
+Location changes are sent twenty devices at a time, which is the API’s own limit, so a larger selection is split across several requests.
 
-Timestamps come back in the instance's own time zone with no offset attached. Checkpoint reads the zone from the device record and converts, so a check-in reads correctly wherever you are.
+Timestamps come back in the instance’s own time zone with no offset attached. Checkpoint reads the zone from the device record and converts, so a check-in reads correctly wherever you are.
 
 ## Jamf Pro
 
@@ -60,7 +60,7 @@ Create an API client under **Settings → API Roles and Clients**, and grant its
 
 | Feature | Privilege |
 | --- | --- |
-| Device lookup, including FileVault state, passcode state and software update state | Read Computers, Read Mobile Devices |
+| Device lookup, including managed and supervised state, FileVault state, passcode state and software update state | Read Computers, Read Mobile Devices |
 | PreStage display and changes | Read/Update Computer PreStage Enrollments, Read/Update Mobile Device PreStage Enrollments |
 | PreStage filtering per ADE token, and findings across connections | Read Device Enrollment Program Instances |
 | Looking up a group | Read Smart Computer Groups, Read Static Computer Groups, Read Smart Mobile Device Groups, Read Static Mobile Device Groups |
@@ -102,15 +102,15 @@ Looking up an order needs no Jamf Pro privilege and no extra Apple role — the 
 
 ### Optional privileges
 
-Without **View Local Admin Password**, the Managed Local Administrator Accounts section is simply absent. Checkpoint reads the accounts during an ordinary lookup, so a missing privilege is treated as "no accounts" rather than an error.
+Without **View Local Admin Password**, the Managed Local Administrator Accounts section is simply absent. Checkpoint reads the accounts when a device is selected, so a missing privilege is treated as "no accounts" rather than an error.
 
 Reading the rotation interval, which the confirmation quotes before a password is shown, additionally needs **Read User-Initiated Enrollment** and **Update Local Admin Password Settings** — Jamf Pro guards that setting with an update privilege even for reading it. Without them the confirmation says only that a rotation follows, and the password is still shown.
 
-Software update state, declaration status and the enforced update target all come from the device's declarative status report and the declaration behind it. None needs a privilege beyond **Read Computers** and **Read Mobile Devices**, so an ordinary lookup already covers them. Apple has moved software updates to declarative management, and Jamf Pro's update plans and per-product statuses are both deprecated, so neither is used.
+Software update state, declaration status and the enforced update target all come from the device’s declarative status report and the declaration behind it. None needs a privilege beyond **Read Computers** and **Read Mobile Devices**, so an ordinary lookup already covers them. Apple has moved software updates to declarative management, and Jamf Pro’s update plans and per-product statuses are both deprecated, so neither is used.
 
 What each value means, and which of them the report keeps after they stop being true, is described in [Features](features.md#software-updates-and-declarations).
 
-FileVault state comes from the device's inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro's own audit trail; simply looking a device up does not.
+FileVault state comes from the device’s inventory record, not from the recovery-key endpoint, so it needs only **Read Computers**. Viewing the key itself still requires **View Disk Encryption Recovery Key**, and still writes an entry to Jamf Pro’s own audit trail; simply looking a device up doesn’t.
 
 Without **Read Departments** or **Read Buildings**, that row is left out rather than shown as an identifier: Jamf Pro reports the assignment as an ID, and the name comes from the list those privileges grant. Room needs neither and appears either way.
 

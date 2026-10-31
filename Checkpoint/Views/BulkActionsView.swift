@@ -89,7 +89,8 @@ struct BulkActionsView: View {
         model.staleRecords(in: reports)
     }
 
-    /// Devices that are in ABM and not released, the ones ABM actions can touch.
+    /// Devices that are in an Apple organization and not released, the ones
+    /// Apple actions can touch.
     private var abmCount: Int {
         reports.filter { $0.abm.value.map { !$0.isReleased } ?? false }.count
     }
@@ -117,7 +118,7 @@ struct BulkActionsView: View {
         return now...now.addingTimeInterval(ABMClient.maximumMigrationDeadline)
     }
 
-    /// Devices with a Jamf Pro record (computer or mobile device).
+    /// Devices with an MDM record (computer or mobile device).
     private var managedCount: Int {
         reports.filter { $0.mdm.value != nil }.count
     }
@@ -270,28 +271,32 @@ struct BulkActionsView: View {
         let capabilities = actionConnection?.capabilities ?? model.mdmCapabilities
         if capabilities.contains(.sites), managedCount > 0, !actionSites.isEmpty {
             bulkPicker("Site", selection: $siteSelection, currentState: currentSiteState, noneLabel: "None", options: actionSites.map { ($0.id, $0.name) })
-            Button("Apply Site to \(count(managedCount))") { pending = .applySite }
-                .disabled(siteSelection == .mixed || siteSelection == currentSiteState)
+            Button("Apply Site to \(count(siteMoveCount))") { pending = .applySite }
+                .disabled(siteSelection == .mixed || siteSelection == currentSiteState || siteMoveCount == 0)
         }
         if capabilities.contains(.locations), managedCount > 0, !actionLocations.isEmpty {
             bulkPicker("Location", selection: $locationSelection, currentState: currentLocationState, noneLabel: "None", options: actionLocations.map { ($0.id, $0.name) })
-            Button("Apply Location to \(count(managedCount))") { pending = .applyLocation }
-                .disabled(locationSelection.appliedID == nil || locationSelection == .mixed || locationSelection == currentLocationState)
+            Button("Apply Location to \(count(locationMoveCount))") { pending = .applyLocation }
+                .disabled(locationSelection.appliedID == nil || locationSelection == .mixed || locationSelection == currentLocationState
+                          || locationMoveCount == 0)
         }
         if capabilities.contains(.prestageScope) {
             if computerCount > 0 {
                 bulkPicker("Computer PreStage", selection: $computerPrestageSelection, currentState: currentPrestageState(kind: .computer), noneLabel: "None", options: prestageOptions(kind: .computer).map { ($0.id, $0.displayName) })
-                Button("Apply PreStage to \(count(computerCount))") { pending = .applyComputerPrestage }
-                    .disabled(computerPrestageSelection == .mixed || computerPrestageSelection == currentPrestageState(kind: .computer))
+                Button("Apply PreStage to \(count(prestageMoveCount(.computer)))") { pending = .applyComputerPrestage }
+                    .disabled(computerPrestageSelection == .mixed || computerPrestageSelection == currentPrestageState(kind: .computer)
+                              || prestageMoveCount(.computer) == 0)
             }
             if mobileCount > 0 {
                 bulkPicker("Mobile Device PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: prestageOptions(kind: .mobileDevice).map { ($0.id, $0.displayName) })
-                Button("Apply PreStage to \(count(mobileCount))") { pending = .applyMobilePrestage }
-                    .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice))
+                Button("Apply PreStage to \(count(prestageMoveCount(.mobileDevice)))") { pending = .applyMobilePrestage }
+                    .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice)
+                              || prestageMoveCount(.mobileDevice) == 0)
             }
         }
         Button(
-            "\(actionProduct.removeRecordAction) for \(count(managedCount))",
+            "\(actionProduct.removeRecordAction) for \(count(managedCount))"
+                + (model.deleteConfirmation(reports: reports)?.needsTyping == true ? "…" : ""),
             role: .destructive
         ) {
             guard let confirmation = model.deleteConfirmation(reports: reports) else { return }
@@ -309,7 +314,10 @@ struct BulkActionsView: View {
         let product = actionProduct
         let unavailable = model.mdmActionUnavailableReason(for: reports)
             ?? model.unavailabilityReason(for: command, reports: reports)
-        Button("\(command.title(for: actionProduct)) (\(commandCount(command)))", role: command.isDestructive ? .destructive : nil) {
+        // An ellipsis when it opens a sheet to type into (a PIN, the number).
+        let opensSheet = model.commandConfirmation(command, reports: reports)?.needsTyping == true
+        Button("\(command.title(for: actionProduct))\(opensSheet ? "…" : "") (\(commandCount(command)))",
+               role: command.isDestructive ? .destructive : nil) {
             guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
             if confirmation.needsTyping {
                 typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
@@ -348,7 +356,9 @@ struct BulkActionsView: View {
                     LabeledContent("Stale Records", value: model.staleRecordSummary(in: reports))
                     // Deliberately not gated on a single connection: removal
                     // follows each record home, which is the point.
-                    Button("Remove \(staleEntries.count) Stale Record\(staleEntries.count == 1 ? "" : "s")", role: .destructive) {
+                    let opensSheet = model.staleRemovalConfirmation(reports: reports).needsTyping
+                    Button("Remove \(staleEntries.count) Stale Record\(staleEntries.count == 1 ? "" : "s")\(opensSheet ? "…" : "")",
+                           role: .destructive) {
                         let confirmation = model.staleRemovalConfirmation(reports: reports)
                         if confirmation.needsTyping {
                             typed = TypedConfirmation(confirmation: confirmation, action: .removeStaleRecords)
@@ -364,7 +374,7 @@ struct BulkActionsView: View {
         .disabled(isWorking)
         .overlay {
             if isWorking {
-                ProgressView()
+                ProgressView().accessibilityLabel("In progress")
                     .padding()
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
@@ -421,9 +431,9 @@ struct BulkActionsView: View {
         ForEach(visible, id: \.self) { command in
             commandButton(command)
         }
-        let blocked = visible.filter { model.unavailabilityReason(for: $0, reports: reports) != nil }.map(\.title)
+        let blocked = visible.compactMap { model.unavailabilityReason(for: $0, reports: reports) }
         if model.mdmActionUnavailableReason(for: reports) == nil, !blocked.isEmpty {
-            Text("\(blocked.formatted(.list(type: .and))) need an API client connection.")
+            Text(blocked.joined(separator: " "))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -468,9 +478,19 @@ struct BulkActionsView: View {
         "\(n) Device\(n == 1 ? "" : "s")"
     }
 
-    private var selectedServerName: String? {
-        let servers = model.mdmServers(for: model.appleActionOrg(for: reports))
-        return mdmSelection.appliedID.map { id in servers.first { $0.id == id }?.name ?? id }
+    // How many devices each move would change, as the model sends it:
+    // devices already there are skipped, so they aren't counted.
+    private var siteMoveCount: Int {
+        model.siteMoves(reports, to: siteSelection.appliedID ?? "-1").count
+    }
+
+    private var locationMoveCount: Int {
+        locationSelection.appliedID.map { model.locationMoves(reports, to: $0).count } ?? 0
+    }
+
+    private func prestageMoveCount(_ kind: DeviceKind) -> Int {
+        let choice = kind == .computer ? computerPrestageSelection : mobilePrestageSelection
+        return model.prestageMoves(reports, to: choice.appliedID, kind: kind).count
     }
 
     private func selectedPrestageName(_ choice: BulkChoice, in prestages: [JamfPrestage]) -> String? {
@@ -512,24 +532,24 @@ struct BulkActionsView: View {
             (appleDialog?.title).map { $0 + "?" } ?? ""
         case .applyComputerPrestage:
             if let name = selectedPrestageName(computerPrestageSelection, in: actionPrestages(kind: .computer)) {
-                "Move \(count(computerCount)) to PreStage “\(name)”?"
+                "Move \(count(prestageMoveCount(.computer))) to PreStage “\(name)”?"
             } else {
-                "Remove \(count(computerCount)) from their PreStage?"
+                "Remove \(count(prestageMoveCount(.computer))) from Their PreStage?"
             }
         case .applyMobilePrestage:
             if let name = selectedPrestageName(mobilePrestageSelection, in: actionPrestages(kind: .mobileDevice)) {
-                "Move \(count(mobileCount)) to PreStage “\(name)”?"
+                "Move \(count(prestageMoveCount(.mobileDevice))) to PreStage “\(name)”?"
             } else {
-                "Remove \(count(mobileCount)) from their PreStage?"
+                "Remove \(count(prestageMoveCount(.mobileDevice))) from Their PreStage?"
             }
         case .applySite:
-            "Move \(count(managedCount)) to site “\(selectedSiteName)”?"
+            "Move \(count(siteMoveCount)) to Site “\(selectedSiteName)”?"
         case .applyLocation:
-            "Move \(count(managedCount)) to location “\(selectedLocationName)”?"
+            "Move \(count(locationMoveCount)) to Location “\(selectedLocationName)”?"
         case .deleteRecord:
-            actionProduct.removeRecordPrompt(count(managedCount))
+            (model.deleteConfirmation(reports: reports)?.title).map { $0 + "?" } ?? ""
         case .removeStaleRecords:
-            "Remove \(staleEntries.count) stale record\(staleEntries.count == 1 ? "" : "s")?"
+            model.staleRemovalConfirmation(reports: reports).title + "?"
         case .command(let command):
             (model.commandConfirmation(command, reports: reports)?.title ?? command.title(for: actionProduct)) + "?"
         case nil:
@@ -642,7 +662,7 @@ struct BulkActionsView: View {
         let product = actionProduct
         runReporting {
             let sent = try await model.sendCommand(command, reports: reports, approval: approval)
-            return "\(command.title(for: actionProduct)) was queued for \(count(sent)) in \(product.label)."
+            return "\(command.title(for: product)) was sent to \(LookupModel.deviceCount(sent)) in \(product.label)."
         }
     }
 

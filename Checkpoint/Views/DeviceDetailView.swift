@@ -38,7 +38,7 @@ struct DeviceDetailView: View {
     /// The software update target the device is held to, read back from the
     /// declaration itself because the status report does not carry it.
     @State private var enforcement: JamfUpdateEnforcement?
-    /// The blueprint a declaration came from, named when the connection can.
+    /// The Blueprint a declaration came from, named when the connection can.
     @State private var blueprintName: String?
     /// AppleCare coverage fetched on selection, when the lookup read Apple
     /// Business in bulk and therefore could not include it.
@@ -68,7 +68,7 @@ struct DeviceDetailView: View {
     /// it holds. Fetched on selection like the other per-device reads.
     @State private var appleDetail: ABMManagedDeviceDetail?
     /// Apple reads that failed, by what they were for, with the message to
-    /// show in place of the value (ROADMAP step 9: an error, not "none").
+    /// show in place of the value: an error, not "none".
     @State private var appleReadErrors: [AppleRead: String] = [:]
 
     private enum AppleRead: Hashable {
@@ -118,7 +118,7 @@ struct DeviceDetailView: View {
         if let url = info.webURL {
             Link("Open in \(product.label)", destination: url)
         }
-        Button(product.removeRecordLabel, role: .destructive) {
+        Button(product.removeRecordAction, role: .destructive) {
             pending = .removeOtherRecord(info)
         }
     }
@@ -158,7 +158,7 @@ struct DeviceDetailView: View {
                 LabeledContent("Erased") { Text("Yes").foregroundStyle(.orange) }
             }
         } else {
-            LabeledContent("Management State") { ProgressView().controlSize(.small) }
+            LabeledContent("Management State") { ProgressView().accessibilityLabel("In progress").controlSize(.small) }
         }
     }
 
@@ -177,8 +177,8 @@ struct DeviceDetailView: View {
 
     private var noRecordHint: String {
         model.readsAllConnections
-            ? "No device record was found on any configured connection."
-            : model.mdmProduct.noRecordHint
+            ? "No record on any configured connection."
+            : "No record on \(model.selectedConnection?.displayName ?? model.mdmProduct.label)."
     }
 
     var body: some View {
@@ -233,7 +233,7 @@ struct DeviceDetailView: View {
         .disabled(isWorking)
         .overlay {
             if isWorking {
-                ProgressView()
+                ProgressView().accessibilityLabel("In progress")
                     .padding()
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
@@ -252,15 +252,10 @@ struct DeviceDetailView: View {
                 await model.loadADEInstances(for: connection)
             }
         }
-        .onChange(of: report.serial) {
-            syncSelections()
-            historyExpanded = false
-            historyEvents = []
-            historyNextCursor = nil
-            historyLoaded = false
-        }
-        .onChange(of: historyExpanded) { _, expanded in
-            if expanded, !historyLoaded { Task { await loadHistory() } }
+        // Canceled with the view, so a page still loading never lands on
+        // another device's inspector.
+        .task(id: historyExpanded) {
+            if historyExpanded, !historyLoaded { await loadHistory() }
         }
         .sheet(isPresented: $showingFullHistory) { fullHistorySheet }
         .onChange(of: report.abm.value?.mdmServerID) { syncSelections() }
@@ -269,29 +264,30 @@ struct DeviceDetailView: View {
         .onChange(of: report.mdm.value?.siteID) { syncSelections() }
         .onChange(of: report.mdm.value?.locationID) { syncSelections() }
         .sheet(item: $revealedSecret) { secret in
+            SheetFrame(title: secret.title, systemImage: "key") {
             VStack(alignment: .leading, spacing: 16) {
-                Text(secret.title).font(.headline)
                 Text(report.serial).font(.caption).foregroundStyle(.secondary)
+                // Not selectable: copying goes through the Copy button
+                // alone, which clears the clipboard again (SecretPasteboard).
                 Text(secret.value)
                     .font(.title3.monospaced())
-                    .textSelection(.enabled)
                     .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
                 if let note = secret.note {
                     Text(note).font(.caption).foregroundStyle(.secondary)
                 }
-                HStack {
-                    // concealed, kept on this Mac, cleared after 60 s (JTKit)
-                    Button("Copy") { SecretPasteboard.copy(secret.value) }
-                        .help("Copies it for 60 seconds, then clears the clipboard if it still holds it.")
-                    Spacer()
-                    Button("Done") { revealedSecret = nil }
-                        .keyboardShortcut(.defaultAction)
-                }
             }
             .padding(20)
+            } footer: {
+                // concealed, kept on this Mac, cleared after 60 s (JTKit)
+                Button("Copy") { SecretPasteboard.copy(secret.value) }
+                    .help("Copies it for 60 seconds, then clears the clipboard if it still holds it.")
+                Spacer()
+                doneButton { revealedSecret = nil }
+            }
             .frame(width: 380)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .alert(
             "Action Failed",
@@ -326,10 +322,6 @@ struct DeviceDetailView: View {
     }
 
     // MARK: Confirmation
-
-    private var selectedServerName: String? {
-        mdmSelection.map { id in model.mdmServers.first { $0.id == id }?.name ?? id }
-    }
 
     /// PreStages the device can actually join: ones tied to the same
     /// device-enrollment (ADE) instance that synced this serial. Falls back
@@ -393,9 +385,9 @@ struct DeviceDetailView: View {
                 ? "Clear the asset tag on \(report.serial)?"
                 : "Set the asset tag on \(report.serial) to “\(assetTagField.trimmingCharacters(in: .whitespaces))”?"
         case .deleteRecord:
-            model.product(for: report).removeRecordPrompt(report.serial)
+            (model.deleteConfirmation(reports: [report])?.title).map { $0 + "?" } ?? ""
         case .removeOtherRecord(let info):
-            (model.connection(for: info)?.product ?? .jamfPro).removeRecordPrompt(report.serial)
+            model.recordRemovalConfirmation(info, serial: report.serial).title + "?"
         case .command(let command):
             (model.commandConfirmation(command, reports: [report])?.title ?? "\(command.title(for: model.product(for: report))) — \(report.serial)") + "?"
         case .viewLocalAdminPassword(let account):
@@ -483,7 +475,7 @@ struct DeviceDetailView: View {
                 execute(command, approval: try? model.commandConfirmation(command, reports: [report])?.approve())
             }
         case .viewLocalAdminPassword(let account):
-            Button("Continue") {
+            Button("View Password") {
                 reveal(title: "Password for \(account.username)") {
                     let password = try await model.localAdminPassword(for: report, account: account)
                     return (password, "Jamf Pro will rotate this password \(rotationDescription).")
@@ -494,7 +486,7 @@ struct DeviceDetailView: View {
         }
     }
 
-    // MARK: ABM
+    // MARK: Apple
 
 
     /// The device's life in the organization — added, assigned, released —
@@ -506,9 +498,9 @@ struct DeviceDetailView: View {
             if let message = appleReadErrors[.history], historyEvents.isEmpty {
                 readFailure(message, alignment: .leading)
             } else if isLoadingHistory && historyEvents.isEmpty {
-                ProgressView().controlSize(.small)
+                ProgressView().accessibilityLabel("In progress").controlSize(.small)
             } else if historyEvents.isEmpty {
-                Text("No events in the organization's audit log for this device.")
+                Text("No events in the organization’s audit log for this device.")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(historyEvents.prefix(4)) { event in
@@ -542,9 +534,10 @@ struct DeviceDetailView: View {
 
     /// The complete timeline, paged backwards through the organization's log.
     private var fullHistorySheet: some View {
+        SheetFrame(title: "Device History", systemImage: "clock") {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Device History").font(.headline)
             Text(report.serial).font(.caption).foregroundStyle(.secondary)
+                .padding([.horizontal, .top], 20)
             Form {
                 ForEach(historyEvents) { event in
                     historyRow(event, withTime: true)
@@ -555,14 +548,26 @@ struct DeviceDetailView: View {
                 }
             }
             .formStyle(.grouped)
-            HStack {
-                Spacer()
-                Button("Done") { showingFullHistory = false }
-                    .keyboardShortcut(.defaultAction)
-            }
         }
-        .padding(20)
+        } footer: {
+            Spacer()
+            doneButton { showingFullHistory = false }
+        }
         .frame(width: 480, height: min(max(180 + CGFloat(historyEvents.count) * 56, 280), 560))
+    }
+
+    /// Done, closing the sheet with Return and with Escape, as JTKit's
+    /// update sheet does: a button takes one shortcut, so an invisible twin
+    /// takes Escape.
+    private func doneButton(_ action: @escaping () -> Void) -> some View {
+        ZStack {
+            Button("Done", action: action)
+                .keyboardShortcut(.cancelAction)
+                .opacity(0)
+                .accessibilityHidden(true)
+            Button("Done", action: action)
+                .keyboardShortcut(.defaultAction)
+        }
     }
 
     private func loadHistory() async {
@@ -571,7 +576,9 @@ struct DeviceDetailView: View {
         defer { isLoadingHistory = false }
         do {
             appleReadErrors[.history] = nil
-            if let page = try await model.deviceHistory(for: report, cursor: historyLoaded ? historyNextCursor : nil) {
+            let page = try await model.deviceHistory(for: report, cursor: historyLoaded ? historyNextCursor : nil)
+            guard !Task.isCancelled else { return }
+            if let page {
                 if historyLoaded {
                     historyEvents += page.events
                 } else {
@@ -581,6 +588,7 @@ struct DeviceDetailView: View {
             }
             historyLoaded = true
         } catch {
+            guard !Task.isCancelled, !(error is CancellationError) else { return }
             appleReadErrors[.history] = error.localizedDescription
         }
     }
@@ -628,12 +636,12 @@ struct DeviceDetailView: View {
     private var abmContent: some View {
         switch report.abm {
         case .pending:
-            ProgressView().controlSize(.small)
+            ProgressView().accessibilityLabel("In progress").controlSize(.small)
         case .notConfigured:
             Text("Add your \(model.abmKind.label) API credentials in Settings to see device status, warranty, and MDM assignment.")
                 .foregroundStyle(.secondary)
         case .notFound:
-            Text("This serial number is not part of your organization. It was never added, or it has been released.")
+            Text("No configured \(model.appleScopeLabel) organization reports this serial number.")
                 .foregroundStyle(.secondary)
         case .failed(let message):
             Text(message).foregroundStyle(.red)
@@ -657,7 +665,7 @@ struct DeviceDetailView: View {
         if model.readsAllABMOrgs, let org = info.orgName {
             LabeledContent("Organization", value: org)
         }
-        // Colour and capacity belong to the model rather than to rows of
+        // Color and capacity belong to the model rather than to rows of
         // their own, so the model row carries them.
         LabeledContent("Model") {
             VStack(alignment: .trailing, spacing: 2) {
@@ -672,7 +680,7 @@ struct DeviceDetailView: View {
         if !info.isReleased {
             activationLockRow
         }
-        LabeledContent("Date added", value: DateFormatting.short(info.device.addedToOrgDateTime))
+        LabeledContent("Date Added", value: DateFormatting.short(info.device.addedToOrgDateTime))
         LabeledContent("Order") {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(info.device.orderNumber ?? "—")
@@ -700,7 +708,7 @@ struct DeviceDetailView: View {
             LabeledContent("Warranty Coverage") { readFailure(message) }
         } else if !info.coverageLoaded && loadedCoverage == nil {
             LabeledContent("Warranty Coverage") {
-                ProgressView().controlSize(.small)
+                ProgressView().accessibilityLabel("In progress").controlSize(.small)
             }
         } else if coverage.isEmpty {
             LabeledContent("Warranty Coverage", value: "No coverage found")
@@ -752,7 +760,7 @@ struct DeviceDetailView: View {
     private var activationLockRow: some View {
         LabeledContent("Activation Lock") {
             if isLoadingActivationLock {
-                ProgressView().controlSize(.small)
+                ProgressView().accessibilityLabel("In progress").controlSize(.small)
             } else if let message = appleReadErrors[.activationLock] {
                 readFailure(message)
             } else if let lock = activationLock {
@@ -771,17 +779,17 @@ struct DeviceDetailView: View {
             } else {
                 Text("Unknown")
                     .foregroundStyle(.secondary)
-                    .help("The organization did not report a lock state for this device.")
+                    .help("The organization didn’t report a lock state for this device.")
             }
         }
-        .help("Reported by the Apple organization. Checkpoint does not read bypass codes or clear locks.")
+        .help("Reported by the Apple organization. Checkpoint doesn’t read bypass codes or clear locks.")
     }
 
     @ViewBuilder
     private func abmActions(_ info: ABMInfo) -> some View {
         Picker("MDM Server", selection: $mdmSelection) {
             // not "Unassigned" when Apple says it is assigned but the server
-            // couldn't be read (design review, step 9)
+            // couldn't be read
             Text(info.assignmentUnknown ? "Unknown" : "Unassigned").tag(String?.none)
             // The device's own organization: a service ID from another one
             // would be rejected.
@@ -803,7 +811,7 @@ struct DeviceDetailView: View {
             DatePicker("New Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
             Button("Update Deadline") { pending = .updateDeadline }
             Button("Cancel Migration", role: .destructive) { pending = .cancelMigration }
-            Text("The device is already assigned to \(info.mdmServerName ?? "the new server"). Cancelling stops the migration only, it does not return the assignment.")
+            Text("Canceling stops only the scheduled migration. The device stays assigned to \(info.mdmServerName ?? "the new server").")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else if info.device.isMdmMigrationCapable == true {
@@ -830,7 +838,7 @@ struct DeviceDetailView: View {
     private var mdmContent: some View {
         switch report.mdm {
         case .pending:
-            ProgressView().controlSize(.small)
+            ProgressView().accessibilityLabel("In progress").controlSize(.small)
         case .notConfigured:
             Text(missingConnectionHint)
                 .foregroundStyle(.secondary)
@@ -919,8 +927,8 @@ struct DeviceDetailView: View {
                     .foregroundStyle(expired ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
             }
         }
-        // Jamf School reports whether a device is still managed and
-        // supervised, which is the nearest it comes to an enrollment state.
+        // Whether the device is still managed and supervised, as its product
+        // reports it.
         if let managed = info.isManaged {
             LabeledContent("Managed") {
                 Text(managed ? "Yes" : "No")
@@ -969,18 +977,18 @@ struct DeviceDetailView: View {
                     case nil: Text("—")
                     }
                     if details.passcodeCompliant == false {
-                        Text("Does not meet requirements")
+                        Text("Doesn’t meet requirements")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
                 }
             } else {
-                ProgressView().controlSize(.small)
+                ProgressView().accessibilityLabel("In progress").controlSize(.small)
             }
         }
     }
 
-    /// Encryption state from inventory, labelled by device kind: FileVault on
+    /// Encryption state from inventory, labeled by device kind: FileVault on
     /// a computer, plain encryption on a mobile device. The mobile case is
     /// only ever an Intune device on a non-Apple platform — on iPhone and
     /// iPad the same flag reports data protection and fills the Passcode row
@@ -1026,11 +1034,11 @@ struct DeviceDetailView: View {
                         Text("—")
                     }
                     if security.passcodeCompliantWithProfile == false {
-                        Text("Does not meet the scoped profile")
+                        Text("Doesn’t meet the scoped profile")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     } else if security.passcodeCompliant == false {
-                        Text("Does not meet requirements")
+                        Text("Doesn’t meet requirements")
                             .font(.caption)
                             .foregroundStyle(.orange)
                     }
@@ -1093,7 +1101,7 @@ struct DeviceDetailView: View {
             } else {
                 Text("Not reported")
                     .foregroundStyle(.secondary)
-                    .help("The device has sent no declarative status report, so it is either not managed declaratively or has not reported yet.")
+                    .help("The device has sent no declarative status report, so it’s either not managed declaratively or hasn’t reported yet.")
             }
         }
     }
@@ -1118,7 +1126,7 @@ struct DeviceDetailView: View {
     /// Red is reserved for the state that is itself a failure. Painting
     /// "Ready to install" red because a later attempt failed labels a sound
     /// state as a broken one, and the failure below already carries the
-    /// colour.
+    /// color.
     private func updateStateTint(_ update: JamfSoftwareUpdateStatus) -> AnyShapeStyle {
         if update.isFailedState { return AnyShapeStyle(.red) }
         return update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
@@ -1128,10 +1136,10 @@ struct DeviceDetailView: View {
     /// said so.
     ///
     /// Its own rows because the server's view and the device's can disagree:
-    /// Jamf Pro reports a blueprint as deployed once it has handed the
+    /// Jamf Pro reports a Blueprint as deployed once it has handed the
     /// declaration over, while the device decides whether it can be applied.
     /// A rejected software update declaration means nothing is enforcing
-    /// updates, however healthy the blueprint looks.
+    /// updates, however healthy the Blueprint looks.
     @ViewBuilder
     private var declarationRows: some View {
         if let ddm, !ddm.declarations.isEmpty {
@@ -1239,7 +1247,7 @@ struct DeviceDetailView: View {
         return ddm.invalidDeclarations.filter { $0.identifier != named }
     }
 
-    /// Links a declaration back to the blueprint that produced it, named when
+    /// Links a declaration back to the Blueprint that produced it, named when
     /// the connection can resolve one and identified by UUID otherwise.
     ///
     /// The link is built from the server URL rather than the API host, since
@@ -1247,9 +1255,8 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private func blueprintLink(for declaration: JamfDeclaration) -> some View {
         if let blueprint = declaration.blueprintID,
-           let base = model.selectedConnection?.normalizedBaseURL,
-           let url = URL(string: "\(base)/view/mfe/blueprints/\(blueprint)") {
-            Link(blueprintName ?? "Open blueprint", destination: url)
+           let url = model.blueprintURL(blueprint, for: report) {
+            Link(blueprintName ?? "Open Blueprint", destination: url)
                 .font(.caption)
                 .help(blueprintName == nil ? blueprint : "Blueprint \(blueprint)")
         }
@@ -1307,7 +1314,7 @@ struct DeviceDetailView: View {
                 }
             }
             .disabled(noKeyExpected)
-            .help(noKeyExpected ? "FileVault is not enabled on this Mac." : "")
+            .help(noKeyExpected ? "FileVault isn’t enabled on this Mac." : "")
             Button("Show Recovery Lock Password") {
                 reveal(title: "Recovery Lock Password") {
                     (try await model.recoveryLockPassword(for: report), nil)
@@ -1320,7 +1327,7 @@ struct DeviceDetailView: View {
             }
         }
         // Destructive action last, matching Release in the Apple Business block.
-        Button(model.product(for: report).removeRecordLabel, role: .destructive) { pending = .deleteRecord }
+        Button(model.product(for: report).removeRecordAction, role: .destructive) { pending = .deleteRecord }
     }
 
     /// One row per managed local administrator account Jamf Pro holds, in the
@@ -1345,7 +1352,7 @@ struct DeviceDetailView: View {
     }
 
     /// Loads the detail that is fetched per device rather than per lookup.
-    /// Apple's reads show their error in place of the value (ROADMAP step 9);
+    /// Apple's reads show their error in place of the value;
     /// the others stay silent: they are supplementary, the LAPS privilege is
     /// optional, and this runs every time a device is selected.
     private func loadDeviceDetail() async {
@@ -1360,14 +1367,26 @@ struct DeviceDetailView: View {
         activationLock = nil
         appleReadErrors = [:]
         isLoadingActivationLock = report.abm.value?.isReleased == false
+        // A read canceled because the selection moved on (the task's ID
+        // changed) writes nothing: neither its value nor its cancellation
+        // as an error.
+        func cancelled(_ error: (any Error)? = nil) -> Bool {
+            Task.isCancelled || error is CancellationError
+        }
         do {
-            loadedCoverage = try await model.appleCareCoverage(for: report)
+            let coverage = try await model.appleCareCoverage(for: report)
+            if cancelled() { return }
+            loadedCoverage = coverage
         } catch {
+            if cancelled(error) { return }
             appleReadErrors[.coverage] = error.localizedDescription
         }
         do {
-            activationLock = try await model.activationLock(for: report)
+            let lock = try await model.activationLock(for: report)
+            if cancelled() { return }
+            activationLock = lock
         } catch {
+            if cancelled(error) { return }
             appleReadErrors[.activationLock] = error.localizedDescription
         }
         isLoadingActivationLock = false
@@ -1376,37 +1395,52 @@ struct DeviceDetailView: View {
         // server has none of the endpoints below, and a Jamf Pro one carries
         // passcode state in the lookup already.
         if model.capabilities(for: report).contains(.passcodeOnDemand) {
-            schoolDetails = await model.jamfSchoolDetails(for: report)
+            let details = await model.jamfSchoolDetails(for: report)
+            if !cancelled() { schoolDetails = details }
             return
         }
         appleDetail = nil
         if report.mdm.value?.managedByApple == true {
             do {
-                appleDetail = try await model.appleManagementDetail(for: report)
+                let detail = try await model.appleManagementDetail(for: report)
+                if cancelled() { return }
+                appleDetail = detail
             } catch {
+                if cancelled(error) { return }
                 appleReadErrors[.management] = error.localizedDescription
             }
         }
-        compliance = await model.deviceCompliance(for: report)
+        let compliance = await model.deviceCompliance(for: report)
+        if cancelled() { return }
+        self.compliance = compliance
         // Gated rather than left to the client factory to refuse: a product
         // with no declarative reporting should not be asked in the first
         // place, and the same goes for the recovery secrets below.
         guard model.capabilities(for: report).contains(.declarations) else { return }
-        ddm = await model.ddmStatus(for: report)
+        let ddm = await model.ddmStatus(for: report)
+        if cancelled() { return }
+        self.ddm = ddm
         // Both need the status first, and neither is worth a request for a
         // device with nothing declarative to say.
         if let ddm {
-            enforcement = await model.updateEnforcement(in: ddm, for: report)
+            let enforcement = await model.updateEnforcement(in: ddm, for: report)
+            if cancelled() { return }
+            self.enforcement = enforcement
             if let blueprint = ddm.rejectedUpdateEnforcement?.blueprintID
                 ?? ddm.declarations.compactMap(\.blueprintID).first {
-                blueprintName = await model.blueprintName(for: blueprint, report: report)
+                let name = await model.blueprintName(for: blueprint, report: report)
+                if cancelled() { return }
+                blueprintName = name
             }
         }
         guard report.mdm.value?.kind == .computer,
               model.capabilities(for: report).contains(.recoverySecrets) else { return }
-        localAdmins = await model.localAdminAccounts(for: report)
-        if !localAdmins.isEmpty {
-            rotationTime = await model.localAdminRotationTime(for: report)
+        let admins = await model.localAdminAccounts(for: report)
+        if cancelled() { return }
+        localAdmins = admins
+        if !admins.isEmpty {
+            let rotation = await model.localAdminRotationTime(for: report)
+            if !cancelled() { rotationTime = rotation }
         }
     }
 
@@ -1433,7 +1467,10 @@ struct DeviceDetailView: View {
         ForEach(MDMCommand.commands(for: info.kind, product: product), id: \.self) { command in
             let unavailable = model.unavailabilityReason(for: command, reports: [report])
                 ?? command.inapplicabilityReason(for: info)
-            Button(command.title(for: model.product(for: report)), role: command.isDestructive ? .destructive : nil) {
+            // An ellipsis when it opens a sheet to type into (the PIN).
+            let opensSheet = model.commandConfirmation(command, reports: [report])?.needsTyping == true
+            Button(command.title(for: model.product(for: report)) + (opensSheet ? "…" : ""),
+                   role: command.isDestructive ? .destructive : nil) {
                 guard let confirmation = model.commandConfirmation(command, reports: [report]) else { return }
                 if confirmation.needsTyping {
                     typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
@@ -1445,17 +1482,16 @@ struct DeviceDetailView: View {
             .help(unavailable ?? command.message(for: product))
         }
         let blocked = MDMCommand.commands(for: info.kind, product: product)
-            .filter { model.unavailabilityReason(for: $0, reports: [report]) != nil }
-            .map(\.title)
+            .compactMap { model.unavailabilityReason(for: $0, reports: [report]) }
         if !blocked.isEmpty {
-            Text("\(blocked.formatted(.list(type: .and))) need an API client connection.")
+            Text(blocked.joined(separator: " "))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
     private func execute(_ command: MDMCommand, approval: MDMCommand.Confirmation.Approval?) {
-        run(successMessage: "\(command.title(for: model.product(for: report))) was queued in \(model.product(for: report).label).") {
+        run(successMessage: "\(command.title(for: model.product(for: report))) was sent to \(report.serial) in \(model.product(for: report).label).") {
             try await model.sendCommand(command, reports: [report], approval: approval)
         }
     }

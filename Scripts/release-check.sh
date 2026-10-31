@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Checkpoint's release check (JTKit ROADMAP step 11). Claude runs it
+# Checkpoint’s release check. Claude runs it
 # unattended with nohup; the report lands in
 # ~/Library/Application Support/JTKit Release Check/runs/.
 #   Scripts/release-check.sh [--local-jtkit] [--tenants] [--include-production] [--stop-before-live]
@@ -27,7 +27,7 @@ LIVE_TESTS=("CheckpointTests/LiveLookupTests/readOnlyLookups()"
             "CheckpointTests/LiveLookupTests/testRecords()")
 CLEANUP_TEST="CheckpointTests/LiveCleanupTests"
 ROLES=(apple-business apple-school jamfpro-readonly jamfschool-readonly intune-test jamf-test-a jamfpro-production)
-# Checkpoint reads Intune only (JTKit 0.12.4).
+# Checkpoint reads Intune only.
 READ_ONLY_ROLES=(intune-test)
 # role:service:item, read from the Keychain service the allow-list names. The
 # Apple keys, jamfpro-readonly, jamfpro-production and intune-test come from
@@ -38,7 +38,7 @@ LEGACY_PREFIXES=""
 APP_FAULTS=(command-attempt apple-write-attempt)
 DOMAIN="be.jordythery.checkpoint"
 CONTAINER="$HOME/Library/Containers/$DOMAIN/Data"
-# The app is sandboxed: its test host reaches only its own container (JTKit 0.12.2).
+# The app is sandboxed: its test host reaches only its own container.
 TEST_HOST_CONTAINER="$DOMAIN"
 # The saved organizations and connections, the ones in use, the hint, the
 # table's columns and demo mode (hashes only), read from the container's

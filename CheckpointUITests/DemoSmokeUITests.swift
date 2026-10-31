@@ -1,7 +1,7 @@
 import XCTest
 import JTKitUITestSupport
 
-/// The release check's UI smoke tests (JTKit ROADMAP step 11), in demo mode:
+/// The release check's UI smoke tests, in demo mode:
 /// JTKit's Contoso organizations and connections, the same answers every run,
 /// no tenant, nothing saved. Run one at a time by `Scripts/release-check.sh`;
 /// minutes, not hours.

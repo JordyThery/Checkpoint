@@ -1,7 +1,7 @@
 import Foundation
 import JTKit
 
-// Apple Business and Apple School Manager on JTKit (ROADMAP step 9): the
+// Apple Business and Apple School Manager on JTKit: the
 // sign-in, client, limit, paging, errors, records and writes are JTKit's
 // `ABM`. What stays here is Checkpoint's wording of the records (summaries,
 // statuses, the Activation Lock lines) and a thin client with the calls the
@@ -27,7 +27,7 @@ extension ABM.OrgDevice {
     }
 
     /// How a finished migration should be described, or nil when none has been
-    /// requested. Apple reports a cancelled migration with the same FAILED
+    /// requested. Apple reports a canceled migration with the same FAILED
     /// status as an unsuccessful one, so neither is called a failure here.
     nonisolated var migrationOutcome: String? {
         switch mdmMigrationStatus?.uppercased() {
@@ -67,8 +67,8 @@ extension ABM.ActivationLock {
     nonisolated var detail: String? {
         guard isLocked else { return nil }
         switch lockType?.uppercased() {
-        case "MDM": return "MDM lock. A bypass code is escrowed, so clearing it does not need the owner."
-        case "USER": return "User lock. Clearing it needs the owner's Apple Account."
+        case "MDM": return "MDM lock. A bypass code is escrowed, so clearing it doesn’t need the owner."
+        case "USER": return "User lock. Clearing it needs the owner’s Apple Account."
         default: return nil
         }
     }
@@ -88,9 +88,9 @@ extension ABM.AuditEvent {
             default: "Added to the organization"
             }
         case "DEVICE_ASSIGNED_TO_SERVER":
-            targetServerName.map { "Assigned to \($0)" } ?? "Assigned to a device management service"
+            targetServerName.map { "Assigned to \($0)" } ?? "Assigned to an MDM server"
         case "DEVICE_UNASSIGNED_FROM_SERVER":
-            sourceServerName.map { "Unassigned from \($0)" } ?? "Unassigned from device management"
+            sourceServerName.map { "Unassigned from \($0)" } ?? "Unassigned from its MDM server"
         case "DEVICE_REMOVED_FROM_ORG":
             releaseEntityType?.uppercased() == "RESELLER"
                 ? "Released by the reseller" : "Released from the organization"
@@ -155,7 +155,6 @@ nonisolated final class ABMClient: Sendable {
     static let maximumMigrationDeadline = ABM.maximumMigrationDeadline
 
     let client: ABM.Client
-    let tokens: ABM.TokenProvider
     /// Refuses every write under tests (a second check after the model's).
     let writeGuard: ActionGuard
 
@@ -174,7 +173,7 @@ nonisolated final class ABMClient: Sendable {
     ) {
         self.writeGuard = writeGuard
         let recorder = ABM.recorder(kind.service, session: session, log: log, connection: connectionName)
-        tokens = ABM.TokenProvider(service: kind.service, clientID: clientID, keyID: keyID, privateKey: privateKey,
+        let tokens = ABM.TokenProvider(service: kind.service, clientID: clientID, keyID: keyID, privateKey: privateKey,
                                    recorder: recorder, now: clock.now)
         let sleep = clock.sleep
         client = ABM.Client(service: kind.service, tokens: tokens, recorder: recorder, rateLimit: rateLimit,

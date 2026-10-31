@@ -3,7 +3,7 @@ import JTKit
 
 // Checkpoint's saved connections in JTKit's shared list: the Apple
 // organizations (`abmOrgs`) and the MDM connections (`jamfServers`) stay in
-// the two UserDefaults keys they have always used, in their own format, and
+// their own UserDefaults keys and format (stored data: never rename), and
 // are shown as one list.
 
 /// Where Checkpoint keeps secrets: one Keychain service, one account per
@@ -12,7 +12,7 @@ nonisolated enum CheckpointSecrets {
     /// The pre-rename service name. Changing it would orphan every saved secret.
     static let service = "DeviceStatus.secrets"
 
-    /// No accessibility or label is set, as Checkpoint's own Keychain code never did.
+    /// No accessibility or label is set, so existing items keep matching.
     static let keychain: any SecretStore = KeychainSecretStore(service: service)
 
     /// `abm.<UUID>` for an Apple organization's private key, `jamf.<UUID>`
@@ -25,7 +25,7 @@ nonisolated enum CheckpointSecrets {
 }
 
 /// One entry of the shared Connections list: an Apple organization or an
-/// MDM connection, each kept as the record Checkpoint has always saved.
+/// MDM connection, each kept in its saved format.
 nonisolated enum CheckpointConnection: ConnectionRecord {
     case apple(ABMConfig)
     case mdm(MDMConnection)
@@ -50,7 +50,7 @@ nonisolated enum CheckpointConnection: ConnectionRecord {
         }
     }
 
-    /// The name in the toolbar and the menu, as Checkpoint has always shown it.
+    /// The name in the toolbar and the menu.
     var displayName: String {
         switch self {
         case .apple(let org): org.displayName
@@ -111,7 +111,7 @@ extension ABMConfig {
             case .appleSchoolManager: kind = .school
             default: break
             }
-            // trimmed on save, as Checkpoint's own editor did
+            // trimmed on save
             clientID = newValue.clientID.trimmingCharacters(in: .whitespacesAndNewlines)
             keyID = newValue.keyID.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -121,8 +121,7 @@ extension ABMConfig {
 extension MDMConnection {
     /// The server URL fills both the Jamf Pro server and the Platform API's
     /// Jamf Pro web address, and the account both the client ID and the
-    /// username, so switching between them keeps what was typed, as the
-    /// old editor did.
+    /// username, so switching between them keeps what was typed.
     nonisolated var connection: Connection {
         get {
             var shared = Connection(id: id, name: name, service: .jamfPro)
@@ -184,9 +183,9 @@ extension MDMConnection {
 
 // MARK: - Storage
 
-/// The two lists where they have always been: `abmOrgs` and `jamfServers` in
-/// UserDefaults, JSON-encoded as Checkpoint always wrote them. Apple
-/// organizations come first in the shared list.
+/// The two lists: `abmOrgs` and `jamfServers` in UserDefaults, JSON-encoded
+/// in their saved format (never rename). Apple organizations come first in
+/// the shared list.
 @MainActor
 final class CheckpointConnectionStorage: ConnectionStorage {
     nonisolated static let appleKey = "abmOrgs"
@@ -289,6 +288,22 @@ nonisolated struct ReportingSecretStore: SecretStore {
         edits.secretChanged(account: account)
         return saved
     }
+
+    // Forwarded rather than left to the protocol's defaults, so the Keychain
+    // answers presence without reading the secret, and a failure keeps its
+    // error code instead of reading as "no secret".
+    func writeSecret(_ secret: String?, for account: String) throws {
+        defer { edits.secretChanged(account: account) }
+        try base.writeSecret(secret, for: account)
+    }
+
+    func hasSecret(for account: String) throws -> Bool {
+        try base.hasSecret(for: account)
+    }
+
+    func readSecret(for account: String) throws -> String? {
+        try base.readSecret(for: account)
+    }
 }
 
 // MARK: - Legacy single-organization setup
@@ -304,9 +319,11 @@ nonisolated enum LegacyABMMigration {
     static let configKey = "abmConfig"
 
     /// Carries a pre-multi-organization Apple Business setup into `abmOrgs`,
-    /// moving its keychain item to the new per-organization key. The old item
+    /// moving its Keychain item to the new per-organization key. The old item
     /// is removed only once the copy reads back, so a failed write can never
-    /// lose a private key that cannot be downloaded from Apple again.
+    /// lose a private key that can’t be downloaded from Apple again. When the
+    /// copy doesn't read back, nothing is saved and the old setup stays, so
+    /// the move is tried again at the next launch.
     ///
     /// Runs only while no organization is saved. Saved organizations that
     /// can't be read count as saved: they are never written over.
@@ -324,9 +341,12 @@ nonisolated enum LegacyABMMigration {
         let org = ABMConfig(name: "Apple Business", clientID: legacy.clientID, keyID: legacy.keyID)
         if let legacyPEM, !legacyPEM.isEmpty {
             secrets.setSecret(legacyPEM, for: org.privateKeyKeychainKey)
-            if secrets.secret(for: org.privateKeyKeychainKey) == legacyPEM {
-                secrets.setSecret(nil, for: ABMConfig.legacyPrivateKeyKeychainKey)
+            guard secrets.secret(for: org.privateKeyKeychainKey) == legacyPEM else {
+                // Not left half-moved under the new account either.
+                secrets.setSecret(nil, for: org.privateKeyKeychainKey)
+                return
             }
+            secrets.setSecret(nil, for: ABMConfig.legacyPrivateKeyKeychainKey)
         }
         if let encoded = try? JSONEncoder().encode([org]) {
             defaults.set(encoded, forKey: CheckpointConnectionStorage.appleKey)

@@ -85,8 +85,8 @@ struct ManagedDeviceInfo: Sendable {
     /// product's equivalent of a site.
     var locationID: String?
     var locationName: String?
-    /// Jamf School and Intune: whether the device is still managed and
-    /// supervised.
+    /// Whether the device is still managed and supervised. The findings
+    /// read the managed state as evidence of a stale record.
     var isManaged: Bool?
     var isSupervised: Bool?
     /// Intune only: the device's compliance verdict, already worded for
@@ -177,5 +177,4 @@ struct MobileSecurityState: Sendable {
     let passcodeCompliant: Bool?
     /// Compliant with the passcode profile scoped to the device.
     let passcodeCompliantWithProfile: Bool?
-    let hardwareEncryption: Int?
 }

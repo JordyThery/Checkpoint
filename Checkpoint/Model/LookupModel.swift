@@ -28,8 +28,8 @@ struct ABMInfo: Sendable {
     /// False when the lookup came from an organization snapshot, which has no
     /// bulk source for AppleCare. Coverage is then read on demand instead.
     var coverageLoaded: Bool = true
-    /// Apple says the device is assigned, but which service couldn't be read
-    /// (ROADMAP step 9, decided by Jordy): shown as unknown, not unassigned.
+    /// Apple says the device is assigned, but which service couldn't be read:
+    /// shown as unknown, not unassigned.
     var assignmentUnknown: Bool = false
 
     var isReleased: Bool { device.releasedFromOrgDateTime != nil }
@@ -107,7 +107,7 @@ struct DeviceReport: Identifiable, Sendable {
     }
 
     /// Best-effort classification from the MDM record kind, falling back to
-    /// the ABM product family. Nil when neither service knows the device.
+    /// the Apple product family. Nil when neither service knows the device.
     var deviceKind: DeviceKind? {
         if let kind = mdm.value?.kind { return kind }
         if let family = abm.value?.device.productFamily {
@@ -117,7 +117,7 @@ struct DeviceReport: Identifiable, Sendable {
     }
 }
 
-/// The commands Checkpoint offers, on JTKit's command list (ROADMAP step 7):
+/// The commands Checkpoint offers, on JTKit's command list:
 /// JTKit has the titles, consequences, PIN and confirmation rules and the
 /// routing; which commands each product offers, and in which order, is
 /// Checkpoint's.
@@ -179,7 +179,7 @@ extension MDMCommand {
     /// Platform API connection is chosen in Settings; change them together.
     func unavailabilityReason(via authMethod: MDMAuthMethod) -> String? {
         guard authMethod == .platformGateway, !worksOverPlatformAPI else { return nil }
-        return Self.unavailableOverPlatformAPI
+        return Self.unavailableOverPlatformAPI(self)
     }
 
     /// Why this command would do nothing to this particular device, or nil.
@@ -442,7 +442,7 @@ final class LookupModel {
     let appleDemo: DemoConnectionChoice
     let mdmDemo: DemoConnectionChoice
 
-    /// Contoso (Apple Business Manager) and Contoso Academy (Apple School Manager).
+    /// Contoso (Apple Business) and Contoso Academy (Apple School Manager).
     static let demoOrgs: [ABMConfig] = [Connection.demoAppleBusiness, .demoAppleSchool].map { connection in
         var org = ABMConfig(id: connection.id)
         org.connection = connection
@@ -496,24 +496,13 @@ final class LookupModel {
         clearReports()
     }
 
-    /// Compatibility spelling of the single-connection scope, for the code
-    /// that reads or sets the selection as an identifier.
-    var selectedConnectionID: UUID? {
-        get {
-            guard case .connection(let id) = mdmScope else { return nil }
-            return id
-        }
-        set {
-            mdmScope = newValue.map { .connection($0) } ?? .allConnections
-        }
-    }
     /// Device management services per Apple organization. A service ID means
     /// nothing outside the organization that issued it, so they are never
     /// pooled for an action — only for resolving a name.
     private(set) var mdmServersByOrg: [UUID: [MDMServer]] = [:]
     /// The name lists one connection serves, read with its lookups. Keyed per
-    /// connection so one server's lists can never fill another's pickers —
-    /// the structural form of what used to be "replaced even on failure".
+    /// connection so one server's lists can never fill another's pickers,
+    /// even when a read fails.
     struct ConnectionTaxonomy: Sendable {
         var computerPrestages: [JamfPrestage] = []
         var mobilePrestages: [JamfPrestage] = []
@@ -529,11 +518,6 @@ final class LookupModel {
     private var selectedTaxonomy: ConnectionTaxonomy {
         selectedConnection.flatMap { taxonomyByConnection[$0.id] } ?? ConnectionTaxonomy()
     }
-
-    var prestages: [JamfPrestage] { selectedTaxonomy.computerPrestages }
-    var mobilePrestages: [JamfPrestage] { selectedTaxonomy.mobilePrestages }
-    var sites: [JamfSite] { selectedTaxonomy.sites }
-    var jamfLocations: [JamfSchoolLocation] { selectedTaxonomy.locations }
 
     /// The lists of the connection a report's record came from, for the
     /// pickers the inspector offers on that record.
@@ -590,6 +574,10 @@ final class LookupModel {
     /// selection arriving together do not both ask for it. Nil on failure,
     /// which is kept distinct from an instance that has no ADE devices.
     private var adeInstanceReads: [UUID: Task<[String: String]?, Never>] = [:]
+    /// The connections and organizations the last lookup read, in order.
+    /// Nil before the first lookup.
+    private var lookupConnectionIDs: [UUID]?
+    private var lookupOrgIDs: [UUID]?
     /// Each connection's target from the last lookup, which the refresh
     /// after an action reuses rather than re-reading the server's lists.
     private var lookupTargets: [UUID: MDMTargetContext] = [:]
@@ -613,7 +601,7 @@ final class LookupModel {
          underTest: UnderTestGuards = .shared) {
         self.settings = settings
         self.log = log ?? ActivityLog()
-        // Under tests the saved connections are never reached (step 11).
+        // Under tests the saved connections are never reached.
         self.session = UnderTest.isActive && settings.holdsSavedConnections ? UnderTest.refusingSession() : session
         self.abmClock = abmClock
         self.underTest = underTest
@@ -637,6 +625,21 @@ final class LookupModel {
         abmClients[id] = nil
         jamfSchoolClients[id] = nil
         intuneClients[id] = nil
+        // What was read from the connection goes too: an edit can point the
+        // same ID at another instance, whose lists and ADE map differ.
+        taxonomyByConnection[id] = nil
+        lookupTargets[id] = nil
+        adeInstances[id] = nil
+        adeInstanceReads[id] = nil
+        adeSerialsCache[id] = nil
+        adeServerUUIDsCache[id] = nil
+        deviceComplianceEnabled[id] = nil
+        rotationTimes[id] = nil
+        blueprintNames[id] = nil
+        jamfSchoolTimeZones[id] = nil
+        abmSnapshots[id] = nil
+        appleManagedFleetCache[id] = nil
+        mdmServersByOrg[id] = nil
         guard let jamf = jamfClients.removeValue(forKey: id)?.client else { return }
         pendingForget = Task { await jamf.forgetToken() }
     }
@@ -697,35 +700,68 @@ final class LookupModel {
     }
 
     /// Runs Apple writes and logs one Action entry with what Apple made of
-    /// them (ROADMAP step 9): done; a warning when Apple is still processing
-    /// or gave no answer to follow; a failure, also shown, when Apple reports
-    /// the job failed, partly failed or stopped. Before, accepting the write
-    /// was logged as done.
+    /// them: done; a warning when Apple is still processing or gave no
+    /// answer to follow; a failure, also shown, when Apple reports the job
+    /// failed, partly failed or stopped.
+    ///
+    /// Whatever the outcome, once a write may have reached Apple the
+    /// organization's snapshot is discarded and `rows` are read again, so a
+    /// partial result shows in the table rather than the state from before.
     private func recordingActivity(
         _ org: ABMConfig,
         _ summary: String,
         serials: [String],
+        refreshing rows: [String],
         operation: () async throws -> [ABM.ActivityOutcome]
     ) async throws {
         // Under tests no Apple write is ever sent.
         try guards(for: .apple(org)).appleWrites.check("\(summary) (\(org.kind.label))")
         let service = org.kind.activityService
-        let outcomes: [ABM.ActivityOutcome]
+        var failure: (any Error)?
         do {
-            outcomes = try await operation()
+            let outcomes = try await operation()
+            failure = logActivity(org, summary, serials: serials, outcomes: outcomes)
+        } catch let partial as PartialSubmission {
+            let notSent = "\(partial.total - partial.sent) of \(partial.total) devices weren’t sent: \(partial.error.localizedDescription)"
+            _ = logActivity(org, summary, serials: serials, outcomes: partial.outcomes, failedNote: notSent)
+            failure = ActionError(message: ([summary + "."] + Self.sentences(partial.outcomes, org: org) + [notSent + "."])
+                .joined(separator: " "))
         } catch {
             recordAction(service, "\(summary) — \(error.localizedDescription)", serials: serials,
                          outcome: .failed, orgName: org.displayName)
-            throw error
+            failure = error
         }
-        let sentences = Array(NSOrderedSet(array: outcomes.compactMap { $0.sentence(org.kind.service) })) as? [String] ?? []
-        let failed = outcomes.contains(where: \.isFailure)
+        invalidateSnapshot(for: org)
+        await refreshRows(rows)
+        if let failure { throw failure }
+    }
+
+    /// Some of an action's Apple activities were submitted before the next
+    /// one couldn't be: what was sent, and why the rest wasn't.
+    private struct PartialSubmission: Error {
+        let outcomes: [ABM.ActivityOutcome]
+        let sent: Int
+        let total: Int
+        let error: any Error
+    }
+
+    private static func sentences(_ outcomes: [ABM.ActivityOutcome], org: ABMConfig) -> [String] {
+        var seen = Set<String>()
+        return outcomes.compactMap { $0.sentence(org.kind.service) }.filter { seen.insert($0).inserted }
+    }
+
+    /// Logs what Apple made of the activities; returns the error to show
+    /// when one failed.
+    private func logActivity(_ org: ABMConfig, _ summary: String, serials: [String],
+                             outcomes: [ABM.ActivityOutcome], failedNote: String? = nil) -> ActionError? {
+        let sentences = Self.sentences(outcomes, org: org)
+        let failed = failedNote != nil || outcomes.contains(where: \.isFailure)
         let warns = outcomes.contains(where: \.isWarning)
-        log.recordAction(([summary] + sentences).joined(separator: " — "), failed: failed, isWarning: warns && !failed,
-                         service: service.rawValue, connection: org.displayName, devices: serials)
-        if failed {
-            throw ActionError(message: ([summary + "."] + sentences).joined(separator: " "))
-        }
+        log.recordAction(([summary] + sentences + (failedNote.map { [$0] } ?? [])).joined(separator: " — "),
+                         failed: failed, isWarning: warns && !failed,
+                         service: org.kind.activityService.label, connection: org.displayName, devices: serials)
+        guard failed, failedNote == nil else { return nil }
+        return ActionError(message: ([summary + "."] + sentences).joined(separator: " "))
     }
 
     /// The one organization in scope, or nil when every organization is.
@@ -802,29 +838,51 @@ final class LookupModel {
     /// device there would count its record twice. The direct entry wins over
     /// a Platform API one because it carries more commands.
     static func dedupedByInstance(_ connections: [MDMConnection]) -> [MDMConnection] {
-        var seen: [String: Int] = [:]
-        var result: [MDMConnection] = []
+        var result: [(connection: MDMConnection, keys: Set<String>)] = []
         for connection in connections {
-            let instance = connection.product == .intune
-                ? connection.tenantID.lowercased()
-                : connection.normalizedBaseURL.lowercased()
-            let key = "\(connection.product.rawValue)|\(instance)"
-            if let index = seen[key] {
-                if result[index].authMethod == .platformGateway, connection.authMethod != .platformGateway {
-                    result[index] = connection
+            let keys = instanceKeys(connection)
+            if let index = result.firstIndex(where: { !$0.keys.isDisjoint(with: keys) }) {
+                if result[index].connection.authMethod == .platformGateway, connection.authMethod != .platformGateway {
+                    result[index].connection = connection
                 }
+                result[index].keys.formUnion(keys)
             } else {
-                seen[key] = result.count
-                result.append(connection)
+                result.append((connection, keys))
             }
         }
-        return result
+        return result.map(\.connection)
+    }
+
+    /// What identifies the instance a connection reaches. A Platform API
+    /// connection is its region and environment, plus its web address when
+    /// one is filled in (which is how it meets a direct connection to the
+    /// same server). An entry with nothing to identify it gets no key, so it
+    /// never collapses into another.
+    private static func instanceKeys(_ connection: MDMConnection) -> Set<String> {
+        let product = connection.product.rawValue
+        var keys = Set<String>()
+        func add(_ kind: String, _ value: String) {
+            let value = value.trimmingCharacters(in: .whitespaces).lowercased()
+            if !value.isEmpty { keys.insert("\(product)|\(kind)|\(value)") }
+        }
+        switch connection.product {
+        case .intune:
+            add("tenant", connection.tenantID)
+        case .jamfPro where connection.authMethod == .platformGateway:
+            if !connection.environmentID.trimmingCharacters(in: .whitespaces).isEmpty {
+                add("environment", "\(connection.region.rawValue)|\(connection.environmentID)")
+            }
+            add("host", connection.normalizedBaseURL)
+        case .jamfPro, .jamfSchool:
+            add("host", connection.normalizedBaseURL)
+        }
+        return keys
     }
 
     /// Whether an organization in scope has its private key. Read in the
     /// window's body, so the Keychain answer is kept per organization until
-    /// that organization or its key is saved or deleted (`forgetClients`);
-    /// before, every redraw read the Keychain.
+    /// that organization or its key is saved or deleted (`forgetClients`),
+    /// rather than read at every redraw.
     var isABMConfigured: Bool {
         _ = keyRevision    // redraws once a saved key changes
         return abmOrgsInScope.contains { org in
@@ -855,12 +913,6 @@ final class LookupModel {
     /// access tokens survive; clearing the list must not cost a fresh sign-in.
     func clearReports() {
         reports = []
-    }
-
-    /// True when the selected Jamf Pro server talks to the Platform API
-    /// gateway, which exposes a narrower set of MDM commands.
-    var isUsingPlatformAPI: Bool {
-        selectedConnection?.isUsingPlatformGateway ?? false
     }
 
     /// Which product the selected connection talks to. Jamf Pro when nothing
@@ -926,6 +978,12 @@ final class LookupModel {
     /// The refusal for an action on such a record: the same sentence everywhere.
     static let removedConnectionMessage = "The connection this record came from is no longer configured. Look the device up again."
 
+    /// The refusal when the connection an action acts through has no saved
+    /// secret: the same sentence everywhere.
+    static func noSavedSecretMessage(_ connection: MDMConnection?) -> String {
+        connection.map { "\($0.displayName) has no saved secret." } ?? "No MDM connection is selected or configured."
+    }
+
     /// The connection an action on this record acts through: the record's
     /// own, or a refusal when it has been removed.
     func actingConnection(for info: ManagedDeviceInfo) throws -> MDMConnection {
@@ -986,7 +1044,7 @@ final class LookupModel {
             return Self.removedConnectionMessage
         }
         if reports.allSatisfy({ $0.mdm.value?.managedByApple != false }) {
-            return "These devices are enrolled in Apple's built-in device management, which takes no MDM commands. The Apple actions above still apply."
+            return "These devices are enrolled in Apple’s built-in device management, which takes no MDM commands. The Apple actions above still apply."
         }
         let names = Set(reports.compactMap { sourceName(for: $0.mdm.value) }).sorted()
         return "The selected records are on \(names.formatted(.list(type: .and))). "
@@ -1028,6 +1086,10 @@ final class LookupModel {
         totalLookups = serials.count
         defer { totalLookups = 0 }
 
+        // Remembered so the refresh after an action reads what this lookup
+        // read, even when the toolbar's choice has changed since.
+        lookupConnectionIDs = mdmConnectionsInScope.map(\.id)
+        lookupOrgIDs = abmOrgsInScope.map(\.id)
         let context = await makeContext(serials: serials)
         typealias RowResult = (String, FetchState<ABMInfo>, FetchState<ManagedDeviceInfo>, [ManagedDeviceInfo], MDMVerdict?)
         await withTaskGroup(of: RowResult.self) { group in
@@ -1057,7 +1119,10 @@ final class LookupModel {
 
     /// Passes the row count so a refresh after a bulk change rebuilds the
     /// organization snapshot instead of asking Apple per device, which the
-    /// request quota would stretch to hours.
+    /// request quota would stretch to hours. It asks no consent of its own:
+    /// rows of that many devices came from a lookup that read the
+    /// organization in full only after its consent dialog, and the refresh
+    /// reads only the organization the action changed.
     ///
     /// The devices' records are read again; the servers' lists are reused
     /// from the lookup, since no action changes them. The one exception is
@@ -1069,10 +1134,14 @@ final class LookupModel {
         let affected = Set(serials.compactMap { serial in
             reports.first { $0.serial == serial }?.abm.value?.orgID
         })
-        let orgs = affected.isEmpty ? nil : abmOrgs.filter { affected.contains($0.id) }
+        let orgs = affected.isEmpty
+            ? lookupOrgIDs.map { ids in abmOrgs.filter { ids.contains($0.id) } }
+            : abmOrgs.filter { affected.contains($0.id) }
+        let connections = lookupConnectionIDs.map { ids in mdmConnections.filter { ids.contains($0.id) } }
         let context = await makeContext(
             serials: serials,
             orgs: orgs,
+            connections: connections,
             refreshing: true,
             prestageScopeChanged: prestageScopeChanged
         )
@@ -1126,9 +1195,7 @@ final class LookupModel {
 
     static func deviceCount(_ serials: [String]) -> String { deviceCount(serials.count) }
 
-    static func deviceCount(_ reports: [DeviceReport]) -> String { deviceCount(reports.count) }
-
-    /// Summarises an action that reports per-device failures rather than
+    /// Summarizes an action that reports per-device failures rather than
     /// throwing on the first one, so a partial result is not logged as either
     /// a clean success or a total failure.
     static func partialSummary(
@@ -1148,7 +1215,7 @@ final class LookupModel {
     /// Which Apple service to word things for. The interface shows
     /// `appleScopeLabel`, which stays neutral when the organizations in scope
     /// are of both kinds; this is for action wording, where one organization
-    /// has always been resolved first.
+    /// is always resolved first.
     var abmKind: AppleOrgKind { referenceABMOrg?.kind ?? .business }
 
     /// What to call the Apple side in a column header or a sentence: the one
@@ -1192,7 +1259,7 @@ final class LookupModel {
         case 1:
             // One organization resolved by name but no longer configured,
             // which is a different problem from spanning two.
-            return "\(names[0]) is no longer configured, so its devices cannot be acted on."
+            return "\(names[0]) is no longer configured, so its devices can’t be acted on."
         default:
             return "The selected devices are in \(names.formatted(.list(type: .and))). "
                 + "Apple actions work in one organization at a time, so narrow the selection to one of them."
@@ -1207,21 +1274,15 @@ final class LookupModel {
         return "\(kind.label) provides no way to release devices from the organization."
     }
 
-    /// The scope-wide answer, for wording that precedes a selection.
-    var releaseUnavailabilityReason: String? {
-        guard !abmKind.supportsRelease else { return nil }
-        return "\(abmKind.label) provides no way to release devices from the organization."
-    }
-
     /// Resolves the organization an action will run in, or throws the reason
     /// it cannot. Every Apple action starts here.
     private func actingOrg(for reports: [DeviceReport]) throws -> (config: ABMConfig, client: ABMClient) {
         if let reason = appleActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let org = appleActionOrg(for: reports) else {
-            throw ActionError(message: "\(abmKind.label) is not configured.")
+            throw ActionError(message: "\(abmKind.label) isn’t configured.")
         }
         guard let client = makeABMClient(for: org) else {
-            throw ActionError(message: "\(org.displayName) is not configured.")
+            throw ActionError(message: "\(org.displayName) isn’t configured.")
         }
         return (org, client)
     }
@@ -1235,12 +1296,11 @@ final class LookupModel {
         try await recordingActivity(
             org,
             "Released \(Self.deviceCount(serials)) from \(org.displayName)",
-            serials: serials
+            serials: serials,
+            refreshing: serials
         ) {
             [try await abm.watch(activityID: try await abm.submitActivity(.release, serials: serials))]
         }
-        invalidateSnapshot(for: org)
-        await refreshRows(serials)
     }
 
     /// Assigns the devices to an MDM server, or unassigns them when `serverID` is nil.
@@ -1265,26 +1325,40 @@ final class LookupModel {
         let serials = serverID == nil ? unassignByServer.values.flatMap { $0 } : inOrg.map(\.serial)
         let serverName = serverID.flatMap { id in allMDMServers.first { $0.id == id }?.name } ?? serverID
         let summary = serverName.map { "Assigned \(Self.deviceCount(serials)) to \($0)" }
-            ?? "Unassigned \(Self.deviceCount(serials)) from device management"
+            ?? "Unassigned \(Self.deviceCount(serials)) from \(serials.count == 1 ? "its" : "their") MDM server"
 
-        try await recordingActivity(org, summary, serials: serials) {
+        try await recordingActivity(org, summary, serials: serials, refreshing: inOrg.map(\.serial)) {
             var activityIDs: [String?] = []
+            var sent = 0
+            var notSubmitted: (any Error)?
             if let serverID {
                 activityIDs.append(try await abm.submitActivity(.assign, serials: serials, mdmServerID: serverID))
             } else {
+                // One activity per current server. When one can't be
+                // submitted the rest aren't tried (a write is never pushed
+                // through a server error), and those already sent are still
+                // followed and reported.
                 for (server, batch) in unassignByServer.sorted(by: { $0.key < $1.key }) {
-                    activityIDs.append(try await abm.submitActivity(.unassign, serials: batch, mdmServerID: server))
+                    do {
+                        activityIDs.append(try await abm.submitActivity(.unassign, serials: batch, mdmServerID: server))
+                        sent += batch.count
+                    } catch {
+                        guard !activityIDs.isEmpty else { throw error }
+                        notSubmitted = error
+                        break
+                    }
                 }
             }
             // Apple applies activities asynchronously; watch them so the
-            // refresh below reads the new assignment, and the log says what
-            // Apple made of each.
+            // refresh reads the new assignment, and the log says what Apple
+            // made of each.
             var outcomes: [ABM.ActivityOutcome] = []
             for id in activityIDs { outcomes.append(try await abm.watch(activityID: id)) }
+            if let notSubmitted {
+                throw PartialSubmission(outcomes: outcomes, sent: sent, total: serials.count, error: notSubmitted)
+            }
             return outcomes
         }
-        invalidateSnapshot(for: org)
-        await refreshRows(inOrg.map(\.serial))
     }
 
     /// Assigns the devices to an MDM server and schedules a migration due by
@@ -1295,7 +1369,7 @@ final class LookupModel {
             .assignWithMigrationDeadline,
             // A released device has left the organization: nothing to migrate,
             // as Assign and Unassign skip it too.
-            reports: reports.filter { $0.abm.value.map { !$0.isReleased && $0.device.isMdmMigrationCapable == true } ?? false },
+            reports: appleTargets(.scheduleMigration(server: serverID, deadline: deadline), reports: reports),
             mdmServerID: serverID,
             deadline: deadline,
             emptyMessage: "None of the selected devices can be migrated."
@@ -1339,7 +1413,7 @@ final class LookupModel {
         case .updateMigrationDeadline:
             summary = "Moved the migration deadline for \(Self.deviceCount(serials))"
         case .cancelMigration:
-            summary = "Cancelled the migration of \(Self.deviceCount(serials))"
+            summary = "Canceled the migration of \(Self.deviceCount(serials))"
         default:
             summary = "\(type.rawValue) for \(Self.deviceCount(serials))"
         }
@@ -1347,7 +1421,7 @@ final class LookupModel {
             summary += ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
         }
 
-        try await recordingActivity(org, summary, serials: serials) {
+        try await recordingActivity(org, summary, serials: serials, refreshing: serials) {
             let activityID = try await abm.submitActivity(
                 type,
                 serials: serials,
@@ -1357,8 +1431,6 @@ final class LookupModel {
             // Apple applies activities asynchronously, so watch it before re-reading.
             return [try await abm.watch(activityID: activityID)]
         }
-        invalidateSnapshot(for: org)
-        await refreshRows(serials)
     }
 
     // MARK: Recovery secrets
@@ -1369,7 +1441,7 @@ final class LookupModel {
     func fileVaultRecoveryKey(for report: DeviceReport) async throws -> JamfFileVaultKey {
         let id = try computerID(for: report, action: "FileVault recovery keys")
         try checkSecretRead("FileVault recovery key", for: report)
-        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: Self.noSavedSecretMessage(connection(for: report))) }
         // The activity log records that a key was read, never the key itself.
         // Jamf Pro keeps its own audit entry for this; ours makes it visible
         // without having to go and look.
@@ -1387,7 +1459,7 @@ final class LookupModel {
     func recoveryLockPassword(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Recovery Lock passwords")
         try checkSecretRead("Recovery Lock password", for: report)
-        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: Self.noSavedSecretMessage(connection(for: report))) }
         return try await recording(.jamfPro, JamfPro.Secret.recoveryLockPassword.actionSummary(serial: report.serial),
                                    serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let password = try await jamf.recoveryLockPassword(computerID: id) else {
@@ -1402,7 +1474,7 @@ final class LookupModel {
     func deviceLockPIN(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Device lock PINs")
         try checkSecretRead("Device lock PIN", for: report)
-        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: "No Jamf Pro server is selected or configured.") }
+        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: Self.noSavedSecretMessage(connection(for: report))) }
         return try await recording(.jamfPro, JamfPro.Secret.deviceLockPIN.actionSummary(serial: report.serial),
                                    serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let pin = try await jamf.deviceLockPIN(computerID: id) else {
@@ -1413,16 +1485,6 @@ final class LookupModel {
     }
 
     // MARK: Organization snapshot
-
-    /// The organization snapshot for the selected Apple Business account,
-    /// reading it first if necessary. Nil when Apple Business is not
-    /// configured or the read fails, in which case callers fall back to
-    /// asking per device.
-    @discardableResult
-    func organizationSnapshot(forceRefresh: Bool = false) async -> ABMSnapshot? {
-        guard let org = referenceABMOrg else { return nil }
-        return await organizationSnapshot(for: org, forceRefresh: forceRefresh)
-    }
 
     /// Reads several organizations at once, returning the snapshots that
     /// succeeded.
@@ -1468,7 +1530,7 @@ final class LookupModel {
                 case .failure(let error):
                     recordAction(
                         org.kind.activityService,
-                        "Could not read the organization — \(error.localizedDescription)",
+                        "Couldn’t read the organization — \(error.localizedDescription)",
                         serials: [],
                         outcome: .failed,
                         orgName: org.displayName
@@ -1506,7 +1568,7 @@ final class LookupModel {
         } catch {
             recordAction(
                 org.kind.activityService,
-                "Could not read the organization — \(error.localizedDescription)",
+                "Couldn’t read the organization — \(error.localizedDescription)",
                 serials: [],
                 outcome: .failed,
                 orgName: org.displayName
@@ -1555,11 +1617,6 @@ final class LookupModel {
     /// a large token takes the best part of a minute. Only the PreStage
     /// pickers read it, and both fall back to the full list without it, so it
     /// is read when a device is selected and then kept for the session.
-    func loadADEInstances() async {
-        guard let server = selectedConnection else { return }
-        await loadADEInstances(for: server)
-    }
-
     func loadADEInstances(for server: MDMConnection) async {
         guard server.capabilities.contains(.prestageScope),
               adeInstances[server.id] == nil else { return }
@@ -1635,6 +1692,12 @@ final class LookupModel {
         abmSnapshots[org.id]
     }
 
+    /// The organizations in scope not read yet this session: what the order
+    /// picker asks before reading.
+    var organizationsAwaitingRead: [ABMConfig] {
+        abmOrgsInScope.filter { cachedSnapshot(for: $0) == nil && makeABMClient(for: $0) != nil }
+    }
+
     /// Whether a lookup of this size has to read an organization first, which
     /// is what makes a lookup take a minute. True while any organization in
     /// scope still needs reading; false once every snapshot is in hand, since
@@ -1703,7 +1766,7 @@ final class LookupModel {
     /// so a lookup that read the organization in bulk leaves it out and the
     /// inspector fetches it for whichever device is selected.
     /// - Throws: when Apple can't be read; the inspector shows it rather
-    ///   than "No coverage found" (ROADMAP step 9, decided by Jordy).
+    ///   than "No coverage found".
     func appleCareCoverage(for report: DeviceReport) async throws -> [AppleCareCoverage]? {
         guard let info = report.abm.value, !info.coverageLoaded, !info.isReleased,
               let abm = clientForOrg(of: info) else { return nil }
@@ -1816,20 +1879,29 @@ final class LookupModel {
         return await jamf.updateEnforcement(among: candidates, kind: report.mdm.value?.kind ?? .computer)
     }
 
-    /// The name of a blueprint, when the connection can resolve one.
+    /// The name of a Blueprint, when the connection can resolve one.
     ///
     /// Read once per server and kept: the list is server-wide and small, and
-    /// several devices in a selection usually share a blueprint. A direct
-    /// Jamf Pro connection has no blueprints endpoint, so this stays nil and
+    /// several devices in a selection usually share a Blueprint. A direct
+    /// Jamf Pro connection has no Blueprints endpoint, so this stays nil and
     /// callers fall back to the identifier.
     func blueprintName(for id: String, report: DeviceReport) async -> String? {
         guard let server = connection(for: report),
               server.capabilities.contains(.blueprintNames),
               let jamf = makeJamfClient(for: report) else { return nil }
         if let cached = blueprintNames[server.id] { return cached[id] }
-        let names = (try? await jamf.blueprintNames()) ?? [:]
+        // Only a list that was read is kept: a failed read is tried again
+        // with the next device rather than showing identifiers all session.
+        guard let names = try? await jamf.blueprintNames() else { return nil }
         blueprintNames[server.id] = names
         return names[id]
+    }
+
+    /// The Blueprint's page in the web interface of the connection the
+    /// record came from (never the toolbar's), or nil without a web address.
+    func blueprintURL(_ id: String, for report: DeviceReport) -> URL? {
+        guard let base = connection(for: report)?.normalizedBaseURL, !base.isEmpty else { return nil }
+        return URL(string: "\(base)/view/mfe/blueprints/\(id)")
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list
@@ -1872,7 +1944,7 @@ final class LookupModel {
         _ = try actingConnection(for: info)
         try checkSecretRead("Local administrator password", for: report)
         guard let jamf = makeJamfClient(for: report) else {
-            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+            throw ActionError(message: Self.noSavedSecretMessage(connection(for: report)))
         }
         let summary = JamfPro.Secret.localAdminPassword.actionSummary(serial: report.serial, account: account.username)
         return try await recording(.jamfPro, summary, serials: [report.serial], connectionName: connection(for: report)?.displayName) {
@@ -1916,6 +1988,7 @@ final class LookupModel {
         guard !withRecords.isEmpty else {
             throw ActionError(message: "None of the selected devices have a \(connection.product.label) record.")
         }
+        try Self.checkRemovalApproval(approval, count: withRecords.count, action: connection.product.removeRecordAction)
         let failures = await removeRecords(withRecords, connection: connection, approval: approval)
         await refreshRows(withRecords.map(\.serial))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
@@ -1928,6 +2001,7 @@ final class LookupModel {
     func removeRecord(_ info: ManagedDeviceInfo, serial: String,
                       approval: MDMCommand.Confirmation.Approval?) async throws {
         let connection = try actingConnection(for: info)
+        try Self.checkRemovalApproval(approval, count: 1, action: connection.product.removeRecordAction)
         let failures = await removeRecords([(serial, info)], connection: connection, approval: approval)
         await refreshRows([serial])
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
@@ -1958,6 +2032,7 @@ final class LookupModel {
         guard !entries.isEmpty else {
             throw ActionError(message: "The selection has no stale records to remove.")
         }
+        try Self.checkRemovalApproval(approval, count: entries.count, action: "Remove Stale Records")
         var failures: [String] = []
         let byConnection = Dictionary(grouping: entries) { $0.info.connectionID }
         for (id, group) in byConnection.sorted(by: { ($0.key?.uuidString ?? "") < ($1.key?.uuidString ?? "") }) {
@@ -1969,6 +2044,23 @@ final class LookupModel {
         }
         await refreshRows(Array(Set(entries.map(\.serial))))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
+    }
+
+    /// Refuses a record removal without the approval of its confirmation,
+    /// for exactly these records: every product's removal, Move to Trash
+    /// included, is sent only once it was confirmed, as commands are.
+    nonisolated static func checkRemovalApproval(_ approval: MDMCommand.Confirmation.Approval?,
+                                                 count: Int, action: String) throws {
+        guard let approval else {
+            throw ActionError(message: "\(action) needs a confirmation first. Nothing was removed.")
+        }
+        guard approval.command == nil || approval.command == .deleteRecord else {
+            throw ActionError(message: "The confirmation was for another action. Nothing was removed.")
+        }
+        guard approval.deviceCount == count else {
+            func records(_ n: Int) -> String { n == 1 ? "1 record" : "\(n) records" }
+            throw ActionError(message: "The confirmation was for \(records(approval.deviceCount)), not \(records(count)). Nothing was removed.")
+        }
     }
 
     /// How the stale records distribute over connections, for the
@@ -1994,16 +2086,23 @@ final class LookupModel {
         connection: MDMConnection,
         approval: MDMCommand.Confirmation.Approval?
     ) async -> [String] {
-        // Defence in depth: nothing routes these here, and nothing may.
+        // Defense in depth: nothing routes these here, and nothing may.
         if let appleManaged = entries.first(where: { $0.info.managedByApple }) {
-            return ["\(appleManaged.serial): records in Apple's built-in device management cannot be removed by API."]
+            return ["\(appleManaged.serial): records in Apple’s built-in device management can’t be removed by API."]
         }
         let product = connection.product
+        // Under tests no record is removed from a tenant.
+        do {
+            try guards(for: .mdm(connection)).recordWrites.check(
+                "\(product.removeRecordAction) (\(product.label)), \(Self.deviceCount(entries.count))")
+        } catch {
+            return entries.map { "\($0.serial): \(error.localizedDescription)" }
+        }
         let school = makeJamfSchoolClient(for: connection)
         let intune = makeIntuneClient(for: connection)
         let jamf = (school == nil && intune == nil) ? makeJamfClient(for: connection) : nil
         guard school != nil || intune != nil || jamf != nil else {
-            return entries.map { "\($0.serial): \(connection.displayName) has no usable credentials." }
+            return entries.map { "\($0.serial): \(Self.noSavedSecretMessage(connection))" }
         }
         var failures: [String] = []
         for entry in entries {
@@ -2040,6 +2139,27 @@ final class LookupModel {
         return failures
     }
 
+    // The devices a move would change, which is both what its confirmation
+    // counts and what the move sends: devices already there are skipped.
+
+    func locationMoves(_ reports: [DeviceReport], to locationID: String) -> [(serial: String, info: ManagedDeviceInfo)] {
+        reports.compactMap { report in
+            report.mdm.value.map { (serial: report.serial, info: $0) }
+        }.filter { $0.info.locationID != locationID }
+    }
+
+    func siteMoves(_ reports: [DeviceReport], to siteID: String) -> [(serial: String, info: ManagedDeviceInfo)] {
+        reports.compactMap { report in
+            report.mdm.value.map { (serial: report.serial, info: $0) }
+        }.filter { ($0.info.siteID ?? "-1") != siteID }
+    }
+
+    /// Devices of `kind` not in PreStage `newID` already. A serial needs no
+    /// record to be scoped, so devices without one count too.
+    func prestageMoves(_ reports: [DeviceReport], to newID: String?, kind: DeviceKind) -> [DeviceReport] {
+        reports.filter { $0.deviceKind == kind && $0.mdm.value?.prestageID != newID }
+    }
+
     /// Moves the devices to another Jamf School location, that product's
     /// equivalent of a site.
     ///
@@ -2050,36 +2170,64 @@ final class LookupModel {
         if let reason = mdmActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let connection = mdmActionConnection(for: reports),
               let school = makeJamfSchoolClient(for: connection) else {
-            throw ActionError(message: "No Jamf School server is selected or configured.")
+            throw ActionError(message: Self.noSavedSecretMessage(mdmActionConnection(for: reports)))
         }
-        let moving = reports.compactMap { report in
-            report.mdm.value.map { (serial: report.serial, info: $0) }
-        }.filter { $0.info.locationID != locationID }
+        let moving = locationMoves(reports, to: locationID)
         guard !moving.isEmpty else { return }
+        try guards(for: .mdm(connection)).recordWrites.check("Change Location (Jamf School), \(Self.deviceCount(moving.count))")
         let locations = taxonomyByConnection[connection.id]?.locations ?? []
         let name = locations.first { $0.id == locationID }?.name ?? locationID
-        let summary = "Moved \(Self.deviceCount(moving.map(\.serial))) to \(name)"
-        try await recording(.jamfSchool, summary, serials: moving.map(\.serial), connectionName: connection.displayName) {
-            let outcome = try await school.move(udids: moving.map(\.info.recordID), toLocation: locationID)
-            // The endpoint reports per device inside a success, so a device
-            // that never moved has to be named here or the action would claim
-            // to have moved it.
-            guard outcome.unmoved.isEmpty else {
-                let unmoved = Set(outcome.unmoved)
-                let serials = moving
-                    .filter { unmoved.contains($0.info.recordID) }
-                    .map(\.serial)
-                let named = serials.isEmpty ? outcome.unmoved : serials
-                // Nearly always the owner: Jamf School refuses to move a
-                // device away from the location its assigned user is in.
-                throw ActionError(message: """
-                    Jamf School did not move: \(named.joined(separator: ", ")).
-                    A device with an assigned owner can only change location if the owner is in the district, or if Cross Location Enrollment is enabled.
-                    """)
+        // Sent twenty at a time, as JTKit batches them, so a request that
+        // fails part-way still says which devices moved before it.
+        var unmoved: [String] = []
+        var notSent: [String] = []
+        var failure: (any Error)?
+        for start in stride(from: 0, to: moving.count, by: Self.locationMoveBatchSize) {
+            let batch = Array(moving[start..<min(start + Self.locationMoveBatchSize, moving.count)])
+            guard failure == nil else {
+                notSent += batch.map(\.serial)
+                continue
+            }
+            do {
+                let outcome = try await school.move(udids: batch.map(\.info.recordID), toLocation: locationID)
+                // The endpoint reports per device inside a success, so a
+                // device that never moved has to be named here or the action
+                // would claim to have moved it.
+                let refused = Set(outcome.unmoved)
+                unmoved += batch.filter { refused.contains($0.info.recordID) }.map(\.serial)
+            } catch {
+                failure = error
+                notSent += batch.map(\.serial)
             }
         }
-        await refreshRows(moving.map(\.serial))
+        let serials = moving.map(\.serial)
+        let failed = unmoved.count + notSent.count
+        recordAction(
+            .jamfSchool,
+            Self.partialSummary("Moved", noun: "device", of: moving.count, failed: failed, from: nil) + " to \(name)"
+                + (failure.map { " — \($0.localizedDescription)" } ?? ""),
+            serials: serials,
+            outcome: failed == 0 ? .succeeded : .failed,
+            connectionName: connection.displayName
+        )
+        await refreshRows(serials)
+        var problems: [String] = []
+        if !unmoved.isEmpty {
+            // Nearly always the owner: Jamf School refuses to move a device
+            // away from the location its assigned user is in.
+            problems.append("""
+                Jamf School didn’t move: \(unmoved.joined(separator: ", ")).
+                A device with an assigned owner can only change location if the owner is in the district, or if Cross Location Enrollment is enabled.
+                """)
+        }
+        if let failure {
+            problems.append("Moved \(moving.count - failed) of \(Self.deviceCount(moving.count)). Not sent: \(notSent.joined(separator: ", ")) — \(failure.localizedDescription)")
+        }
+        if !problems.isEmpty { throw ActionError(message: problems.joined(separator: "\n\n")) }
     }
+
+    /// Devices per Jamf School location move, as JTKit sends them.
+    static let locationMoveBatchSize = 20
 
     /// Moves the devices of the given kind between PreStage scopes. Pass nil
     /// to remove them from their current PreStage without adding them to
@@ -2088,33 +2236,58 @@ final class LookupModel {
         if let reason = mdmActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let connection = mdmActionConnection(for: reports),
               let jamf = makeJamfClient(for: connection) else {
-            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+            throw ActionError(message: Self.noSavedSecretMessage(mdmActionConnection(for: reports)))
         }
         let family: JamfPrestageFamily = kind == .computer ? .computer : .mobileDevice
         var removeByPrestage: [String: [String]] = [:]
-        var affected: [String] = []
-        for report in reports {
-            guard report.deviceKind == kind else { continue }
-            let current = report.mdm.value?.prestageID
-            guard current != newID else { continue }
-            if let current { removeByPrestage[current, default: []].append(report.serial) }
-            affected.append(report.serial)
+        let moving = prestageMoves(reports, to: newID, kind: kind)
+        for report in moving {
+            if let current = report.mdm.value?.prestageID { removeByPrestage[current, default: []].append(report.serial) }
         }
+        let affected = moving.map(\.serial)
         guard !affected.isEmpty else { return }
+        try guards(for: .mdm(connection)).recordWrites.check("Change PreStage (Jamf Pro), \(Self.deviceCount(affected))")
         let taxonomy = taxonomyByConnection[connection.id] ?? ConnectionTaxonomy()
         let all = kind == .computer ? taxonomy.computerPrestages : taxonomy.mobilePrestages
-        let name = newID.flatMap { id in all.first { $0.id == id }?.displayName }
+        // The PreStage's name, or its ID when the list doesn't hold it.
+        let name = newID.map { id in all.first { $0.id == id }?.displayName ?? id }
         let summary = name.map { "Added \(Self.deviceCount(affected)) to PreStage \($0)" }
             ?? "Removed \(Self.deviceCount(affected)) from their PreStage"
-        try await recording(.jamfPro, summary, serials: affected, connectionName: connection.displayName) {
-            for (prestage, serials) in removeByPrestage {
+        // Removed from the current PreStage first: Jamf Pro won't add a
+        // device another PreStage still scopes. When a step fails, the log
+        // and the message say what was done before it, and the rows are read
+        // again either way.
+        var removed: [String] = []
+        var failure: (any Error)?
+        for (prestage, serials) in removeByPrestage.sorted(by: { $0.key < $1.key }) {
+            do {
                 try await jamf.removeFromPrestage(family: family, prestageID: prestage, serials: serials)
-            }
-            if let newID {
-                try await jamf.addToPrestage(family: family, prestageID: newID, serials: affected)
+                removed += serials
+            } catch {
+                failure = error
+                break
             }
         }
+        if failure == nil, let newID {
+            do {
+                try await jamf.addToPrestage(family: family, prestageID: newID, serials: affected)
+            } catch {
+                failure = error
+            }
+        }
+        var outcome = summary
+        if let failure {
+            let target = "PreStage \(name ?? "")"
+            outcome = removed.isEmpty
+                ? "\(summary) — \(failure.localizedDescription)"
+                : (newID == nil
+                    ? "Removed \(removed.count) of \(Self.deviceCount(affected)) from their PreStage — \(failure.localizedDescription)"
+                    : "Removed \(Self.deviceCount(removed)) from their PreStage but couldn’t add them to \(target), so they’re in no PreStage now — \(failure.localizedDescription)")
+        }
+        recordAction(.jamfPro, outcome, serials: affected, outcome: failure == nil ? .succeeded : .failed,
+                     connectionName: connection.displayName)
         await refreshRows(affected, prestageScopeChanged: true)
+        if failure != nil { throw ActionError(message: outcome) }
     }
 
     /// Sets or clears one device's asset tag, on whichever Jamf product holds
@@ -2125,6 +2298,7 @@ final class LookupModel {
             throw ActionError(message: "\(report.serial) has no MDM record.")
         }
         let connection = try actingConnection(for: info)
+        try guards(for: .mdm(connection)).recordWrites.check("Set Asset Tag (\(connection.product.label))")
         let tag = assetTag.trimmingCharacters(in: .whitespaces)
         let summary = tag.isEmpty
             ? "Cleared the asset tag on \(report.serial)"
@@ -2138,7 +2312,7 @@ final class LookupModel {
             switch connection.product {
             case .jamfPro:
                 guard let jamf = makeJamfClient(for: connection) else {
-                    throw ActionError(message: "\(connection.displayName) has no usable credentials.")
+                    throw ActionError(message: Self.noSavedSecretMessage(connection))
                 }
                 switch info.kind {
                 case .computer:
@@ -2148,11 +2322,11 @@ final class LookupModel {
                 }
             case .jamfSchool:
                 guard let school = makeJamfSchoolClient(for: connection) else {
-                    throw ActionError(message: "\(connection.displayName) has no usable credentials.")
+                    throw ActionError(message: Self.noSavedSecretMessage(connection))
                 }
                 try await school.setAssetTag(udid: info.recordID, assetTag: tag)
             case .intune:
-                throw ActionError(message: "Intune's API carries no asset tag.")
+                throw ActionError(message: "Intune’s API carries no asset tag.")
             }
         }
         await refreshRows([report.serial])
@@ -2165,12 +2339,11 @@ final class LookupModel {
         if let reason = mdmActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let connection = mdmActionConnection(for: reports),
               let jamf = makeJamfClient(for: connection) else {
-            throw ActionError(message: "No Jamf Pro server is selected or configured.")
+            throw ActionError(message: Self.noSavedSecretMessage(mdmActionConnection(for: reports)))
         }
-        let withRecords = reports.compactMap { report in
-            report.mdm.value.map { (serial: report.serial, info: $0) }
-        }.filter { ($0.info.siteID ?? "-1") != siteID }
+        let withRecords = siteMoves(reports, to: siteID)
         guard !withRecords.isEmpty else { return }
+        try guards(for: .mdm(connection)).recordWrites.check("Change Site (Jamf Pro), \(Self.deviceCount(withRecords.count))")
         var failures: [String] = []
         for entry in withRecords {
             do {
@@ -2200,8 +2373,8 @@ final class LookupModel {
 
     // MARK: MDM commands
 
-    /// The devices a command would go to, as JTKit plans them (ROADMAP step
-    /// 7): which receive it, which don't and why. What the confirmation shows
+    /// The devices a command would go to, as JTKit plans them: which
+    /// receive it, which don't and why. What the confirmation shows
     /// before anything is sent, and what the Action entry names afterwards.
     struct CommandPlan {
         let connection: MDMConnection
@@ -2274,7 +2447,7 @@ final class LookupModel {
         let intune = makeIntuneClient(for: connection)
         let jamf = (school == nil && intune == nil) ? makeJamfClient(for: connection) : nil
         guard school != nil || intune != nil || jamf != nil else {
-            throw ActionError(message: "\(connection.displayName) has no usable credentials.")
+            throw ActionError(message: Self.noSavedSecretMessage(connection))
         }
         // Fail before doing any work, so a command the connection cannot carry
         // never gets as far as a confirmation prompt.
@@ -2283,7 +2456,7 @@ final class LookupModel {
         }
         let targets = commandTargets(reports)
         guard targets.contains(where: { command.applies(to: DeviceKind($0.kind), product: product) }) else {
-            throw ActionError(message: "\(command.title) doesn't apply to any of the selected devices.")
+            throw ActionError(message: "\(command.title(for: product)) doesn’t apply to any of the selected devices.")
         }
 
         let result: MDMCommand.Result
@@ -2298,14 +2471,21 @@ final class LookupModel {
                 result = MDMCommand.Result(command: command.title, outcomes: [])
             }
         } catch {
+            // With `failure` set, JTKit writes one "<title> failed — …" entry
+            // and uses the outcomes only to list the devices.
             log.recordCommand(command.title(for: product), outcomes: targets.map { .init(target: $0, outcome: .failed(error.localizedDescription)) },
                               failure: error.localizedDescription,
-                              service: product.activityService.rawValue, connection: connection.displayName)
+                              service: product.activityService.label, connection: connection.displayName)
             throw error
         }
         log.recordCommand(command.title(for: product), outcomes: result.outcomes, warning: result.warning,
-                          service: product.activityService.rawValue, connection: connection.displayName)
-        if let problems = result.problems { throw ActionError(message: problems) }
+                          service: product.activityService.label, connection: connection.displayName)
+        if let problems = result.problems {
+            // What reached its devices is said too, not only what didn't.
+            let reached = result.sent.isEmpty ? []
+                : ["Sent to \(result.sent.count) of \(Self.deviceCount(result.outcomes.count))."]
+            throw ActionError(message: (reached + [problems]).joined(separator: "\n"))
+        }
         return result.sent.count
     }
 
@@ -2316,9 +2496,12 @@ final class LookupModel {
     }
 
     func makeABMClient(for config: ABMConfig) -> ABMClient? {
+        // A kept client first: it is dropped whenever the organization or its
+        // key changes (`forgetClients`), so the Keychain is read only when a
+        // client has to be made.
+        if let kept = abmClients[config.id], kept.config == config { return kept.client }
         guard config.isConfigured,
               let pem = secret(for: .apple(config)), !pem.isEmpty else { return nil }
-        if let kept = abmClients[config.id], kept.config == config { return kept.client }
         // Read from the Keychain at each sign-in, so a new key is used at the
         // next one, and the key isn't kept in the client.
         let store = settings.secretStore
@@ -2361,16 +2544,16 @@ final class LookupModel {
 
     /// The Jamf Pro client, or nil when the selected server is not a Jamf Pro
     /// one. The product guard matters: without it a Jamf Pro request would be
-    /// sent to a Jamf School host, which answers something unrecognisable
+    /// sent to a Jamf School host, which answers something unrecognizable
     /// rather than refusing.
     private func makeJamfClient() -> JamfClient? {
         selectedConnection.flatMap { makeJamfClient(for: $0) }
     }
 
     func makeJamfClient(for config: MDMConnection) -> JamfClient? {
-        guard config.product == .jamfPro,
-              let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
+        guard config.product == .jamfPro else { return nil }
         if let kept = jamfClients[config.id], kept.config == config { return kept.client }
+        guard let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
         // Read from the Keychain at each sign-in, so a changed secret is used
         // at the next one.
         let store = settings.secretStore
@@ -2379,7 +2562,7 @@ final class LookupModel {
         let demoSource = demoSource(for: .mdm(config))
         guard let client = JamfClient(config: config, secret: demoSource?.secret ?? { @Sendable in
             guard let secret = store.secret(for: account), !secret.isEmpty else {
-                throw JamfClient.APIError(message: "No secret is saved for “\(name)”.")
+                throw JamfClient.APIError(message: "\(name) has no saved secret.")
             }
             return secret
         }, log: log, session: demoSource?.session ?? session,
@@ -2391,9 +2574,9 @@ final class LookupModel {
     /// JTKit's Graph client for an Intune tenant, signing in with the app
     /// registration's client secret (JTKit's `Graph.TokenProvider`).
     func makeIntuneClient(for config: MDMConnection) -> Graph.Client? {
-        guard config.product == .intune,
-              let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
+        guard config.product == .intune else { return nil }
         if let kept = intuneClients[config.id], kept.config == config { return kept.client }
+        guard let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
         // Read from the Keychain at each sign-in, so a changed secret is used
         // at the next one.
         let store = settings.secretStore
@@ -2402,7 +2585,7 @@ final class LookupModel {
         let demoSource = demoSource(for: .mdm(config))
         guard let client = Self.intuneClient(for: config, secret: demoSource?.secret ?? { @Sendable in
             guard let secret = store.secret(for: account), !secret.isEmpty else {
-                throw ActionError(message: "No secret is saved for “\(name)”.")
+                throw ActionError(message: "\(name) has no saved secret.")
             }
             return secret
         }, log: log, session: demoSource?.session ?? session) else { return nil }
@@ -2426,9 +2609,9 @@ final class LookupModel {
     }
 
     func makeJamfSchoolClient(for config: MDMConnection) -> JamfSchoolClient? {
-        guard config.product == .jamfSchool,
-              let secret = secret(for: .mdm(config)), !secret.isEmpty else { return nil }
+        guard config.product == .jamfSchool else { return nil }
         if let kept = jamfSchoolClients[config.id], kept.config == config { return kept.client }
+        guard let secret = secret(for: .mdm(config)), !secret.isEmpty else { return nil }
         let session = demoSource(for: .mdm(config))?.session ?? session
         guard let client = JamfSchoolClient(config: config, secret: secret, log: log, session: session,
                                             commandGuard: guards(for: .mdm(config)).commands) else { return nil }
@@ -2513,8 +2696,8 @@ final class LookupModel {
             }
         }
 
-        /// Reads the tenant, keeping the error when it fails (ROADMAP step 8:
-        /// a failed read is no longer every device "not found").
+        /// Reads the tenant, keeping the error when it fails, so a failed read
+        /// isn't every device "not found".
         mutating func readIntuneFleet() async {
             guard let intuneClient else { return }
             do {
@@ -2565,6 +2748,7 @@ final class LookupModel {
     private func makeContext(
         serials: [String],
         orgs: [ABMConfig]? = nil,
+        connections: [MDMConnection]? = nil,
         refreshing: Bool = false,
         prestageScopeChanged: Bool = false
     ) async -> LookupContext {
@@ -2619,7 +2803,8 @@ final class LookupModel {
             ) { first, _ in first }
             context.abmOrgs.append(entry)
         }
-        for connection in mdmConnectionsInScope {
+        let connectionsToRead = connections ?? mdmConnectionsInScope
+        for connection in connectionsToRead {
             var target = refreshing
                 ? await refreshedMDMTarget(for: connection, serials: serials, prestageScopeChanged: prestageScopeChanged)
                 : nil
@@ -2635,7 +2820,7 @@ final class LookupModel {
         // cost is paid by the first combined lookup alone.
         if context.mdmTargets.count > 1 {
             context.readsAllConnections = true
-            for connection in mdmConnectionsInScope {
+            for connection in connectionsToRead {
                 context.adeSerialsByConnection[connection.id] = await adeSerials(for: connection)
                 for uuid in await adeServerUUIDs(for: connection) {
                     context.connectionIDByServerUUID[uuid] = connection.id
@@ -2699,7 +2884,7 @@ final class LookupModel {
         guard connection.product == .jamfPro else { return [] }
         if let cached = adeServerUUIDsCache[connection.id] { return cached }
         let raw = (try? await makeJamfClient(for: connection)?.adeServerUUIDs()) ?? []
-        let uuids = Set((raw ?? []).map(Self.normalizedServiceID))
+        let uuids = Set(raw.map(Self.normalizedServiceID))
         adeServerUUIDsCache[connection.id] = uuids
         return uuids
     }
@@ -2734,8 +2919,8 @@ final class LookupModel {
             target.proClient = jamf
             // Started together rather than one after another. All are
             // independent, and every one has to finish before the first row
-            // is filled, so serially they were a round trip each of dead
-            // time at the head of every lookup.
+            // is filled; one after another, each would add a round trip at
+            // the head of every lookup.
             async let computerPrestages = try? jamf.prestages(family: .computer)
             async let mobileDevicePrestages = try? jamf.prestages(family: .mobileDevice)
             async let siteList = try? jamf.sites()
@@ -2854,7 +3039,7 @@ final class LookupModel {
     /// active record is preferred over a released one. A failure is only
     /// reported when no organization found the device, since one unreachable
     /// organization should not hide a device another one holds.
-    private static func fetchABM(context: LookupContext, serial: String) async -> FetchState<ABMInfo> {
+    nonisolated private static func fetchABM(context: LookupContext, serial: String) async -> FetchState<ABMInfo> {
         guard !context.abmOrgs.isEmpty else { return .notConfigured }
         var released: ABMInfo?
         var failure: String?
@@ -2877,13 +3062,13 @@ final class LookupModel {
     }
 
     /// Reads one organization for one serial.
-    private static func fetchABM(org: ABMOrgContext, serial: String) async -> FetchState<ABMInfo> {
+    nonisolated private static func fetchABM(org: ABMOrgContext, serial: String) async -> FetchState<ABMInfo> {
         // A wanted snapshot that failed is reported as a failure rather than
         // worked around per device: three requests per serial against a
         // twenty-a-minute quota turns a large lookup into a crawl, and the
         // real answer is that the organization could not be read.
         if org.snapshotFailed {
-            return .failed("\(org.name) could not be read.")
+            return .failed("\(org.name) couldn’t be read.")
         }
         // With a snapshot in hand there is nothing to ask Apple: everything
         // except AppleCare coverage is already known, and that is read on
@@ -2906,7 +3091,7 @@ final class LookupModel {
             guard let device = try await org.client.device(serial: serial) else { return .notFound }
             // A failed coverage read is left for the inspector, which reads
             // it again and shows the error; a failed server read is an
-            // unknown assignment, never "unassigned" (decided by Jordy).
+            // unknown assignment, never "unassigned".
             let coverage = try? await org.client.appleCareCoverage(serial: serial)
             var serverID: String?
             var assignmentUnknown = false
@@ -3009,8 +3194,7 @@ final class LookupModel {
                 MobileSecurityState(
                     passcodePresent: $0,
                     passcodeCompliant: nil,
-                    passcodeCompliantWithProfile: nil,
-                    hardwareEncryption: nil
+                    passcodeCompliantWithProfile: nil
                 )
             } : nil,
             osVersion: device.osVersion?.isEmpty == false ? device.osVersion : nil,
@@ -3107,90 +3291,129 @@ final class LookupModel {
                 context.adeSerialsByConnection[$0.connectionID]?.contains(upper) == true
             }?.connectionID
 
+        let resolved = resolve(records, abm: abm.value, expectedID: expectedID, name: name)
+        return (.found(resolved.primary), resolved.others, resolved.verdict)
+    }
+
+    /// Picks the working record among a device's records and classifies the
+    /// rest. `others` is exactly what a stale finding names and what Remove
+    /// Stale Records removes.
+    nonisolated static func resolve(
+        _ records: [ManagedDeviceInfo],
+        abm: ABMInfo?,
+        expectedID: UUID?,
+        name: (UUID?) -> String
+    ) -> (primary: ManagedDeviceInfo, others: [ManagedDeviceInfo], verdict: MDMVerdict?) {
         let live = records.filter { $0.isManaged != false }
-        func recency(_ record: ManagedDeviceInfo) -> Date? {
-            DateFormatting.plausibleDate(record.lastContact)
-                ?? DateFormatting.plausibleDate(record.lastContactTime)
-                ?? DateFormatting.plausibleDate(record.reportDate)
-        }
         let mostRecentFirst = records.sorted {
             (recency($0) ?? .distantPast) > (recency($1) ?? .distantPast)
         }
 
-        // The working record: the assigned connection's, else the one live
-        // record, else the most recently heard from.
-        let primary = records.first { $0.connectionID == expectedID }
-            ?? (live.count == 1 ? live[0] : nil)
+        // The working record: the assigned connection's most recent, else
+        // the most recent live one, else the most recently heard from.
+        let primary = mostRecentFirst.first { $0.connectionID == expectedID }
+            ?? mostRecentFirst.first { $0.isManaged != false }
             ?? mostRecentFirst[0]
-        let others = records.filter {
-            $0.connectionID != primary.connectionID || $0.recordID != primary.recordID
-        }
+        let others = mostRecentFirst.filter { $0.key != primary.key }
 
         let verdict = classify(
-            abm: abm.value,
-            records: records,
+            abm: abm,
+            primary: primary,
+            others: others,
             live: live,
             expectedID: expectedID,
-            recency: recency,
             name: name
         )
-        return (.found(primary), others, verdict)
+        return (primary, others, verdict)
     }
 
-    nonisolated private static func classify(
+    /// When a record was last heard from: its last contact, check-in or
+    /// inventory report, whichever is known. Nil for "never" (the epoch).
+    nonisolated static func recency(_ record: ManagedDeviceInfo) -> Date? {
+        DateFormatting.plausibleDate(record.lastContact)
+            ?? DateFormatting.plausibleDate(record.lastContactTime)
+            ?? DateFormatting.plausibleDate(record.reportDate)
+    }
+
+    /// Whether a record beside the working one is shown to be stale: its
+    /// device is no longer managed there, or it was last heard from before
+    /// the working record. Enrollment method is no evidence either way, and
+    /// a record without a known date can't be compared, so it isn't stale.
+    nonisolated static func isStale(_ record: ManagedDeviceInfo, beside primary: ManagedDeviceInfo) -> Bool {
+        // Apple's built-in management can't be removed by API, so it is
+        // never called stale.
+        if record.managedByApple { return false }
+        if record.isManaged == false { return true }
+        guard primary.isManaged != false,
+              let seen = recency(record), let primarySeen = recency(primary) else { return false }
+        return seen < primarySeen
+    }
+
+    /// The verdict for one device. A stale finding names exactly the records
+    /// beside the working one (`others`), which is what Remove Stale Records
+    /// removes, and only when every one of them is shown to be stale.
+    nonisolated static func classify(
         abm: ABMInfo?,
-        records: [ManagedDeviceInfo],
+        primary: ManagedDeviceInfo,
+        others: [ManagedDeviceInfo],
         live: [ManagedDeviceInfo],
         expectedID: UUID?,
-        recency: (ManagedDeviceInfo) -> Date?,
         name: (UUID?) -> String
     ) -> MDMVerdict? {
+        let records = [primary] + others
         // Outside every configured Apple organization: neutral, not a
         // finding. The Apple column and its filter already make it visible.
         guard let abm, !abm.isReleased else {
             return abm == nil ? nil : .unassignedWithRecords
         }
+        // A failed server read is never "unassigned".
+        if abm.assignmentUnknown { return .unverified("Apple’s assignment couldn’t be read") }
         guard abm.mdmServerID != nil else { return .unassignedWithRecords }
 
+        // Connection names, each once, in the records' order.
+        func names(_ list: [ManagedDeviceInfo]) -> [String] {
+            var seen = Set<String>()
+            return list.map { name($0.connectionID) }.filter { seen.insert($0).inserted }
+        }
         if let expectedID {
-            let onExpected = records.filter { $0.connectionID == expectedID }
-            let elsewhere = records.filter { $0.connectionID != expectedID }
-            if onExpected.isEmpty {
+            guard primary.connectionID == expectedID else {
                 return .assignedElsewhere(
                     expected: name(expectedID),
-                    actual: elsewhere.map { name($0.connectionID) }
+                    actual: names(records)
                 )
             }
-            guard !elsewhere.isEmpty else { return .consistent }
-            // Records on the assigned connection and elsewhere. If the one
-            // over there was heard from more recently than the assigned
-            // one, the device may genuinely live there — say so rather than
-            // calling it stale.
-            let expectedSeen = onExpected.compactMap(recency).max()
-            let elsewhereSeen = elsewhere.compactMap(recency).max()
-            if let expectedSeen, let elsewhereSeen, elsewhereSeen > expectedSeen,
-               elsewhere.contains(where: { $0.isManaged != false }) {
+            guard !others.isEmpty else { return .consistent }
+            if others.allSatisfy({ isStale($0, beside: primary) }) {
+                return .staleElsewhere(stale: names(others))
+            }
+            // A record over there was heard from more recently than the
+            // assigned one: the device may genuinely live there.
+            if others.contains(where: { record in
+                record.isManaged != false
+                    && (Self.recency(record) ?? .distantPast) > (Self.recency(primary) ?? .distantFuture)
+            }) {
                 return .unverified("Records on \(name(expectedID)) and elsewhere both look active")
             }
-            return .staleElsewhere(stale: elsewhere.map { name($0.connectionID) })
+            return .unverified("Records on \(names(records).formatted(.list(type: .and))); their activity can’t settle which is current")
         }
 
         // Assigned, but to a service no configured connection's tokens
         // cover — an Intune tenant, or a server outside Checkpoint. An
-        // active ADE-enrolled record can only exist on the assigned
-        // service, so a sole one vouches for itself; anything else cannot
-        // be settled from here.
+        // active ADE-enrolled record can only exist on the assigned service,
+        // so a sole one vouches for itself. Beside other records it is the
+        // working one only if it is also the most recent, and they are stale
+        // only on the evidence of activity or managed state.
         let adeLive = live.filter { $0.enrolledViaADE == true }
-        if records.count == 1, adeLive.count == 1 { return .consistent }
-        if adeLive.count == 1 {
-            let stale = records.filter { $0.connectionID != adeLive[0].connectionID }
-            return .staleElsewhere(stale: stale.map { name($0.connectionID) })
+        if others.isEmpty, adeLive.count == 1 { return .consistent }
+        if adeLive.count == 1, adeLive[0].key == primary.key,
+           others.allSatisfy({ isStale($0, beside: primary) }) {
+            return .staleElsewhere(stale: names(others))
         }
-        let service = abm.mdmServerName ?? "a device management service"
-        if records.count == 1 {
-            return .unverified("Assigned to \(service); the record's enrollment cannot confirm it")
+        let service = abm.mdmServerName ?? "an MDM server"
+        if others.isEmpty {
+            return .unverified("Assigned to \(service); the record’s enrollment can’t confirm it")
         }
-        return .unverified("Records on \(records.map { name($0.connectionID) }.formatted(.list(type: .and))); the assignment cannot settle which is current")
+        return .unverified("Records on \(names(records).formatted(.list(type: .and))); the assignment can’t settle which is current")
     }
 
     /// One connection's record for one serial, from what the context read.
@@ -3203,9 +3426,9 @@ final class LookupModel {
         }
         guard target.proClient != nil else { return .notConfigured }
         let upper = serial.uppercased()
-        // A computer record wins, as it did when each serial was asked for
-        // in turn. A failed read is reported rather than passed over, so a
-        // serial is only called absent once both reads have answered.
+        // A computer record wins. A failed read is reported rather than
+        // passed over, so a serial is only called absent once both reads
+        // have answered.
         if let failure = target.proComputers.failures[upper] { return .failed(failure) }
         if let record = target.proComputers.records[upper] {
             let prestageID = target.computerPrestageBySerial[serial]
@@ -3235,7 +3458,9 @@ final class LookupModel {
                 mdmProfileExpiration: record.mdmProfileExpiration,
                 prestageID: prestageID,
                 prestageName: prestageID.map { target.computerPrestageNames[$0] ?? "PreStage \($0)" },
-                webURL: webURL
+                webURL: webURL,
+                isManaged: record.isManaged,
+                isSupervised: record.isSupervised
             ))
         }
         if let failure = target.proMobileDevices.failures[upper] { return .failed(failure) }
@@ -3267,7 +3492,9 @@ final class LookupModel {
                 mdmProfileExpiration: record.mdmProfileExpiration,
                 prestageID: prestageID,
                 prestageName: prestageID.map { target.mobilePrestageNames[$0] ?? "PreStage \($0)" },
-                webURL: webURL
+                webURL: webURL,
+                isManaged: record.isManaged,
+                isSupervised: record.isSupervised
             ))
         }
         return .notFound

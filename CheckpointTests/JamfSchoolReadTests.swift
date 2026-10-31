@@ -5,8 +5,7 @@ import Testing
 @testable import Checkpoint
 
 // A failed Jamf School device-list read shows as an error on the rows, not
-// as "not found", as Intune's does since ROADMAP step 8 (decided by Jordy,
-// a Checkpoint-only fix). Written before the fix.
+// as "not found", as Intune's does.
 
 /// Checkpoint looking at the saved Jamf School server only. `devices`
 /// answers the device list; everything else is an empty answer.
@@ -39,7 +38,7 @@ private struct SchoolHarness {
     }
 }
 
-private let fleet = MockResponse.json(200, #"{"devices":[{"UDID":"u-1","serialNumber":"DMPXK1JHJG5H","name":"Cart iPad"}]}"#)
+private let fleet = MockResponse.json(200, #"{"devices":[{"UDID":"u-1","serialNumber":"TESTIPAD001","name":"Cart iPad"}]}"#)
 
 @Suite("Jamf School: a failed device-list read")
 @MainActor
@@ -48,14 +47,14 @@ struct JamfSchoolReadErrorTests {
     @Test("A device in the list is found; one that isn't is “not found”")
     func found() async throws {
         let harness = SchoolHarness { fleet }
-        #expect(await harness.lookUp("DMPXK1JHJG5H")?.value?.recordID == "u-1")
-        #expect(await harness.lookUp("C02XK1JHJG5H")?.isNotFound == true)
+        #expect(await harness.lookUp("TESTIPAD001")?.value?.recordID == "u-1")
+        #expect(await harness.lookUp("TESTMAC0001")?.isNotFound == true)
     }
 
     @Test("A refused read shows the error on the row")
     func refused() async throws {
         let harness = SchoolHarness { .json(401, #"{"code":401,"message":"Unauthorized"}"#) }
-        let state = await harness.lookUp("DMPXK1JHJG5H")
+        let state = await harness.lookUp("TESTIPAD001")
         #expect(state?.isNotFound == false)
         #expect(state?.failure?.contains("401") == true)
         #expect(state?.failure?.contains("SECRET-") == false)
@@ -64,14 +63,14 @@ struct JamfSchoolReadErrorTests {
     @Test("An answer that isn't Jamf School's (a web page from a wrong address) is an error, not an empty list")
     func notJamfSchool() async throws {
         let harness = SchoolHarness { MockResponse(status: 200, headers: ["Content-Type": "text/html"], body: Data("<html>Sign in</html>".utf8)) }
-        let state = await harness.lookUp("DMPXK1JHJG5H")
+        let state = await harness.lookUp("TESTIPAD001")
         #expect(state?.failure?.contains("not a Jamf School device list") == true)
     }
 
     @Test("A dropped connection is an error on the row")
     func dropped() async throws {
         let harness = SchoolHarness { throw URLError(.cannotConnectToHost) }
-        let state = await harness.lookUp("DMPXK1JHJG5H")
+        let state = await harness.lookUp("TESTIPAD001")
         #expect(state?.failure != nil)
     }
 
@@ -79,15 +78,15 @@ struct JamfSchoolReadErrorTests {
     func refresh() async throws {
         let failing = Locked(false)
         let harness = SchoolHarness { failing.value ? .json(403, #"{"code":403,"message":"Forbidden"}"#) : fleet }
-        #expect(await harness.lookUp("DMPXK1JHJG5H")?.value != nil)
+        #expect(await harness.lookUp("TESTIPAD001")?.value != nil)
 
         failing.withLock { $0 = true }
-        await harness.model.refreshRows(["DMPXK1JHJG5H"])
-        #expect(harness.row("DMPXK1JHJG5H")?.failure?.contains("403") == true)
+        await harness.model.refreshRows(["TESTIPAD001"])
+        #expect(harness.row("TESTIPAD001")?.failure?.contains("403") == true)
 
         failing.withLock { $0 = false }
-        await harness.model.refreshRows(["DMPXK1JHJG5H"])
-        #expect(harness.row("DMPXK1JHJG5H")?.value?.recordID == "u-1")
+        await harness.model.refreshRows(["TESTIPAD001"])
+        #expect(harness.row("TESTIPAD001")?.value?.recordID == "u-1")
         #expect(harness.deviceReads == 3)
     }
 }

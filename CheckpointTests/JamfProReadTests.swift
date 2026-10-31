@@ -4,9 +4,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// How Checkpoint's remaining Jamf Pro calls behave (ROADMAP step 7, JTKit
-// 0.8.2), written against Checkpoint's own code before they move to JTKit:
-// PreStages and their scope, ADE, compliance, DDM status, declarations, the
+// How Checkpoint's Jamf Pro reads and site moves behave: PreStages and their scope, ADE, compliance, DDM status, declarations, the
 // four secrets, sites, departments and buildings, and site moves. Each runs
 // straight to Jamf Pro and through the Platform API.
 
@@ -69,9 +67,9 @@ struct PrestageTests {
     func scope(via: Via) async throws {
         let server = readServer { request in
             request.path.hasSuffix("/v2/mobile-device-prestages/scope")
-                ? .json(200, #"{"serialsByPrestageId":{"DMPXK1JHJG5H":"5"}}"#) : nil
+                ? .json(200, #"{"serialsByPrestageId":{"TESTIPAD001":"5"}}"#) : nil
         }
-        #expect(try await client(server, via).prestageAssignments(family: .mobileDevice) == ["DMPXK1JHJG5H": "5"])
+        #expect(try await client(server, via).prestageAssignments(family: .mobileDevice) == ["TESTIPAD001": "5"])
         #expect(calls(server).only?.path == via.api("v2/mobile-device-prestages/scope"))
     }
 
@@ -82,14 +80,14 @@ struct PrestageTests {
             return request.method == "GET" ? .json(200, #"{"versionLock":3,"assignments":[]}"#) : .json(200, "{}")
         }
         let jamf = try client(server, via)
-        try await jamf.addToPrestage(family: .computer, prestageID: "5", serials: ["C02XK1JHJG5H"])
-        try await jamf.removeFromPrestage(family: .computer, prestageID: "5", serials: ["C02XK1JHJG5H"])
+        try await jamf.addToPrestage(family: .computer, prestageID: "5", serials: ["TESTMAC0001"])
+        try await jamf.removeFromPrestage(family: .computer, prestageID: "5", serials: ["TESTMAC0001"])
         let requests = calls(server)
         #expect(requests.map(\.method) == ["GET", "POST", "GET", "POST"])
         #expect(requests.map(\.path) == [via.api("v2/computer-prestages/5/scope"), via.api("v2/computer-prestages/5/scope"),
                                          via.api("v2/computer-prestages/5/scope"), via.api("v2/computer-prestages/5/scope/delete-multiple")])
-        #expect(body(requests[1]) == dictionary(#"{"serialNumbers":["C02XK1JHJG5H"],"versionLock":3}"#))
-        #expect(body(requests[3]) == dictionary(#"{"serialNumbers":["C02XK1JHJG5H"],"versionLock":3}"#))
+        #expect(body(requests[1]) == dictionary(#"{"serialNumbers":["TESTMAC0001"],"versionLock":3}"#))
+        #expect(body(requests[3]) == dictionary(#"{"serialNumbers":["TESTMAC0001"],"versionLock":3}"#))
     }
 
     @Test("Change PreStage removes from the old one before adding to the new one, and is one Action entry")
@@ -100,7 +98,7 @@ struct PrestageTests {
         })
         var info = ManagedDeviceInfo(recordID: "7", connectionID: SavedData.proClientID, kind: .computer)
         info.prestageID = "1"
-        try await harness.model.setPrestage(reports: [Devices.report("C02XK1JHJG5H", info)], to: "2", kind: .computer)
+        try await harness.model.setPrestage(reports: [Devices.report("TESTMAC0001", info)], to: "2", kind: .computer)
         let writes = harness.sent.filter { $0.method == "POST" }.map(\.path)
         #expect(writes == ["/api/v2/computer-prestages/1/scope/delete-multiple", "/api/v2/computer-prestages/2/scope"])
         let action = try #require(harness.actions.only)
@@ -134,11 +132,11 @@ struct ADETests {
                 return .json(200, #"{"totalCount":1,"results":[{"id":"9"}]}"#)
             }
             if request.path.hasSuffix("/v1/device-enrollments/9/devices") {
-                return .json(200, #"{"totalCount":2,"results":[{"serialNumber":"c02xk1jhjg5h"},{"serialNumber":"DMPXK1JHJG5H"}]}"#)
+                return .json(200, #"{"totalCount":2,"results":[{"serialNumber":"testmac0001"},{"serialNumber":"TESTIPAD001"}]}"#)
             }
             return nil
         }
-        #expect(try await client(server, via).adeInstanceBySerial() == ["C02XK1JHJG5H": "9", "DMPXK1JHJG5H": "9"])
+        #expect(try await client(server, via).adeInstanceBySerial() == ["TESTMAC0001": "9", "TESTIPAD001": "9"])
         #expect(calls(server).last?.queryValue("page-size") == "500")
     }
 }
@@ -186,7 +184,7 @@ struct DDMTests {
      {"key":"softwareupdate.pending-version.os-version","value":"26.1","lastUpdateTime":"2026-10-20T08:00:00.000"},
      {"key":"softwareupdate.pending-version.target-local-date-time","value":"2026-10-31 22:00:00 +0000","lastUpdateTime":"2026-10-19T08:00:00.000"},
      {"key":"softwareupdate.pending-version.softwareupdate.target-local-date-time","value":"leftover"},
-     {"key":"management.declarations.configurations","value":"{active=true, identifier=Blueprint_0F2C1B0A-1111-2222-3333-444455556666_s1_c1_sys_cfg1, valid=invalid, reasons=[{code=Error.ConfigurationCannotBeApplied, description=Cannot apply, details={Error=[kSUCoreErrorDDMInvalidDeclarationFailure] Invalid declaration: target OS version (15.7.3) is older than current version (15.7.9)}}]},{active=true, identifier=custom.one, valid=valid}"}]}
+     {"key":"management.declarations.configurations","value":"{active=true, identifier=Blueprint_EEEEEEEE-1111-4000-8000-00000000E001_s1_c1_sys_cfg1, valid=invalid, reasons=[{code=Error.ConfigurationCannotBeApplied, description=Cannot apply, details={Error=[kSUCoreErrorDDMInvalidDeclarationFailure] Invalid declaration: target OS version (15.7.3) is older than current version (15.7.9)}}]},{active=true, identifier=custom.one, valid=valid}"}]}
     """#
 
     @Test("The status report: software update, declarations, and a deadline older than the offer dropped", arguments: Via.allCases)
@@ -201,10 +199,10 @@ struct DDMTests {
         #expect(update.installState == "downloading")
         #expect(update.offeredOSVersion == "26.1")
         #expect(update.deadline == nil)
-        #expect(status.declarations.map(\.identifier) == ["Blueprint_0F2C1B0A-1111-2222-3333-444455556666_s1_c1_sys_cfg1", "custom.one"])
+        #expect(status.declarations.map(\.identifier) == ["Blueprint_EEEEEEEE-1111-4000-8000-00000000E001_s1_c1_sys_cfg1", "custom.one"])
         #expect(status.declarations[0].validity == .invalid)
         #expect(status.declarations[0].reasons == ["[kSUCoreErrorDDMInvalidDeclarationFailure] Invalid declaration: target OS version (15.7.3) is older than current version (15.7.9)"])
-        #expect(status.declarations[0].blueprintID == "0F2C1B0A-1111-2222-3333-444455556666")
+        #expect(status.declarations[0].blueprintID == "EEEEEEEE-1111-4000-8000-00000000E001")
         #expect(log.entries.contains { $0.request?.responseBody?.contains("downloading") == true })
     }
 
@@ -280,7 +278,7 @@ struct SiteTests {
             try await harness.model.setSite(reports: [Devices.mac(), Devices.mobile()], to: "3")
             Issue.record("moved")
         } catch {
-            #expect(error.localizedDescription.hasPrefix("DMPXK1JHJG5H: "))
+            #expect(error.localizedDescription.hasPrefix("TESTIPAD001: "))
         }
         let action = try #require(harness.actions.only)
         #expect(action.detail == "Moved 1 of 2 devices to 3")
@@ -308,7 +306,7 @@ struct SiteTests {
         #expect(try await client(server, .direct).departmentNames().isEmpty)
     }
 
-    @Test("Blueprint names, through the Platform API; none when they can't be read")
+    @Test("Blueprint names, through the Platform API; an error when they can't be read")
     func blueprintNames() async throws {
         let server = readServer { request in
             request.path.hasSuffix("/blueprints/v1/blueprints")
@@ -316,7 +314,7 @@ struct SiteTests {
         }
         #expect(try await client(server, .platform).blueprintNames() == ["b-1": "Wi-Fi"])
         let refused = readServer { _ in .json(403, "{}") }
-        #expect(try await client(refused, .platform).blueprintNames().isEmpty)
+        await #expect(throws: (any Error).self) { try await client(refused, .platform).blueprintNames() }
     }
 }
 
@@ -346,10 +344,10 @@ nonisolated enum Secret: String, CaseIterable, Sendable, CustomTestStringConvert
     }
     var actionText: String {
         switch self {
-        case .fileVault: "Read the FileVault recovery key for C02XK1JHJG5H"
-        case .recoveryLock: "Read the Recovery Lock password for C02XK1JHJG5H"
-        case .lockPIN: "Read the device lock PIN for C02XK1JHJG5H"
-        case .localAdmin: "Read the local administrator password for admin on C02XK1JHJG5H, queuing a rotation"
+        case .fileVault: "Read the FileVault recovery key for TESTMAC0001"
+        case .recoveryLock: "Read the Recovery Lock password for TESTMAC0001"
+        case .lockPIN: "Read the device lock PIN for TESTMAC0001"
+        case .localAdmin: "Read the local administrator password for admin on TESTMAC0001, queuing a rotation"
         }
     }
     var testDescription: String { rawValue }
@@ -390,7 +388,7 @@ struct SecretTests {
         #expect(harness.log.entries.first { $0.detail.contains(secret.path) }?.request?.contentsWithheld == true)
         let action = try #require(harness.actions.only)
         #expect(action.detail == secret.actionText)
-        #expect(!masked.contains("C02XK1JHJG5H"))
+        #expect(!masked.contains("TESTMAC0001"))
     }
 
     @Test("Nor when the read fails and the server's answer repeats the secret", arguments: pairs)
@@ -436,7 +434,7 @@ struct SecretTests {
             _ = try await harness.model.localAdminPassword(for: report, account: JamfLocalAdminAccount(username: "jamf", guid: "", source: "JMF"))
             Issue.record("read")
         } catch {
-            #expect(error.localizedDescription == "Jamf Pro holds no password for jamf on C02XK1JHJG5H.")
+            #expect(error.localizedDescription == "Jamf Pro holds no password for jamf on TESTMAC0001.")
         }
         #expect(harness.sent.map(\.path).contains("/api/v2/local-admin-password/M-7/account/jamf/password"))
         // read once per server

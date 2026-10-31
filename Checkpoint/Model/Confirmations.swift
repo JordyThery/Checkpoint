@@ -16,10 +16,10 @@ struct TypedConfirmation: Identifiable {
     let action: Action
 }
 
-/// Removing records, confirmed by JTKit's rules (ROADMAP step 7): the
+/// Removing records, confirmed by JTKit's rules: the
 /// connection is always named; deleting from Jamf Pro or Intune can't be
 /// undone, so from two records the number is typed. Jamf School's Move to
-/// Trash can be restored there, so it isn't asked for (decided by Jordy).
+/// Trash can be restored there, so it isn't asked for.
 extension LookupModel {
     /// Delete Record (or Move to Trash) for the records in the selection.
     func deleteConfirmation(reports: [DeviceReport]) -> MDMCommand.Confirmation? {
@@ -120,8 +120,7 @@ enum AppleWrite: Hashable, Sendable {
     }
 }
 
-/// Apple writes, confirmed by JTKit's rules (ROADMAP step 9, decided by
-/// Jordy): every dialog names the organization; Release, Assign with
+/// Apple writes, confirmed by JTKit's rules: every dialog names the organization; Release, Assign with
 /// Migration Deadline and Update Deadline ask for the number from two
 /// devices; Update Deadline warns when the new deadline is earlier.
 extension LookupModel {
@@ -132,7 +131,7 @@ extension LookupModel {
             switch write.type {
             case .assign, .release: return !abm.isReleased
             case .unassign: return !abm.isReleased && abm.mdmServerID != nil
-            case .assignWithMigrationDeadline: return abm.device.isMdmMigrationCapable == true
+            case .assignWithMigrationDeadline: return !abm.isReleased && abm.device.isMdmMigrationCapable == true
             case .updateMigrationDeadline, .cancelMigration: return abm.device.hasActiveMigration
             }
         }
@@ -185,7 +184,7 @@ extension MDMCommand.Confirmation {
     }
 }
 
-/// Reading a secret (JTKit's rules, ROADMAP step 7): only a LAPS password
+/// Reading a secret (JTKit's rules): only a LAPS password
 /// rotates when viewed, so only it is asked about first.
 extension LookupModel {
     /// "in 1 hour", "shortly afterwards", as Jamf Pro words the rotation. The
