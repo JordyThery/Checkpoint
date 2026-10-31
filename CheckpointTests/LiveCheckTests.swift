@@ -57,7 +57,7 @@ struct LiveFailure: Error, CustomStringConvertible {
 
 /// The note for a failed step: a missing privilege is named.
 func failure(_ error: any Error) -> String {
-    if let error = error as? JamfPlatformError, error.status == 401 || error.status == 403 {
+    if let error = error as? JamfPlatform.APIError, error.status == 401 || error.status == 403 {
         return "MISSING PRIVILEGE: \(error.localizedDescription)"
     }
     return "\(error.localizedDescription)"
@@ -202,7 +202,7 @@ final class LiveModel {
 /// The "under tests" checks, recorded as steps; any attempt fails the run.
 @MainActor
 func checkUnderTest(_ run: LiveCheckRun, when: String) {
-    let logs: [(AttemptLog, String)] = [
+    let logs: [(TestRun.AttemptLog, String)] = [
         (.commands, "no MDM command under tests"),
         (.appleWrites, "no Apple Business or School Manager write under tests"),
         (.secretReads, "no device secret read under tests"),
@@ -344,7 +344,7 @@ struct TestDevices {
             _ = try await client.send(HTTPRequest(method: "GET", path: JamfClassic.path(resource, id: id), accept: "application/json"),
                                       privilege: resource == Self.mobiles ? .readMobileDevices : .readComputers)
             return true
-        } catch let error as JamfPlatformError where error.status == 404 {
+        } catch let error as JamfPlatform.APIError where error.status == 404 {
             return false
         }
     }
@@ -510,7 +510,7 @@ struct LiveSignInTests {
                         note = "signed in; \(try await client.verify()) locations"
                     case .intune:
                         let client = try #require(live.model.makeIntuneClient(for: server), "\(role): incomplete connection")
-                        try await client.intuneTestConnection()
+                        try await client.testConnection()
                         note = "signed in"
                     }
                 }
@@ -721,11 +721,16 @@ struct LiveLookupTests {
         #expect(mac?.name == macName)
 
         // --fault command-attempt: one Erase on the test iPad through the
-        // app's real path, to show it is refused before anything is sent.
+        // app's real path, confirmed as the app confirms it, to show it is
+        // refused before anything is sent.
         if run.fault == "command-attempt", let report = single.first(where: { $0.serial == iPadSerial }) {
             try #require(mdmModel.model.underTest.commands.isActive, "The command guard is off: the fault isn't injected")
             let message = await { () async -> String in
-                do { try await mdmModel.model.sendCommand(.wipeMobile, reports: [report]); return "sent" } catch { return error.localizedDescription }
+                do {
+                    let approval = try mdmModel.model.commandConfirmation(.wipeMobile, reports: [report])?.approve()
+                    try await mdmModel.model.sendCommand(.wipeMobile, reports: [report], approval: approval)
+                    return "sent"
+                } catch { return error.localizedDescription }
             }()
             run.record(step: "command-attempt", passed: false,
                        note: "an Erase of the test iPad through the app's real path, injected on purpose (--fault command-attempt): \(message)")
@@ -749,7 +754,7 @@ struct LiveLookupTests {
         let before = await deleting.lookUp([iPadSerial], mdm: .connection(testA.id))
         try #require(before.first?.mdm.value?.recordID == iPadID, "The app's lookup didn't find the test iPad before the delete")
         try await attempt("the app's Delete Record removes the test iPad") {
-            try await deleting.model.deleteMDMRecord(reports: before)
+            try await deleting.model.deleteMDMRecord(reports: before, approval: deleting.model.deleteConfirmation(reports: before)?.approve())
         }
         let gone = try await !devices.exists(resource: TestDevices.mobiles, id: iPadID)
         let after = deleting.model.reports.first { $0.serial == iPadSerial }
@@ -798,7 +803,7 @@ struct LiveCleanupTests {
             let unlisted = LiveConnections.savedOrgs().filter { !allowed.contains($0.clientID) }.count
             let appleHosts = ["account.apple.com", "api-business.apple.com", "api-school.apple.com"]
             let appleRefused = refusals.filter { refusal in appleHosts.contains { refusal.location.hasPrefix($0) } }.count
-            let appleAttempted = AttemptLog.savedConnections.attempts().filter { attempt in appleHosts.contains { attempt.what.contains($0) } }.count
+            let appleAttempted = TestRun.AttemptLog.savedConnections.attempts().filter { attempt in appleHosts.contains { attempt.what.contains($0) } }.count
             run.record(step: "saved Apple organizations not on the allow-list received no request",
                        passed: appleRefused == 0 && appleAttempted == 0,
                        note: "\(unlisted) such organization\(unlisted == 1 ? "" : "s"); \(appleRefused) refused, \(appleAttempted) attempted")

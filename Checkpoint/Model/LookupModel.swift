@@ -614,7 +614,7 @@ final class LookupModel {
         self.settings = settings
         self.log = log ?? ActivityLog()
         // Under tests the saved connections are never reached (step 11).
-        self.session = UnderTest.isActive && settings.holdsSavedConnections ? SavedConnectionGuard.refusingSession() : session
+        self.session = UnderTest.isActive && settings.holdsSavedConnections ? UnderTest.refusingSession() : session
         self.abmClock = abmClock
         self.underTest = underTest
         appleDemo = DemoConnectionChoice(mode: settings.demo, connections: Self.demoOrgs.map(\.connection))
@@ -1900,7 +1900,10 @@ final class LookupModel {
     /// Deleting an Intune record does nothing to the device: it stays enrolled
     /// and reappears at its next check-in. Retiring it, which is what Remove
     /// MDM Profile sends there, is the one that unmanages it.
-    func deleteMDMRecord(reports: [DeviceReport]) async throws {
+    ///
+    /// - Parameter approval: the answered `deleteConfirmation(reports:)`;
+    ///   Intune deletes nothing without it.
+    func deleteMDMRecord(reports: [DeviceReport], approval: MDMCommand.Confirmation.Approval?) async throws {
         if let reason = mdmActionUnavailableReason(for: reports) {
             throw ActionError(message: reason)
         }
@@ -1913,16 +1916,19 @@ final class LookupModel {
         guard !withRecords.isEmpty else {
             throw ActionError(message: "None of the selected devices have a \(connection.product.label) record.")
         }
-        let failures = await removeRecords(withRecords, connection: connection)
+        let failures = await removeRecords(withRecords, connection: connection, approval: approval)
         await refreshRows(withRecords.map(\.serial))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
     }
 
     /// Removes one record wherever it lives — the inspector's path for a
     /// stale record found beside the working one. Routed by the record.
-    func removeRecord(_ info: ManagedDeviceInfo, serial: String) async throws {
+    ///
+    /// - Parameter approval: the answered `recordRemovalConfirmation(_:serial:)`.
+    func removeRecord(_ info: ManagedDeviceInfo, serial: String,
+                      approval: MDMCommand.Confirmation.Approval?) async throws {
         let connection = try actingConnection(for: info)
-        let failures = await removeRecords([(serial, info)], connection: connection)
+        let failures = await removeRecords([(serial, info)], connection: connection, approval: approval)
         await refreshRows([serial])
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
     }
@@ -1945,7 +1951,9 @@ final class LookupModel {
     /// connection so each product's removal is sent where it belongs. The
     /// working records are never touched. Failures are collected per device
     /// and thrown together once every connection has been tried.
-    func removeStaleRecords(reports: [DeviceReport]) async throws {
+    ///
+    /// - Parameter approval: the answered `staleRemovalConfirmation(reports:)`.
+    func removeStaleRecords(reports: [DeviceReport], approval: MDMCommand.Confirmation.Approval?) async throws {
         let entries = staleRecords(in: reports)
         guard !entries.isEmpty else {
             throw ActionError(message: "The selection has no stale records to remove.")
@@ -1957,7 +1965,7 @@ final class LookupModel {
                 failures += group.map { "\($0.serial): \(Self.removedConnectionMessage)" }
                 continue
             }
-            failures += await removeRecords(group, connection: connection)
+            failures += await removeRecords(group, connection: connection, approval: approval)
         }
         await refreshRows(Array(Set(entries.map(\.serial))))
         if !failures.isEmpty { throw ActionError(message: failures.joined(separator: "\n")) }
@@ -1979,10 +1987,12 @@ final class LookupModel {
     /// Deletes or trashes records on one connection, per that product's
     /// meaning of removal, returning per-device failures rather than
     /// stopping at the first. The shared engine for Delete Record and the
-    /// stale-record cleanup.
+    /// stale-record cleanup. Intune's Delete Record is JTKit's command, sent
+    /// only with the confirmation's approval.
     private func removeRecords(
         _ entries: [(serial: String, info: ManagedDeviceInfo)],
-        connection: MDMConnection
+        connection: MDMConnection,
+        approval: MDMCommand.Confirmation.Approval?
     ) async -> [String] {
         // Defence in depth: nothing routes these here, and nothing may.
         if let appleManaged = entries.first(where: { $0.info.managedByApple }) {
@@ -2001,7 +2011,7 @@ final class LookupModel {
                 if let school {
                     try await school.trash(udid: entry.info.recordID)
                 } else if let intune {
-                    try await intune.perform(.deleteRecord, intuneDeviceID: entry.info.recordID)
+                    try await intune.perform(.deleteRecord, intuneDeviceID: entry.info.recordID, approval: approval)
                 } else if let jamf {
                     switch entry.info.kind {
                     case .computer:
@@ -2241,8 +2251,13 @@ final class LookupModel {
     /// JTKit (Jamf Pro, Jamf School, Intune). Returns
     /// the number of devices it was sent to. One Action entry says how many
     /// it reached and names every other device with the reason.
+    ///
+    /// - Parameter approval: the answered `commandConfirmation(_:reports:)`,
+    ///   which carries the PIN. A command that can't be undone or takes a PIN
+    ///   isn't sent without it.
     @discardableResult
-    func sendCommand(_ command: MDMCommand, reports: [DeviceReport], passcode: String? = nil) async throws -> Int {
+    func sendCommand(_ command: MDMCommand, reports: [DeviceReport],
+                     approval: MDMCommand.Confirmation.Approval?) async throws -> Int {
         // The connection the records are on, not the one the toolbar shows:
         // actions follow the records.
         if let reason = mdmActionUnavailableReason(for: reports) {
@@ -2274,11 +2289,11 @@ final class LookupModel {
         let result: MDMCommand.Result
         do {
             if let school {
-                result = try await school.send(command, to: targets)
+                result = try await school.send(command, to: targets, approval: approval)
             } else if let intune {
-                result = try await intune.send(command, to: targets)
+                result = try await intune.send(command, to: targets, approval: approval)
             } else if let jamf {
-                result = try await jamf.send(command, to: targets, pin: command.needsPIN(product: product) ? passcode : nil)
+                result = try await jamf.send(command, to: targets, approval: approval)
             } else {
                 result = MDMCommand.Result(command: command.title, outcomes: [])
             }
@@ -2374,7 +2389,7 @@ final class LookupModel {
     }
 
     /// JTKit's Graph client for an Intune tenant, signing in with the app
-    /// registration's client secret (JTKit's `EntraTokenProvider`).
+    /// registration's client secret (JTKit's `Graph.TokenProvider`).
     func makeIntuneClient(for config: MDMConnection) -> Graph.Client? {
         guard config.product == .intune,
               let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
@@ -2400,7 +2415,7 @@ final class LookupModel {
     nonisolated static func intuneClient(for config: MDMConnection, secret: @escaping @Sendable () throws -> String,
                                          log: ActivityLog?, session: URLSession = .shared) -> Graph.Client? {
         let recorder = Graph.recorder(session: session, log: log, connection: config.displayName)
-        guard let tokens = try? EntraTokenProvider(connection: config.connection, secret: secret, recorder: recorder) else {
+        guard let tokens = try? Graph.TokenProvider(connection: config.connection, secret: secret, recorder: recorder) else {
             return nil
         }
         return Graph.Client(tokens: tokens, access: .application, recorder: recorder)
@@ -2481,7 +2496,7 @@ final class LookupModel {
         /// Every managed device in the Intune tenant, keyed by serial. Read in
         /// pages rather than per device because Graph documents no $filter on
         /// serialNumber, so there is no per-serial query to make.
-        var intuneFleet: [String: IntuneManagedDevice] = [:]
+        var intuneFleet: [String: Graph.ManagedDevice] = [:]
         /// Why the tenant couldn't be read; every row then shows it rather
         /// than "not found".
         var intuneFailure: String?

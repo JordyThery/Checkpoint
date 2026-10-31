@@ -485,21 +485,21 @@ final class AppSettings {
     /// A sandbox run (`-JTKitSandbox YES`, UI tests) keeps connections and
     /// secrets in memory, so the real ones are never read or written. So does
     /// the host of the unit tests, in a throwaway domain (`UnderTest`).
-    static let shared = UnderTest.isUnitTestHost
+    static let shared = TestRun.isUnitTestHost
         ? UnderTest.unitTestHostSettings()
-        : UnderTest.isSandboxLaunch()
+        : DemoMode.isSandboxLaunch
             ? AppSettings(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
             : AppSettings()
 
     /// Whether these settings are the saved connections: the app's own
     /// settings or its Keychain items. Under tests, every request for them is
-    /// refused (`SavedConnectionGuard`).
+    /// refused (`UnderTest.refusingSession`).
     nonisolated let holdsSavedConnections: Bool
 
     /// The network for connections of these settings outside a lookup model
     /// (Test Connection): refused under tests when they are the saved ones.
     nonisolated var testConnectionSession: URLSession {
-        UnderTest.isActive && holdsSavedConnections ? SavedConnectionGuard.refusingSession() : .shared
+        UnderTest.isActive && holdsSavedConnections ? UnderTest.refusingSession() : .shared
     }
 
     /// The Apple organizations and MDM connections, in JTKit's shared list.

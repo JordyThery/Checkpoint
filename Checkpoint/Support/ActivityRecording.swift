@@ -5,9 +5,10 @@ import JTKit
 // recorded by JTKit's request recorder; this adds what the user asked for,
 // in the app's own words ("Action" entries).
 
-/// Which service an entry concerns, as the log names it.
+/// Which service an entry concerns, as the log names it. The Apple names are
+/// those of JTKit's `ABM.Service.label`, which names Apple's requests.
 nonisolated enum ActivityService: String, Sendable, CaseIterable, Identifiable {
-    case appleBusiness = "Apple Business"
+    case appleBusiness = "Apple Business Manager"
     case appleSchool = "Apple School Manager"
     case jamfPro = "Jamf Pro"
     case jamfSchool = "Jamf School"

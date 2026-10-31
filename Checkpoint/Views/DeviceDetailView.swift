@@ -310,8 +310,8 @@ struct DeviceDetailView: View {
             Text(infoMessage ?? "")
         }
         .sheet(item: $typed) { item in
-            CommandConfirmationSheet(confirmation: item.confirmation) { pin in
-                if case .command(let command) = item.action { execute(command, pin: pin) }
+            CommandConfirmationSheet(confirmation: item.confirmation) { approval in
+                if case .command(let command) = item.action { execute(command, approval: approval) }
             }
         }
         .confirmationDialog(
@@ -467,18 +467,20 @@ struct DeviceDetailView: View {
                 model.product(for: report).removeRecordAction,
                 role: .destructive
             ) {
-                run { try await model.deleteMDMRecord(reports: [report]) }
+                let approval = try? model.deleteConfirmation(reports: [report])?.approve()
+                run { try await model.deleteMDMRecord(reports: [report], approval: approval) }
             }
         case .removeOtherRecord(let info):
             Button(
                 (model.connection(for: info)?.product ?? .jamfPro).removeRecordAction,
                 role: .destructive
             ) {
-                run { try await model.removeRecord(info, serial: report.serial) }
+                let approval = try? model.recordRemovalConfirmation(info, serial: report.serial).approve()
+                run { try await model.removeRecord(info, serial: report.serial, approval: approval) }
             }
         case .command(let command):
             Button(command.title(for: model.product(for: report)), role: command.isDestructive ? .destructive : nil) {
-                execute(command, pin: nil)
+                execute(command, approval: try? model.commandConfirmation(command, reports: [report])?.approve())
             }
         case .viewLocalAdminPassword(let account):
             Button("Continue") {
@@ -1452,9 +1454,9 @@ struct DeviceDetailView: View {
         }
     }
 
-    private func execute(_ command: MDMCommand, pin: String?) {
+    private func execute(_ command: MDMCommand, approval: MDMCommand.Confirmation.Approval?) {
         run(successMessage: "\(command.title(for: model.product(for: report))) was queued in \(model.product(for: report).label).") {
-            try await model.sendCommand(command, reports: [report], passcode: pin)
+            try await model.sendCommand(command, reports: [report], approval: approval)
         }
     }
 

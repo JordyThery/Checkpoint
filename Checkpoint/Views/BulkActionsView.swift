@@ -400,8 +400,8 @@ struct BulkActionsView: View {
             Text(infoMessage ?? "")
         }
         .sheet(item: $typed) { item in
-            CommandConfirmationSheet(confirmation: item.confirmation) { pin in
-                perform(item.action, pin: pin)
+            CommandConfirmationSheet(confirmation: item.confirmation) { approval in
+                perform(item.action, approval: approval)
             }
         }
         .confirmationDialog(
@@ -601,15 +601,17 @@ struct BulkActionsView: View {
                 actionProduct.removeRecordActionPlural,
                 role: .destructive
             ) {
-                run { try await model.deleteMDMRecord(reports: reports) }
+                let approval = try? model.deleteConfirmation(reports: reports)?.approve()
+                run { try await model.deleteMDMRecord(reports: reports, approval: approval) }
             }
         case .removeStaleRecords:
             Button("Remove Stale Records", role: .destructive) {
-                run { try await model.removeStaleRecords(reports: reports) }
+                let approval = try? model.staleRemovalConfirmation(reports: reports).approve()
+                run { try await model.removeStaleRecords(reports: reports, approval: approval) }
             }
         case .command(let command):
             Button(command.title(for: actionProduct), role: command.isDestructive ? .destructive : nil) {
-                execute(command, pin: nil)
+                execute(command, approval: try? model.commandConfirmation(command, reports: reports)?.approve())
             }
         case nil:
             EmptyView()
@@ -626,20 +628,20 @@ struct BulkActionsView: View {
         locationSelection = currentLocationState
     }
 
-    /// What a typed confirmation confirmed.
-    private func perform(_ action: TypedConfirmation.Action, pin: String?) {
+    /// What a typed confirmation confirmed, with its approval.
+    private func perform(_ action: TypedConfirmation.Action, approval: MDMCommand.Confirmation.Approval) {
         switch action {
-        case .command(let command): execute(command, pin: pin)
-        case .deleteRecord: run { try await model.deleteMDMRecord(reports: reports) }
-        case .removeStaleRecords: run { try await model.removeStaleRecords(reports: reports) }
+        case .command(let command): execute(command, approval: approval)
+        case .deleteRecord: run { try await model.deleteMDMRecord(reports: reports, approval: approval) }
+        case .removeStaleRecords: run { try await model.removeStaleRecords(reports: reports, approval: approval) }
         case .apple(let write): run { try await model.perform(write, reports: reports) }
         }
     }
 
-    private func execute(_ command: MDMCommand, pin: String?) {
+    private func execute(_ command: MDMCommand, approval: MDMCommand.Confirmation.Approval?) {
         let product = actionProduct
         runReporting {
-            let sent = try await model.sendCommand(command, reports: reports, passcode: pin)
+            let sent = try await model.sendCommand(command, reports: reports, approval: approval)
             return "\(command.title(for: actionProduct)) was queued for \(count(sent)) in \(product.label)."
         }
     }

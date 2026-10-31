@@ -52,15 +52,15 @@ struct RecordConnectionTests {
         let mac = Devices.mac(on: Self.removedID)
         let info = try #require(mac.mdm.value)
         let refusal = LookupModel.removedConnectionMessage
-        #expect(await message { try await model.removeRecord(info, serial: mac.serial) } == refusal)
+        #expect(await message { try await model.removeRecord(info, serial: mac.serial, approval: nil) } == refusal)
         #expect(await message { try await model.setAssetTag("TAG", for: mac) } == refusal)
         #expect(await message { _ = try await model.fileVaultRecoveryKey(for: mac) } == refusal)
         #expect(await message { _ = try await model.recoveryLockPassword(for: mac) } == refusal)
         #expect(await message { _ = try await model.deviceLockPIN(for: mac) } == refusal)
         let account = JamfLocalAdminAccount(username: "admin", guid: "", source: "MDM")
         #expect(await message { _ = try await model.localAdminPassword(for: mac, account: account) } == refusal)
-        #expect(await message { try await model.deleteMDMRecord(reports: [mac]) } == refusal)
-        #expect(await message { try await model.sendCommand(.blankPush, reports: [mac]) } == refusal)
+        #expect(await message { try await model.deleteMDMRecord(reports: [mac], approval: nil) } == refusal)
+        #expect(await message { try await model.sendCommand(.blankPush, reports: [mac], approval: nil) } == refusal)
         #expect(await message { try await model.setSite(reports: [mac], to: "-1") } == refusal)
         #expect(harness.server.requests.isEmpty)
     }
@@ -72,7 +72,8 @@ struct RecordConnectionTests {
         var report = Devices.mac(on: SavedData.proClientID)
         let stale = ManagedDeviceInfo(recordID: "7", connectionID: SavedData.proPasswordID, kind: .computer)
         report.otherRecords = [stale]
-        try await harness.model.removeRecord(stale, serial: report.serial)
+        try await harness.model.removeRecord(stale, serial: report.serial,
+                                             approval: harness.model.recordRemovalConfirmation(stale, serial: report.serial).approve())
         let deletes = harness.server.requests.filter { $0.method == "DELETE" }
         #expect(deletes.count == 1)
         #expect(deletes.first?.url.host() == "jamf.example.com", "Example Password Jamf Pro's server")

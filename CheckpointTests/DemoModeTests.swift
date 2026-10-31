@@ -145,9 +145,10 @@ struct DemoModeTests {
         // A destructive command's confirmation names the connection: the demo one.
         let confirmation = try #require(model.commandConfirmation(.wipeComputer, reports: [report]))
         #expect(confirmation.connectionLine?.contains("Contoso Jamf Pro (Demo)") == true)
-        #expect(try await model.sendCommand(.redeployFramework, reports: [report]) == 1)
+        #expect(try await model.sendCommand(.redeployFramework, reports: [report], approval: nil) == 1)
         #expect(model.settings.demo.jamfProServer.commands.last?.command == "REDEPLOY_FRAMEWORK")
-        try await model.deleteMDMRecord(reports: [try harness.report(mac)])
+        let deleting = [try harness.report(mac)]
+        try await model.deleteMDMRecord(reports: deleting, approval: model.deleteConfirmation(reports: deleting)?.approve())
         #expect(model.settings.demo.jamfProServer.isManaged(serial: mac.serial) == nil)
         harness.expectUnchanged()
     }

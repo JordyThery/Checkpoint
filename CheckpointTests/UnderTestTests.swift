@@ -10,13 +10,13 @@ import Testing
 // the release check reads.
 
 @MainActor
-private func temporaryLog() -> AttemptLog {
+private func temporaryLog() -> TestRun.AttemptLog {
     // In this test process's folder, removed when it ends.
-    AttemptLog(fileURL: TestSettings.folder.appending(path: "attempts-\(UUID().uuidString).jsonl"))
+    TestRun.AttemptLog(fileURL: TestSettings.folder.appending(path: "attempts-\(UUID().uuidString).jsonl"))
 }
 
 @MainActor
-private func activeGuards(_ log: AttemptLog) -> UnderTestGuards {
+private func activeGuards(_ log: TestRun.AttemptLog) -> UnderTestGuards {
     let on = ActionGuard(isActive: true, log: log)
     return UnderTestGuards(commands: on, appleWrites: on, secretReads: on)
 }
@@ -28,7 +28,7 @@ struct UnderTestTests {
     @Test("The unit tests' host runs under tests, with throwaway settings and no Keychain")
     func theHostIsUnderTests() {
         #expect(UnderTest.isActive)
-        #expect(UnderTest.isUnitTestHost)
+        #expect(TestRun.isUnitTestHost)
         #expect(!AppSettings.shared.holdsSavedConnections)
         #expect(AppSettings.shared.mdmConnections.isEmpty && AppSettings.shared.abmOrgs.isEmpty)
     }
@@ -41,16 +41,20 @@ struct UnderTestTests {
         #expect(keychain.holdsSavedConnections)
         // A model on such settings gets the refusing network.
         let model = LookupModel(settings: keychain, session: commandServer().session)
-        #expect(model.session.configuration.protocolClasses?.first is SavedConnectionGuard.RefusingURLProtocol.Type)
+        // JTKit's refusing protocol (internal to JTKit, so known by its name).
+        #expect(model.session.configuration.protocolClasses?.first.map { String(describing: $0) } == "RefusingURLProtocol")
         #expect(LookupModel(settings: Fixture().settings()).session === URLSession.shared)
     }
 
     @Test("A request to a saved connection is refused before it's sent and recorded without its query")
     func savedConnectionRefused() async {
         let log = temporaryLog()
-        let session = SavedConnectionGuard.refusingSession(log: log)
+        let session = UnderTest.refusingSession(log: log)
         let url = URL(string: "https://example.jamfcloud.com/api/v1/computers-inventory?filter=hardware.serialNumber==\"C02SERIAL\"")!
-        await #expect(throws: (any Error).self) { _ = try await session.data(from: url) }
+        // Fails as no answer, with the refusal as its message.
+        let error = await #expect(throws: URLError.self) { _ = try await session.data(from: url) }
+        #expect(error?.code == .resourceUnavailable)
+        #expect(error?.localizedDescription == UnderTest.refusal)
         #expect(log.attempts().map(\.what) == ["GET example.jamfcloud.com/api/v1/computers-inventory"])
     }
 
@@ -86,9 +90,13 @@ struct UnderTestTests {
         let on = ActionGuard(isActive: true, log: log)
         let jamf = try #require(JamfClient(config: pro, secret: { "SECRET" }, session: server.session, commandGuard: on))
         let target = MDMCommand.Target(serial: "C02", recordID: "7", kind: .computer)
-        await #expect(throws: UnderTestRefusal.self) { _ = try await jamf.send(.wipeComputer, to: [target], pin: "123456") }
+        let wipe = try MDMCommand.Confirmation(.wipeComputer, plan: MDMCommand.wipeComputer.plan(for: [target], on: .jamfPro),
+                                               on: .jamfPro, connectionName: nil).approve(pin: "123456", pinAgain: "123456")
+        await #expect(throws: TestRun.Refusal.self) { _ = try await jamf.send(.wipeComputer, to: [target], approval: wipe) }
         let schoolClient = try #require(JamfSchoolClient(config: school, secret: "SECRET", session: server.session, commandGuard: on))
-        await #expect(throws: UnderTestRefusal.self) { _ = try await schoolClient.send(.unmanage, to: [target]) }
+        let unmanage = try MDMCommand.Confirmation(.unmanage, plan: MDMCommand.unmanage.plan(for: [target], on: .jamfSchool),
+                                                   on: .jamfSchool, connectionName: nil).approve()
+        await #expect(throws: TestRun.Refusal.self) { _ = try await schoolClient.send(.unmanage, to: [target], approval: unmanage) }
         #expect(server.requests.isEmpty)
         #expect(log.attempts().count == 2)
     }
@@ -98,14 +106,14 @@ struct UnderTestTests {
         let log = temporaryLog()
         let harness = AppleHarness(underTest: activeGuards(log))
         let reports = try [AppleHarness.device("A", server: "S1")]
-        await #expect(throws: UnderTestRefusal.self) { try await harness.model.setMDMServer(reports: reports, to: nil) }
-        await #expect(throws: UnderTestRefusal.self) { try await harness.model.setMDMServer(reports: reports, to: "S2") }
-        await #expect(throws: UnderTestRefusal.self) { try await harness.model.releaseFromABM(reports: reports) }
+        await #expect(throws: TestRun.Refusal.self) { try await harness.model.setMDMServer(reports: reports, to: nil) }
+        await #expect(throws: TestRun.Refusal.self) { try await harness.model.setMDMServer(reports: reports, to: "S2") }
+        await #expect(throws: TestRun.Refusal.self) { try await harness.model.releaseFromABM(reports: reports) }
         #expect(harness.activities.isEmpty)
 
         let client = ABMClient(clientID: "BUSINESSAPI.test", keyID: "k", privateKey: { "" },
                                session: harness.server.session, writeGuard: ActionGuard(isActive: true, log: log))
-        await #expect(throws: UnderTestRefusal.self) { try await client.submitActivity(.assign, serials: ["A"], mdmServerID: "S1") }
+        await #expect(throws: TestRun.Refusal.self) { try await client.submitActivity(.assign, serials: ["A"], mdmServerID: "S1") }
         #expect(harness.server.requests.isEmpty)
         #expect(log.attempts().count == 4)
         #expect(!log.attempts().contains { $0.what.contains("\"A\"") })
@@ -116,11 +124,11 @@ struct UnderTestTests {
         let log = temporaryLog()
         let harness = CommandHarness(underTest: activeGuards(log))
         let mac = Devices.mac()
-        await #expect(throws: UnderTestRefusal.self) { _ = try await harness.model.fileVaultRecoveryKey(for: mac) }
-        await #expect(throws: UnderTestRefusal.self) { _ = try await harness.model.recoveryLockPassword(for: mac) }
-        await #expect(throws: UnderTestRefusal.self) { _ = try await harness.model.deviceLockPIN(for: mac) }
+        await #expect(throws: TestRun.Refusal.self) { _ = try await harness.model.fileVaultRecoveryKey(for: mac) }
+        await #expect(throws: TestRun.Refusal.self) { _ = try await harness.model.recoveryLockPassword(for: mac) }
+        await #expect(throws: TestRun.Refusal.self) { _ = try await harness.model.deviceLockPIN(for: mac) }
         let account = JamfLocalAdminAccount(username: "admin", guid: "", source: "MDM")
-        await #expect(throws: UnderTestRefusal.self) { _ = try await harness.model.localAdminPassword(for: mac, account: account) }
+        await #expect(throws: TestRun.Refusal.self) { _ = try await harness.model.localAdminPassword(for: mac, account: account) }
         #expect(harness.server.requests.isEmpty)
         #expect(log.attempts().map(\.what) == ["FileVault recovery key (Jamf Pro)", "Recovery Lock password (Jamf Pro)",
                                                "Device lock PIN (Jamf Pro)", "Local administrator password (Jamf Pro)"])

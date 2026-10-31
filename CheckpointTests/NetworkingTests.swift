@@ -294,15 +294,18 @@ struct RecordedBodyTests {
         _ = try? await jamf.platformDeviceID(serial: "C02XK1JHJG5H")
         _ = try? await jamf.platformDeclarations(serial: "C02XK1JHJG5H")
         let iPad = MDMCommand.Target(serial: "DMPXK1JHJG5H", recordID: "12", kind: .mobileDevice, managementID: "M-12")
-        _ = try? await jamf.send(.clearPasscode, to: [iPad], pin: nil)
+        _ = try? await jamf.send(.clearPasscode, to: [iPad], approval: nil)
         _ = try? await jamf.fileVaultRecoveryKey(computerID: "7")
         _ = try? await jamf.deviceLockPIN(computerID: "7")
         _ = try? await jamf.recoveryLockPassword(computerID: "7")
         _ = try? await jamf.localAdminPassword(managementID: "M-7",
                                                account: JamfLocalAdminAccount(username: "admin", guid: "", source: "MDM"))
         let mac = MDMCommand.Target(serial: "C02XK1JHJG5H", recordID: "7", kind: .computer, managementID: "M-7")
-        _ = try? await jamf.send(.wipeComputer, to: [mac], pin: "246813")
-        _ = try? await jamf.send(.lockComputer, to: [mac], pin: "246813")
+        for command in [MDMCommand.wipeComputer, .lockComputer] {
+            let approval = try? MDMCommand.Confirmation(command, plan: command.plan(for: [mac], on: .jamfPro), on: .jamfPro,
+                                                        connectionName: nil).approve(pin: "246813", pinAgain: "246813")
+            _ = try? await jamf.send(command, to: [mac], approval: approval)
+        }
         _ = try? await jamf.sites()
     }
 
@@ -378,7 +381,7 @@ struct RecordedBodyTests {
         let log = ActivityLog()
         let iPad = MDMCommand.Target(serial: "DMPXK1JHJG5H", recordID: "12", kind: .mobileDevice, managementID: "M-12")
         // Clear Passcode reads the token, then sends it (both withheld)
-        _ = try await makeJamf(jamfServer(), log: log).send(.clearPasscode, to: [iPad], pin: nil)
+        _ = try await makeJamf(jamfServer(), log: log).send(.clearPasscode, to: [iPad], approval: nil)
 
         let entry = try #require(log.entries.first { $0.detail.hasSuffix("/mobile-devices/12/detail") })
         let details = try #require(entry.request)
@@ -462,7 +465,7 @@ struct RecorderTests {
         _ = try? await abm.device(serial: "C02XK1JHJG5H")
 
         #expect(log.entries.map(\.category) == ["Sign-in", "API"])
-        #expect(log.entries.allSatisfy { $0.service == "Apple Business" && $0.connection == "Apple Business" })
+        #expect(log.entries.allSatisfy { $0.service == "Apple Business Manager" && $0.connection == "Apple Business" })
         #expect(log.entries.first?.request?.requestBody == nil)
         #expect(log.entries.last?.request?.responseBody?.contains("C02XK1JHJG5H") == true)
         #expect(!everything(log).contains("SECRET-"))

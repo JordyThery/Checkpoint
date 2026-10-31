@@ -69,7 +69,7 @@ struct ConnectionsTab: View {
             guard let client = LookupModel.intuneClient(for: server, secret: { secret }, log: log, session: session) else {
                 throw ConnectionTestError("Enter a tenant ID, client ID and client secret first.")
             }
-            try await client.intuneTestConnection()
+            try await client.testConnection()
             return "Connected"
         case .mdm(let server) where server.product == .jamfSchool:
             guard let client = JamfSchoolClient(config: server, secret: secret, log: log, session: session) else {

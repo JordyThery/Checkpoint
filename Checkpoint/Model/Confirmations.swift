@@ -27,22 +27,28 @@ extension LookupModel {
               let connection = mdmActionConnection(for: reports) else { return nil }
         let withRecords = reports.filter { $0.mdm.value != nil }
         let product = connection.product
-        return MDMCommand.Confirmation(
+        let confirmation = MDMCommand.Confirmation(
             action: withRecords.count == 1 ? product.removeRecordAction : product.removeRecordActionPlural,
             subject: withRecords.first?.serial, count: withRecords.count,
             message: product.removeRecordConsequence,
             irreversible: product != .jamfSchool, namesConnection: true,
             connectionName: connection.displayName, isDestructive: true)
+        return product == .intune
+            ? Self.intuneDeleteRecord(as: confirmation, serials: withRecords.map(\.serial), connectionName: connection.displayName)
+            : confirmation
     }
 
     /// One record beside the working one (the inspector's stale record).
     func recordRemovalConfirmation(_ info: ManagedDeviceInfo, serial: String) -> MDMCommand.Confirmation {
         let connection = connection(for: info)
         let product = connection?.product ?? .jamfPro
-        return MDMCommand.Confirmation(
+        let confirmation = MDMCommand.Confirmation(
             action: product.removeRecordAction, subject: serial, count: 1, message: product.removeRecordConsequence,
             irreversible: product != .jamfSchool, namesConnection: true,
             connectionName: connection?.displayName, isDestructive: true)
+        return product == .intune
+            ? Self.intuneDeleteRecord(as: confirmation, serials: [serial], connectionName: connection?.displayName)
+            : confirmation
     }
 
     /// The stale-record cleanup. It can span connections, which its message
@@ -50,10 +56,32 @@ extension LookupModel {
     func staleRemovalConfirmation(reports: [DeviceReport]) -> MDMCommand.Confirmation {
         let entries = staleRecords(in: reports)
         let deletes = entries.contains { connection(for: $0.info)?.product != .jamfSchool }
-        return MDMCommand.Confirmation(
+        let confirmation = MDMCommand.Confirmation(
             action: "Remove Stale Records", subject: entries.first?.serial, count: entries.count,
             message: "Removes \(staleRecordSummary(in: reports)). Each goes the way its product removes records — deleted from Jamf Pro and Intune, moved to the trash in Jamf School. The working records are untouched.",
             irreversible: deletes, connectionName: nil, isDestructive: true)
+        // Intune's Delete Record is sent only with an approval: this one
+        // confirmation answers for every record in the cleanup.
+        guard entries.contains(where: { connection(for: $0.info)?.product == .intune }) else { return confirmation }
+        return Self.intuneDeleteRecord(as: confirmation, serials: entries.map(\.serial), connectionName: nil)
+    }
+
+    /// Intune's Delete Record is JTKit's command, sent only with the approval
+    /// of a confirmation built from its plan. That confirmation shows and asks
+    /// exactly what `shown` does (its title, text, button and number to type).
+    nonisolated static func intuneDeleteRecord(as shown: MDMCommand.Confirmation, serials: [String],
+                                               connectionName: String?) -> MDMCommand.Confirmation {
+        let targets = serials.map { MDMCommand.Target(serial: $0, recordID: "", kind: .computer) }
+        var confirmation = MDMCommand.Confirmation(.deleteRecord, plan: MDMCommand.deleteRecord.plan(for: targets, on: .intune),
+                                                   on: .intune, connectionName: connectionName)
+        confirmation.title = shown.title
+        confirmation.message = shown.message
+        confirmation.connectionLine = shown.connectionLine
+        confirmation.explanation = shown.explanation
+        confirmation.actionTitle = shown.actionTitle
+        confirmation.isDestructive = shown.isDestructive
+        confirmation.asksPINTwice = shown.asksPINTwice
+        return confirmation
     }
 }
 

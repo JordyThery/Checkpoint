@@ -66,14 +66,22 @@ struct IntuneHarness {
         Devices.report(serial, ManagedDeviceInfo(recordID: id, connectionID: SavedData.intuneID, kind: kind))
     }
 
+    /// Confirmed as in the app; `approved: false` sends without an approval.
     @discardableResult
-    func send(_ command: MDMCommand, _ reports: [DeviceReport]) async -> String? {
+    func send(_ command: MDMCommand, _ reports: [DeviceReport], approved: Bool = true) async -> String? {
         do {
-            try await model.sendCommand(command, reports: reports)
+            let approval = approved ? model.commandConfirmation(command, reports: reports).flatMap { try? CommandHarness.approve($0) } : nil
+            try await model.sendCommand(command, reports: reports, approval: approval)
             return nil
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// Deletes the records, confirmed as in the app, or without an approval.
+    func deleteRecords(_ reports: [DeviceReport], approved: Bool = true) async throws {
+        let approval = try approved ? model.deleteConfirmation(reports: reports).map { try CommandHarness.approve($0) } : nil
+        try await model.deleteMDMRecord(reports: reports, approval: approval)
     }
 }
 
@@ -358,7 +366,7 @@ struct IntuneCommandSendTests {
             request.method == "DELETE" ? .json(403, #"{"error":{"code":"Forbidden","message":"Application is not authorized to perform this operation."}}"#) : nil
         })
         var message: String?
-        do { try await harness.model.deleteMDMRecord(reports: [harness.device()]) } catch { message = error.localizedDescription }
+        do { try await harness.deleteRecords([harness.device()]) } catch { message = error.localizedDescription }
         #expect(message?.contains("“DeviceManagementManagedDevices.ReadWrite.All”") == true)
         #expect(message?.contains("PrivilegedOperations") == false)
     }
@@ -370,7 +378,7 @@ struct IntuneCommandSendTests {
         })
         var message: String?
         do {
-            try await harness.model.deleteMDMRecord(reports: [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")])
+            try await harness.deleteRecords([harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")])
         } catch { message = error.localizedDescription }
         #expect(harness.graph.filter { $0.method == "DELETE" }.map(\.path)
                 == ["/v1.0/deviceManagement/managedDevices/i-1", "/v1.0/deviceManagement/managedDevices/i-2"])
@@ -456,15 +464,15 @@ struct IntuneConfirmationTests {
             (.restartMobile, .mobileDevice, "Restart Device — DMPXK1JHJG5H", "The device will restart immediately."),
             (.shutDownMobile, .mobileDevice, "Shut Down Device — DMPXK1JHJG5H",
              "The device will shut down immediately and stay off until someone powers it back on."),
-            (.lockMobile, .mobileDevice, "Lock Device — DMPXK1JHJG5H", "The device will lock immediately; the owner's passcode unlocks it."),
+            (.lockMobile, .mobileDevice, "Lock Device — DMPXK1JHJG5H", "The device will lock immediately; the owner’s passcode unlocks it."),
             (.clearPasscode, .mobileDevice, "Clear Passcode — DMPXK1JHJG5H",
              "Intune removes the device passcode. If a policy requires one, the user is asked to set a new one."),
             (.wipeMobile, .mobileDevice, "Wipe Device — DMPXK1JHJG5H",
-             "All data on the device will be erased and it returns to factory settings. This cannot be undone."),
+             "All data on the device will be erased and it returns to factory settings. This can’t be undone."),
             (.wipeComputer, .computer, "Wipe Computer — DMPXK1JHJG5H",
-             "All data on the Mac will be erased and it returns to factory settings. This cannot be undone."),
+             "All data on the Mac will be erased and it returns to factory settings. This can’t be undone."),
             (.unmanage, .mobileDevice, "Retire Device — DMPXK1JHJG5H",
-             "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Unlike the Jamf products, the record goes too once the device acknowledges."),
+             "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Its record is deleted too once the device acknowledges."),
         ]
         for (command, kind, title, message) in expected {
             let confirmation = try #require(harness.model.commandConfirmation(command, reports: [harness.device(kind: kind)]))

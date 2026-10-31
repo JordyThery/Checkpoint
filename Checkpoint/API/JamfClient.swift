@@ -568,7 +568,7 @@ actor JamfClient {
     private let commandGuard: ActionGuard
     /// JTKit's client, or why the connection can't make one (e.g. an
     /// Environment ID that isn't a UUID), thrown at the first request.
-    private let client: Result<JamfPlatform.Client, JamfPlatformError>
+    private let client: Result<JamfPlatform.Client, JamfPlatform.APIError>
 
     /// - Parameters:
     ///   - secret: the client secret or password, read at each sign-in.
@@ -586,10 +586,10 @@ actor JamfClient {
         self.commandGuard = commandGuard
         do {
             client = .success(try JamfPlatform.Client(connection: config.connection, secret: secret, recorder: recorder))
-        } catch let error as JamfPlatformError {
+        } catch let error as JamfPlatform.APIError {
             client = .failure(error)
         } catch {
-            client = .failure(JamfPlatformError(.invalidResponse(error.localizedDescription)))
+            client = .failure(JamfPlatform.APIError(.invalidResponse(error.localizedDescription)))
         }
     }
 
@@ -727,10 +727,12 @@ actor JamfClient {
 
     // MARK: Commands and record deletes (JTKit)
 
-    /// Sends an MDM command; JTKit routes it, per device.
-    func send(_ command: MDMCommand, to targets: [MDMCommand.Target], pin: String?) async throws -> MDMCommand.Result {
+    /// Sends an MDM command; JTKit routes it, per device. The approval (with
+    /// the PIN of Lock and Wipe Computer) comes from the confirmation.
+    func send(_ command: MDMCommand, to targets: [MDMCommand.Target],
+              approval: MDMCommand.Confirmation.Approval?) async throws -> MDMCommand.Result {
         try commandGuard.check("\(command.title) (Jamf Pro client), \(targets.count) device(s)")
-        return try await jamf().send(command, to: targets, pin: pin)
+        return try await jamf().send(command, to: targets, approval: approval)
     }
 
     /// Where the requests go, which decides how Restart and Shut Down are sent.

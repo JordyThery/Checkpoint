@@ -21,3 +21,9 @@ Fixes for what JTKit ROADMAP step 11 (the release check) found, 2026-10-30.
   settings while still checking for updates; the argument is now read as
   JTKit's demo mode reads it (YES, true or 1).
 - **Schedule Migration skips released devices,** as Assign and Unassign do.
+- **JTKit 0.13.0.** Irreversible commands (Wipe, Remove MDM Profile, Retire,
+  Intune's Delete Record) and Lock Computer are sent only with the answer to
+  their confirmation; the confirmations themselves are unchanged. Command
+  and error texts follow JTKit's wording (“can’t be undone”), and the
+  activity log names Apple's service “Apple Business Manager”, also in
+  Checkpoint's own Action entries.

@@ -49,17 +49,17 @@ struct FindingsFixesTests {
 
     @Test("-JTKitSandbox is read as JTKit reads it: YES, true or 1; NO is an ordinary launch")
     func sandboxArgument() {
-        #expect(UnderTest.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "YES"]))
-        #expect(UnderTest.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "true"]))
-        #expect(UnderTest.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "1"]))
-        #expect(!UnderTest.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "NO"]))
-        #expect(!UnderTest.isSandboxLaunch(["Checkpoint", "-JTKitSandbox"]))
-        #expect(!UnderTest.isSandboxLaunch(["Checkpoint"]))
+        #expect(DemoMode.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "YES"]))
+        #expect(DemoMode.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "true"]))
+        #expect(DemoMode.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "1"]))
+        #expect(!DemoMode.isSandboxLaunch(["Checkpoint", "-JTKitSandbox", "NO"]))
+        #expect(!DemoMode.isSandboxLaunch(["Checkpoint", "-JTKitSandbox"]))
+        #expect(!DemoMode.isSandboxLaunch(["Checkpoint"]))
         // The same answer as JTKit's demo mode, which decides "— Demo" and saving.
         for value in ["YES", "NO", "true", "0"] {
             let arguments = ["Checkpoint", "-JTKitSandbox", value]
             let demo = DemoMode(key: "demoMode", defaults: Fixture().defaults, arguments: arguments)
-            #expect(demo.isSandbox == UnderTest.isSandboxLaunch(arguments), "\(value)")
+            #expect(demo.isSandbox == DemoMode.isSandboxLaunch(arguments), "\(value)")
         }
     }
 

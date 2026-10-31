@@ -194,7 +194,7 @@ nonisolated final class ABMClient: Sendable {
     func activationLock(serial: String) async throws -> ABMActivationLock? { try await client.activationLock(serial: serial) }
     func assignedServerID(serial: String) async throws -> String? { try await client.assignedServerID(serial: serial) }
     func mdmServers() async throws -> [MDMServer] { try await client.mdmServers() }
-    func verify() async throws -> Int { try await client.verify() }
+    func verify() async throws -> Int { try await client.testConnection() }
     func appleManagedDevices() async throws -> [String: ABMManagedDevice] { try await client.appleManagedDevices() }
     func appleManagedDeviceDetails(id: String) async throws -> ABMManagedDeviceDetail? {
         try await client.appleManagedDeviceDetails(id: id)

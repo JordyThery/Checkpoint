@@ -190,7 +190,7 @@ struct AppleSignInTests {
         let rig = AppleRig(pem: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")
         let text = await message { _ = try await rig.client.mdmServers() }
         // changed on purpose: JTKit's message, with where to get the right file
-        #expect(text?.hasPrefix("Could not read the Apple Business private key. Expected the PEM-encoded EC P-256 key downloaded when the API account was created.\n") == true)
+        #expect(text?.hasPrefix("The file doesn’t contain a private key. Choose the .pem file downloaded when the API account was created.\n") == true)
         #expect(rig.server.requests.isEmpty)
     }
 
@@ -223,7 +223,7 @@ struct AppleSignInTests {
     func retryAfter401() async {
         let rig = AppleRig(appleServer { $0.path == "/v1/mdmServers" ? AppleFixtures.error(401, title: "Unauthorized") : nil })
         let text = await message { _ = try await rig.client.mdmServers() }
-        #expect(text == "HTTP 401 Unauthorized\nUnauthorized\nApple Business didn’t accept the sign-in. Check the API account in Apple Business Manager.")
+        #expect(text == "HTTP 401 Unauthorized\nUnauthorized\nApple Business Manager didn’t accept the sign-in. Check the API account in Apple Business Manager.")
         #expect(rig.signIns.count == 2)
         #expect(rig.api.count == 2)
     }
@@ -238,7 +238,7 @@ struct AppleSignInTests {
                 ? .json(400, #"{"error":"invalid_client","access_token":"SECRET-leaked","note":"\#(long)"}"#) : nil
         })
         let text = await message { _ = try await rig.client.mdmServers() } ?? ""
-        #expect(text.hasPrefix("Apple Business sign-in failed: HTTP 400 Bad Request\ninvalid_client\nCheck the client ID and the key ID"))
+        #expect(text.hasPrefix("Sign-in failed: HTTP 400 Bad Request\ninvalid_client\nCheck the client ID and the key ID"))
         #expect(!text.contains("SECRET-leaked"))
         #expect(!text.contains("xxxx"))
         #expect(rig.api.isEmpty)
@@ -434,7 +434,7 @@ struct AppleReadTests {
                 ? .json(200, #"{"data":[],"links":{"next":"https://elsewhere.example/v1/mdmServers?cursor=2"}}"#) : nil
         })
         let text = await message { _ = try await rig.client.mdmServers() }
-        #expect(text == "Refused: the next page of the list pointed to elsewhere.example, not to Apple Business. Nothing was sent there.")
+        #expect(text == "Refused: the next page of the list pointed to elsewhere.example, not to Apple Business Manager. Nothing was sent there.")
         #expect(!rig.server.requests.contains { $0.url.host() == "elsewhere.example" })
     }
 
@@ -537,23 +537,29 @@ struct AppleLimitTests {
         }
     }
 
-    @Test("Eighteen requests go at once; the nineteenth waits for the minute to pass")
+    @Test("The sign-in and seventeen requests go at once; the eighteenth waits for the minute to pass")
     func window() async throws {
         let rig = AppleRig(Self.devicesServer())
-        for _ in 0..<18 { _ = try await rig.client.device(serial: "A") }
+        for _ in 0..<17 { _ = try await rig.client.device(serial: "A") }
         #expect(rig.time.sleeps.isEmpty)
         _ = try await rig.client.device(serial: "A")
         #expect(rig.time.sleeps.count == 1)
         #expect(abs((rig.time.sleeps.first ?? 0) - 60.1) < 0.001)
-        #expect(rig.api.count == 19)
+        #expect(rig.api.count == 18)
+        #expect(rig.signIns.count == 1)
     }
 
-    @Test("The sign-in doesn't count towards the limit")
-    func signInNotCounted() async throws {
+    // changed with JTKit 0.13.0: Apple counts its sign-in too
+    @Test("The sign-in counts towards the limit: it takes one of the eighteen")
+    func signInCounted() async throws {
         let rig = AppleRig(Self.devicesServer())
-        for _ in 0..<18 { _ = try await rig.client.device(serial: "A") }
+        for _ in 0..<17 { _ = try await rig.client.device(serial: "A") }
         #expect(rig.signIns.count == 1)
         #expect(rig.time.sleeps.isEmpty)
+        // An eighteenth request would go at once if the sign-in were free.
+        _ = try await rig.client.device(serial: "A")
+        #expect(rig.signIns.count == 1)
+        #expect(rig.time.sleeps.count == 1)
     }
 
     // changed on purpose (decided by Jordy): a write isn't repeated after a
@@ -584,7 +590,7 @@ struct AppleLimitTests {
         #expect(waits.map(\.note) == ["HTTP \(status): waiting 5 s, attempt 2 of 4.",
                                       "HTTP \(status): waiting 15 s, attempt 3 of 4.",
                                       "HTTP \(status): waiting 45 s, attempt 4 of 4."])
-        #expect(waits.allSatisfy { $0.isWarning && $0.service == "Apple Business" && $0.connection == "Lab Org" })
+        #expect(waits.allSatisfy { $0.isWarning && $0.service == "Apple Business Manager" && $0.connection == "Lab Org" })
     }
 
     @Test("A dropped connection: reads try 4 times, a write once")
@@ -634,7 +640,7 @@ struct AppleLimitTests {
         _ = try? await rig.client.device(serial: "A")
         _ = try? await rig.client.mdmServers()
         #expect(rig.log.entries.map(\.category) == ["Sign-in", "API", "API"])
-        #expect(rig.log.entries.allSatisfy { $0.service == "Apple Business" && $0.connection == "Lab Org" })
+        #expect(rig.log.entries.allSatisfy { $0.service == "Apple Business Manager" && $0.connection == "Lab Org" })
         // a device lookup's answer is recorded; a list's success isn't
         #expect(rig.log.entries[1].request?.responseBody?.contains("MacBook Air") == true)
         #expect(rig.log.entries[2].request?.responseBody == nil)
@@ -691,14 +697,14 @@ struct AppleActivityTests {
     func refusals() async {
         let school = AppleRig(Self.activityServer(), kind: .school)
         #expect(await message { _ = try await school.client.submitActivity(.release, serials: ["A"]) }
-                == "Apple School Manager cannot release devices from the organization.")
+                == "Apple School Manager can’t release devices from the organization.")
         let rig = AppleRig(Self.activityServer())
         #expect(await message { _ = try await rig.client.submitActivity(.updateMigrationDeadline, serials: ["A"]) }
                 == "Update Migration Deadline needs a migration deadline.")
         #expect(await message {
             _ = try await rig.client.submitActivity(.assignWithMigrationDeadline, serials: ["A"], mdmServerID: "S",
                                                     migrationDeadline: Date().addingTimeInterval(91 * 24 * 3600))
-        } == "Apple Business will not accept a migration deadline more than 90 days from now.")
+        } == "Apple Business Manager won’t accept a migration deadline more than 90 days from now.")
         #expect(school.server.requests.isEmpty)
         #expect(rig.server.requests.isEmpty)
     }
@@ -829,7 +835,7 @@ struct AppleWriteTests {
         let action = try #require(harness.actions.first)
         #expect(action.detail == "Unassigned 3 devices from device management")
         #expect(action.connection == "Apple Business Manager")
-        #expect(action.service == "Apple Business")
+        #expect(action.service == "Apple Business Manager")
     }
 
     @Test("Nothing assigned: nothing sent, nothing logged")
@@ -966,7 +972,7 @@ struct AppleDialogTests {
         #expect(release.dialogMessage == """
             On “Apple Business Manager”.
 
-            The device will be removed from your organization and can no longer be assigned to an MDM server. This cannot be undone through the API.
+            The device will be removed from your organization and can no longer be assigned to an MDM server. This can’t be undone through the API.
             """)
         #expect(release.actionTitle == "Release from Organization")
         let cancel = try #require(harness.model.appleConfirmation(.cancelMigration, reports: [report]))

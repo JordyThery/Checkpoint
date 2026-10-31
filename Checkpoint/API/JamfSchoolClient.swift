@@ -189,9 +189,11 @@ actor JamfSchoolClient {
 
     // MARK: Commands and record changes (JTKit)
 
-    func send(_ command: MDMCommand, to targets: [MDMCommand.Target]) async throws -> MDMCommand.Result {
+    /// The approval comes from the confirmation.
+    func send(_ command: MDMCommand, to targets: [MDMCommand.Target],
+              approval: MDMCommand.Confirmation.Approval?) async throws -> MDMCommand.Result {
         try commandGuard.check("\(command.title) (Jamf School client), \(targets.count) device(s)")
-        return try await client.send(command, to: targets)
+        return try await client.send(command, to: targets, approval: approval)
     }
 
     /// Sets or clears the device's asset tag; only the tag is sent.

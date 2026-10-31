@@ -86,15 +86,33 @@ struct CommandHarness {
         }
     }
 
-    /// Sends and returns the error message, nil when it succeeded.
+    /// Sends and returns the error message, nil when it succeeded. Confirmed
+    /// as in the app: the number typed and the PIN twice when the
+    /// confirmation asks. A confirmation that can't be answered (no device
+    /// receives it, no valid PIN) gives no approval, as in the app; so does
+    /// `approved: false`.
     @discardableResult
-    func send(_ command: MDMCommand, _ reports: [DeviceReport], pin: String? = nil) async -> String? {
+    func send(_ command: MDMCommand, _ reports: [DeviceReport], pin: String? = nil, approved: Bool = true) async -> String? {
         do {
-            try await model.sendCommand(command, reports: reports, passcode: pin)
+            let approval = approved ? model.commandConfirmation(command, reports: reports).flatMap { try? Self.approve($0, pin: pin) } : nil
+            try await model.sendCommand(command, reports: reports, approval: approval)
             return nil
         } catch {
             return error.localizedDescription
         }
+    }
+
+    /// Deletes the records, confirmed as in the app, or without an approval.
+    func deleteRecords(_ reports: [DeviceReport], approved: Bool = true) async throws {
+        let approval = try approved ? model.deleteConfirmation(reports: reports).map { try Self.approve($0) } : nil
+        try await model.deleteMDMRecord(reports: reports, approval: approval)
+    }
+
+    /// What the user types into the confirmation: the number asked and the
+    /// PIN twice (nil when it asks for none).
+    static func approve(_ confirmation: MDMCommand.Confirmation, pin: String? = nil) throws -> MDMCommand.Confirmation.Approval {
+        try confirmation.approve(typedCount: confirmation.typedCount.map(String.init) ?? "",
+                                 pin: pin ?? "", pinAgain: pin ?? "")
     }
 
     var actions: [ActivityLogEntry] { log.entries.filter { $0.category == "Action" } }
@@ -143,7 +161,7 @@ struct CommandAvailabilityTests {
             #expect(command.unavailabilityReason(via: .usernamePassword) == nil)
             if command == .renewProfile {
                 #expect(command.unavailabilityReason(via: .platformGateway)
-                        == "This command is currently unavailable over the Platform API and requires an API client connection.")
+                        == "Renew MDM Profile doesn’t work over the Platform API. Use a Jamf Pro connection.")
             } else {
                 #expect(command.unavailabilityReason(via: .platformGateway) == nil)
             }
@@ -179,16 +197,16 @@ struct CommandAvailabilityTests {
 
         let messages: [MDMCommand: String] = [
             .lockComputer: "The Mac will lock immediately and require the PIN to be used again.",
-            .wipeComputer: "All data on the Mac will be erased. This cannot be undone.",
+            .wipeComputer: "All data on the Mac will be erased. This can’t be undone.",
             .blankPush: "The device will be asked to check in with MDM and process any pending commands.",
             .renewProfile: "The MDM enrollment profile will be renewed on the device.",
-            .redeployFramework: "Reinstalls the Jamf management framework (jamf binary) on the Mac through MDM. Use when a Mac has stopped checking in but still responds to MDM.",
+            .redeployFramework: "The Jamf management framework (the jamf binary) will be reinstalled on the Mac through MDM, so a Mac that stopped checking in but still responds to MDM checks in again.",
             .updateInventory: "The device will be asked to submit a fresh inventory report.",
-            .lockMobile: "The device will lock immediately; the owner's passcode unlocks it.",
+            .lockMobile: "The device will lock immediately; the owner’s passcode unlocks it.",
             .clearPasscode: "The device passcode will be removed.",
             .restartMobile: "The device will restart immediately.",
             .shutDownMobile: "The device will shut down immediately and stay off until someone powers it back on.",
-            .wipeMobile: "All data on the device will be erased. This cannot be undone.",
+            .wipeMobile: "All data on the device will be erased. This can’t be undone.",
         ]
         // Intune has its own texts (IntuneTests, ROADMAP step 8)
         for (command, message) in messages {
@@ -201,7 +219,7 @@ struct CommandAvailabilityTests {
         #expect(MDMCommand.unmanage.message(for: .jamfSchool)
                 == "The MDM profile is removed, so Jamf School can no longer manage the device. Its record stays until you move it to the trash.")
         #expect(MDMCommand.unmanage.message(for: .intune)
-                == "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Unlike the Jamf products, the record goes too once the device acknowledges.")
+                == "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Its record is deleted too once the device acknowledges.")
     }
 
     @Test("Clear Passcode does nothing to a device without a passcode")
@@ -227,7 +245,7 @@ struct CommandAvailabilityTests {
     func renewOverThePlatformAPI() async {
         let harness = CommandHarness()
         let error = await harness.send(.renewProfile, [Devices.mac(on: SavedData.platformID)])
-        #expect(error == "This command is currently unavailable over the Platform API and requires an API client connection.")
+        #expect(error == "Renew MDM Profile doesn’t work over the Platform API. Use a Jamf Pro connection.")
         #expect(harness.server.requests.isEmpty)
     }
 }
@@ -339,7 +357,7 @@ struct JamfProCommandTests {
             request.path.contains("/device-actions/") ? .json(422, "{}") : nil
         })
         let error = await harness.send(.restartMobile, [Devices.mobile(on: SavedData.platformID)])
-        #expect(error?.contains("will not restart this device. It may be unmanaged, personally owned, or running an OS version that does not support the command.") == true)
+        #expect(error?.contains("won’t restart this device. It may be unmanaged, personally owned, or running an OS version that doesn’t support the command.") == true)
     }
 
     @Test("Wipe Computer sends the PIN to the computer's erase", arguments: Route.allCases)
@@ -404,7 +422,7 @@ struct JamfProCommandTests {
     func renewWithoutUDID() async {
         let harness = CommandHarness()
         let error = await harness.send(.renewProfile, [Devices.mac(udid: nil)])
-        #expect(error == "No device UDIDs are known, so the MDM profile cannot be renewed.")
+        #expect(error == "No device UDIDs are known, so the MDM profile can’t be renewed.")
         #expect(harness.sent.isEmpty)
     }
 
@@ -436,14 +454,14 @@ struct JamfProCommandTests {
             request.path.hasSuffix("/blank-push") ? .json(200, #"{"errorUuids":["m-12"]}"#) : nil
         })
         let error = await harness.send(.blankPush, [Devices.mac(), Devices.mobile()])
-        #expect(error == "Jamf Pro could not deliver the blank push to: DMPXK1JHJG5H")
+        #expect(error == "Jamf Pro couldn’t deliver the blank push to: DMPXK1JHJG5H")
     }
 
     @Test("Blank Push without a management ID sends nothing")
     func blankPushWithoutManagementID() async {
         let harness = CommandHarness()
         let error = await harness.send(.blankPush, [Devices.mac(managementID: nil)])
-        #expect(error == "No management IDs are known, so a blank push cannot be sent. Run a fresh lookup first.")
+        #expect(error == "No management IDs are known, so a blank push can’t be sent. Run a fresh lookup first.")
         #expect(harness.sent.isEmpty)
     }
 
@@ -463,7 +481,7 @@ struct JamfProCommandTests {
             request.path.hasSuffix("/detail") ? .json(200, #"{"ios":{}}"#) : nil
         })
         let error = await harness.send(.clearPasscode, [Devices.mobile()])
-        #expect(error == "DMPXK1JHJG5H: Jamf Pro has no escrowed unlock token for this device, so the passcode cannot be cleared.")
+        #expect(error == "DMPXK1JHJG5H: no escrowed unlock token in Jamf Pro for this device, so the passcode can’t be cleared.")
         #expect(!harness.sent.contains { $0.method == "POST" })
     }
 
@@ -545,7 +563,7 @@ struct DeleteRecordTests {
     @Test("A Mac's record is deleted on v4, a mobile device's on the Classic API", arguments: Route.allCases)
     func delete(route: Route) async throws {
         let harness = CommandHarness()
-        try await harness.model.deleteMDMRecord(reports: [Devices.mac(on: route.id), Devices.mobile(on: route.id)])
+        try await harness.deleteRecords([Devices.mac(on: route.id), Devices.mobile(on: route.id)])
         let deletes = harness.sent.filter { $0.method == "DELETE" }
         #expect(deletes.map(\.path) == [route.api("v4/computers-inventory/7"), route.classic("mobiledevices/id/12")])
         let action = try #require(harness.actions.last)
@@ -601,14 +619,14 @@ struct JamfSchoolCommandTests {
         })
         let error = await harness.send(.restartMobile, [device(), device("DMPAAAAAAAAA", udid: "u-2")])
         #expect(error?.hasPrefix("DMPAAAAAAAAA: ") == true)
-        #expect(error?.contains("the device is trashed or inactive, so it cannot be sent commands.") == true)
+        #expect(error?.contains("the device is trashed or inactive, so it can’t be sent commands.") == true)
         #expect(harness.sent.count == 2)
     }
 
     @Test("Move to Trash is a DELETE with the trailing slash")
     func trash() async throws {
         let harness = CommandHarness()
-        try await harness.model.deleteMDMRecord(reports: [device()])
+        try await harness.deleteRecords([device()])
         let request = try #require(harness.sent.first)
         #expect(request.method == "DELETE")
         #expect(request.path == "/api/devices/u-1/")
@@ -685,7 +703,7 @@ struct IntuneCommandTests {
     @Test("Delete Record deletes the managed device")
     func delete() async throws {
         let harness = CommandHarness()
-        try await harness.model.deleteMDMRecord(reports: [device()])
+        try await harness.deleteRecords([device()])
         // The lookup that refreshes the row afterwards doesn't count.
         let request = try #require(harness.sent.filter { $0.method == "DELETE" }.only)
         #expect(request.path == "/v1.0/deviceManagement/managedDevices/i-1")
@@ -756,7 +774,7 @@ struct ConfirmationRuleTests {
         #expect(confirmation.title == "Wipe Device — DMPXK1JHJG5H")
         #expect(confirmation.connectionLine == "On “Example Jamf Pro”.")
         #expect(!confirmation.needsTyping)
-        #expect(confirmation.dialogMessage == "On “Example Jamf Pro”.\n\nAll data on the device will be erased. This cannot be undone.")
+        #expect(confirmation.dialogMessage == "On “Example Jamf Pro”.\n\nAll data on the device will be erased. This can’t be undone.")
     }
 
     @Test("Remove MDM Profile on three devices asks for the number")
@@ -823,6 +841,124 @@ struct ConfirmationRuleTests {
     }
 }
 
+// MARK: - Approvals: nothing irreversible is sent without the confirmation
+
+@Suite("Irreversible commands need the confirmation's approval")
+@MainActor
+struct CommandApprovalTests {
+
+    /// Every command that can't be undone or takes a PIN, on every product
+    /// that offers it.
+    static let needingApproval: [(MDMCommand, DeviceReport)] = [
+        (.wipeComputer, Devices.mac()),
+        (.wipeMobile, Devices.mobile()),
+        (.unmanage, Devices.mac()),
+        (.lockComputer, Devices.mac()),
+        (.wipeComputer, Devices.mac(on: SavedData.schoolServerID)),
+        (.wipeMobile, Devices.mobile(on: SavedData.schoolServerID)),
+        (.unmanage, Devices.mobile(on: SavedData.schoolServerID)),
+        (.wipeComputer, Devices.mac(on: SavedData.intuneID)),
+        (.wipeMobile, Devices.mobile(on: SavedData.intuneID)),
+        (.unmanage, Devices.mobile(on: SavedData.intuneID)),
+    ]
+
+    @Test("Without the approval nothing is sent", arguments: 0..<needingApproval.count)
+    func refusedWithoutApproval(index: Int) async throws {
+        let (command, report) = Self.needingApproval[index]
+        let harness = CommandHarness()
+        let product = try #require(harness.model.connection(for: report)).product
+        let error = await harness.send(command, [report], approved: false)
+        #expect(error == "\(command.title(for: product)) needs a confirmation first. Nothing was sent.")
+        #expect(harness.sent.isEmpty)
+        #expect(harness.actions.only?.isFailure == true)
+    }
+
+    @Test("With the confirmation's approval it is sent", arguments: 0..<needingApproval.count)
+    func sentWithApproval(index: Int) async throws {
+        let (command, report) = Self.needingApproval[index]
+        let harness = CommandHarness()
+        #expect(await harness.send(command, [report], pin: "135790") == nil)
+        #expect(!harness.sent.isEmpty)
+    }
+
+    @Test("Wipe Computer's PIN goes in the approval, from the confirmation's PIN field")
+    func pinFromTheConfirmation() async throws {
+        let harness = CommandHarness()
+        #expect(await harness.send(.wipeComputer, [Devices.mac()], pin: "135790") == nil)
+        #expect(harness.sent.only.flatMap(body)?["pin"] as? String == "135790")
+    }
+
+    @Test("An approval of another command, or for another number of devices, is refused")
+    func otherApproval() async throws {
+        let harness = CommandHarness()
+        let wipe = try CommandHarness.approve(try #require(harness.model.commandConfirmation(.wipeMobile, reports: [Devices.mobile()])))
+        await #expect(throws: MDMCommand.Refusal("The confirmation was for another action. Nothing was sent.")) {
+            try await harness.model.sendCommand(.unmanage, reports: [Devices.mobile()], approval: wipe)
+        }
+        let two = [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13")]
+        await #expect(throws: MDMCommand.Refusal("The confirmation was for 1 device, not 2 devices. Nothing was sent.")) {
+            try await harness.model.sendCommand(.wipeMobile, reports: two, approval: wipe)
+        }
+        #expect(harness.sent.isEmpty)
+    }
+
+    @Test("A command that can be undone and takes no PIN needs none")
+    func reversibleNeedsNone() async {
+        let harness = CommandHarness()
+        #expect(await harness.send(.restartMobile, [Devices.mobile()], approved: false) == nil)
+        #expect(await harness.send(.restartMobile, [Devices.mobile(on: SavedData.intuneID)], approved: false) == nil)
+    }
+
+    @Test("Intune's Delete Record deletes nothing without the approval")
+    func intuneDeleteRecordNeedsApproval() async throws {
+        let harness = CommandHarness()
+        let devices = [Devices.mobile(on: SavedData.intuneID), Devices.mobile("DMPAAAAAAAAA", id: "13", on: SavedData.intuneID)]
+        await #expect(throws: (any Error).self) { try await harness.deleteRecords(devices, approved: false) }
+        #expect(!harness.server.requests.contains { $0.method == "DELETE" })
+        do { try await harness.deleteRecords(devices, approved: false) } catch {
+            #expect(error.localizedDescription.contains("DMPXK1JHJG5H: Delete Record needs a confirmation first. Nothing was sent."))
+        }
+        try await harness.deleteRecords(devices)
+        #expect(harness.server.requests.filter { $0.method == "DELETE" }.count == 2)
+    }
+
+    @Test("Intune's Delete Record confirmation shows and asks exactly what it did before")
+    func intuneDeleteConfirmationUnchanged() throws {
+        let harness = CommandHarness()
+        let one = [Devices.mobile(on: SavedData.intuneID)]
+        let two = one + [Devices.mobile("DMPAAAAAAAAA", id: "13", on: SavedData.intuneID)]
+        for (reports, action) in [(one, "Delete Record"), (two, "Delete Records")] {
+            let confirmation = try #require(harness.model.deleteConfirmation(reports: reports))
+            let before = MDMCommand.Confirmation(
+                action: action, subject: reports.first?.serial, count: reports.count,
+                message: MDMProduct.intune.removeRecordConsequence, irreversible: true, namesConnection: true,
+                connectionName: "Example Intune", isDestructive: true)
+            #expect(confirmation.title == before.title && confirmation.message == before.message)
+            #expect(confirmation.connectionLine == before.connectionLine && confirmation.explanation == before.explanation)
+            #expect(confirmation.actionTitle == before.actionTitle && confirmation.isDestructive == before.isDestructive)
+            #expect(confirmation.typedCount == before.typedCount && confirmation.asksPINTwice == before.asksPINTwice)
+            #expect(confirmation.dialogMessage == before.dialogMessage && confirmation.needsTyping == before.needsTyping)
+            #expect(confirmation.command == .deleteRecord && confirmation.product == .intune)
+        }
+        // Jamf Pro deletes aren't commands: their confirmation carries none.
+        #expect(harness.model.deleteConfirmation(reports: [Devices.mac()])?.command == nil)
+    }
+
+    @Test("The stale-record cleanup with Intune records confirms Delete Record, showing the same")
+    func staleCleanupConfirmation() throws {
+        let shown = MDMCommand.Confirmation(action: "Remove Stale Records", subject: "C02XK1JHJG5H", count: 3,
+                                            message: "Removes 3 on Example Intune.", irreversible: true,
+                                            connectionName: nil, isDestructive: true)
+        let confirmation = LookupModel.intuneDeleteRecord(as: shown, serials: ["A", "B", "C"], connectionName: nil)
+        #expect(confirmation.title == shown.title && confirmation.message == shown.message)
+        #expect(confirmation.connectionLine == nil && confirmation.typedCount == 3)
+        #expect(confirmation.actionTitle == shown.actionTitle)
+        #expect(confirmation.command == .deleteRecord && confirmation.product == .intune)
+        #expect(throws: MDMCommand.Refusal.self) { try confirmation.approve(typedCount: "2") }
+        #expect(try confirmation.approve(typedCount: "3").deviceCount == 3)
+    }
+}
+
 @Suite("The Action entry for a command")
 @MainActor
 struct CommandActionEntryTests {
@@ -842,7 +978,9 @@ struct CommandActionEntryTests {
     @Test("The number sent is returned, for the message after sending")
     func sentCount() async throws {
         let harness = CommandHarness()
-        let sent = try await harness.model.sendCommand(.unmanage, reports: [Devices.mac(), Devices.mobile()])
+        let confirmation = try #require(harness.model.commandConfirmation(.unmanage, reports: [Devices.mac(), Devices.mobile()]))
+        let sent = try await harness.model.sendCommand(.unmanage, reports: [Devices.mac(), Devices.mobile()],
+                                                       approval: CommandHarness.approve(confirmation))
         #expect(sent == 2)
         #expect(harness.actions.only?.detail == "Sent Remove MDM Profile to 2 devices")
     }
@@ -852,7 +990,7 @@ struct CommandActionEntryTests {
         let harness = CommandHarness()
         _ = await harness.send(.renewProfile, [Devices.mac(udid: nil)])
         let action = try #require(harness.actions.only)
-        #expect(action.detail == "Renew MDM Profile failed — No device UDIDs are known, so the MDM profile cannot be renewed.")
+        #expect(action.detail == "Renew MDM Profile failed — No device UDIDs are known, so the MDM profile can’t be renewed.")
         #expect(action.isFailure)
     }
 

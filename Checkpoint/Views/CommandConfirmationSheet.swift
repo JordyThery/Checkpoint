@@ -9,8 +9,9 @@ import SwiftUI
 /// has to be typed, the inspectors use a dialog instead.
 struct CommandConfirmationSheet: View {
     let confirmation: MDMCommand.Confirmation
-    /// Called with the PIN (nil when none is asked) once everything matches.
-    let onConfirm: (String?) -> Void
+    /// Called with the confirmation's approval (carrying the PIN, when one
+    /// is asked) once everything matches.
+    let onConfirm: (MDMCommand.Confirmation.Approval) -> Void
 
     @Environment(\.dismiss) private var dismiss
     @State private var pin = ""
@@ -71,9 +72,9 @@ struct CommandConfirmationSheet: View {
             // Never the default button: Return mustn't send something that
             // can't be undone.
             Button(confirmation.actionTitle, role: confirmation.isDestructive ? .destructive : nil) {
-                let entered = confirmation.asksPINTwice ? pin : nil
+                guard let approval = try? confirmation.approve(typedCount: typedCount, pin: pin, pinAgain: pinAgain) else { return }
                 dismiss()
-                onConfirm(entered)
+                onConfirm(approval)
             }
             .disabled(problem != nil)
         }
