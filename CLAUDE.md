@@ -1,5 +1,7 @@
 # Checkpoint: instructions for Claude
 
+At the start of every conversation, run ../JTKit/Scripts/check-versions.sh (or fetch it from GitHub if ../JTKit isn’t there) and mention the result in one line if anything is out of date.
+
 Shared code and the standards for every app: see JTKit's CLAUDE.md and ROADMAP.md (github.com/JordyThery/JTKit, or ../JTKit in the workspace).
 
 ## What it is
@@ -57,15 +59,15 @@ If a call, rule or text is missing, extend JTKit instead of adding another copy 
 - **Refresh after an action** re-reads device records and reuses the lookup's server lists; only PreStage scope is re-read after a PreStage change.
 - **Secrets** (FileVault key, Recovery Lock, lock PIN, LAPS) are read one device at a time, shown in a sheet, never stored. Viewing a LAPS password asks first (it triggers rotation). Copying goes through `SecretPasteboard`. Clear Passcode reads the unlock token at send time; lookups never carry it.
 - **Personal data:** Jamf School's device owner is not read at all. Jamf Pro user-and-location blocks and Apple audit actor/subject names are masked whole in the log.
-- **Activation Lock:** read from Apple only (Jamf Pro's mobile flag is deliberately not shown). Clearing will only ever go through Apple's API when Apple offers it; don't add or suggest the Jamf School or Intune clear routes.
+- **Activation Lock:** read from Apple only (Jamf Pro's mobile flag is deliberately not shown). Clearing will only ever go through Apple’s API; don’t add or suggest the Jamf School or Intune clear routes.
 - **Current Jamf Pro only (cloud-first):** no API-version fallback chains. Keep the persistence fallbacks above.
-- **Out of scope:** Blueprints/configurations/apps/packages, Apple users/groups/OUs, MDM server create/delete. Platform API for Jamf School is not worth it until an inventory permission or more actions appear. IMEI as a lookup key was cut for now.
+- **Out of scope:** Blueprints/configurations/apps/packages, Apple users/groups/OUs, MDM server create/delete. IMEI as a lookup key was cut for now.
 - **Graph:** ship only what is in v1.0; beta-only features stay out.
 - **Versioning:** new features bump the minor version; improvements and fixes bump the patch (Jordy decides when unclear).
 
 ## Verified API behaviour
 
-### Apple Business / School Manager
+### Apple Business / Apple School Manager
 - The token endpoint rate-limits hard. Reuse clients (cached per connection in `LookupModel`); during live probes don't mint a new client or `LookupModel` each time, and space probes out.
 - About 18 requests per rolling minute per organization, every attempt, sign-in and post-write check counted. Quota is per organization, so organizations can be read in parallel.
 - Writes are asynchronous; JTKit watches the activity. A write is never repeated after a server error.
@@ -78,10 +80,10 @@ If a call, rule or text is missing, extend JTKit instead of adding another copy 
 ### Jamf Pro (direct and Platform API gateway)
 - Username/password trap: sign-in can succeed with a token that reads nothing, so every lookup returns zero records. Suspect the auth method first when everything is "not found".
 - Gateway paths: `/api/…` → `/pro/…`, `/JSSResource/…` → `/proclassic/…` (segment removed). Other platform APIs have their own prefix (`/devices`, `/device-actions`). An unknown prefix answers 404 "page not found"; an unknown route inside a valid prefix answers 403 BAD_PERMISSIONS, which does not mean a missing permission.
-- Renew MDM Profile over the gateway returns 200 but lists every device under `udidsNotProcessed`, so it is dimmed there. Always read `udidsNotProcessed`, not the status. Blank push likewise reports failures in `errorUuids` inside a 2xx.
+- Always read `udidsNotProcessed`, not the status (Renew MDM Profile over the gateway: see WATCHLIST.md). Blank push likewise reports failures in `errorUuids` inside a 2xx.
 - Clear Passcode needs a non-empty unlock token, from the per-device mobile detail only (absent from the batched read).
 - Batched lookups (50 serials): a refused filter is HTTP 400; that batch is retried one serial at a time. The HARDWARE section is required (the serial lives there); match serials case-insensitively.
-- `serverUuid` on device-enrollment instances equals Apple's MDM server ID. Findings depend on it; if Jamf drops it, classification degrades silently.
+- `serverUuid` on device-enrollment instances equals Apple's MDM server ID. Findings depend on it.
 - Enrollment method shapes: computers `enrolledViaAutomatedDeviceEnrollment` + `enrollmentMethod` object; mobile batched `enrollmentMethodPrestage` object (null when not ADE). `appleEnrollmentType` is unreliable; ignore it.
 - Jamf reports "never" as the Unix epoch (seen on mobile last-contact dates): any date before 1971 means unknown, never inactive.
 - A record's site is unrelated to its ADE token. Full-access site ("-1") is not in the sites list.
@@ -102,6 +104,10 @@ If a call, rule or text is missing, extend JTKit instead of adding another copy 
 ### Looking up Jamf APIs
 - Use Jamf's public MCP server at `https://developer.jamf.com/mcp` (via curl; it can't be registered in Xcode). Gateway specs are the `platform-api=` entries (the Jamf Pro one is now titled `platform-api=Jamf Pro`); `get-server-variables` gives each API's prefix. Never use `execute-request` against a live tenant without Jordy's permission.
 - When a release note repeats a vendor limitation, retest it that day; never carry an old result forward.
+
+## Watchlist
+
+What this app waits for from Apple, Jamf or Microsoft, or must recheck: see WATCHLIST.md.
 
 ## Testing
 
