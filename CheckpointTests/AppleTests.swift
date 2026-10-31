@@ -223,7 +223,7 @@ struct AppleSignInTests {
     func retryAfter401() async {
         let rig = AppleRig(appleServer { $0.path == "/v1/mdmServers" ? AppleFixtures.error(401, title: "Unauthorized") : nil })
         let text = await message { _ = try await rig.client.mdmServers() }
-        #expect(text == "HTTP 401 Unauthorized\nUnauthorized\nApple Business Manager didn’t accept the sign-in. Check the API account in Apple Business Manager.")
+        #expect(text == "HTTP 401 Unauthorized\nUnauthorized\nApple Business didn’t accept the sign-in. Check the API account in Apple Business.")
         #expect(rig.signIns.count == 2)
         #expect(rig.api.count == 2)
     }
@@ -434,7 +434,7 @@ struct AppleReadTests {
                 ? .json(200, #"{"data":[],"links":{"next":"https://elsewhere.example/v1/mdmServers?cursor=2"}}"#) : nil
         })
         let text = await message { _ = try await rig.client.mdmServers() }
-        #expect(text == "Refused: the next page of the list pointed to elsewhere.example, not to Apple Business Manager. Nothing was sent there.")
+        #expect(text == "Refused: the next page of the list pointed to elsewhere.example, not to Apple Business. Nothing was sent there.")
         #expect(!rig.server.requests.contains { $0.url.host() == "elsewhere.example" })
     }
 
@@ -590,7 +590,7 @@ struct AppleLimitTests {
         #expect(waits.map(\.note) == ["HTTP \(status): waiting 5 s, attempt 2 of 4.",
                                       "HTTP \(status): waiting 15 s, attempt 3 of 4.",
                                       "HTTP \(status): waiting 45 s, attempt 4 of 4."])
-        #expect(waits.allSatisfy { $0.isWarning && $0.service == "Apple Business Manager" && $0.connection == "Lab Org" })
+        #expect(waits.allSatisfy { $0.isWarning && $0.service == "Apple Business" && $0.connection == "Lab Org" })
     }
 
     @Test("A dropped connection: reads try 4 times, a write once")
@@ -624,11 +624,11 @@ struct AppleLimitTests {
     // changed on purpose: JTKit's format (status line, every error, Error ID, hints)
     @Test("Error messages in the shared format",
           arguments: [(AppleFixtures.error(403, title: "Forbidden", detail: "The API account lacks access."),
-                       "HTTP 403 Forbidden\nForbidden — The API account lacks access.\nThe API account isn’t allowed to do this. Check its access in Apple Business Manager."),
+                       "HTTP 403 Forbidden\nForbidden — The API account lacks access.\nThe API account isn’t allowed to do this. Check its access in Apple Business."),
                       (AppleFixtures.error(403, title: "Forbidden"),
-                       "HTTP 403 Forbidden\nForbidden\nThe API account isn’t allowed to do this. Check its access in Apple Business Manager."),
+                       "HTTP 403 Forbidden\nForbidden\nThe API account isn’t allowed to do this. Check its access in Apple Business."),
                       (MockResponse(status: 403, body: Data("Forbidden".utf8)),
-                       "HTTP 403 Forbidden\nThe API account isn’t allowed to do this. Check its access in Apple Business Manager.")])
+                       "HTTP 403 Forbidden\nThe API account isn’t allowed to do this. Check its access in Apple Business.")])
     func errorMessages(answer: MockResponse, expected: String) async {
         let rig = AppleRig(appleServer { $0.path == "/v1/mdmServers" ? answer : nil })
         #expect(await message { _ = try await rig.client.mdmServers() } == expected)
@@ -640,7 +640,7 @@ struct AppleLimitTests {
         _ = try? await rig.client.device(serial: "A")
         _ = try? await rig.client.mdmServers()
         #expect(rig.log.entries.map(\.category) == ["Sign-in", "API", "API"])
-        #expect(rig.log.entries.allSatisfy { $0.service == "Apple Business Manager" && $0.connection == "Lab Org" })
+        #expect(rig.log.entries.allSatisfy { $0.service == "Apple Business" && $0.connection == "Lab Org" })
         // a device lookup's answer is recorded; a list's success isn't
         #expect(rig.log.entries[1].request?.responseBody?.contains("MacBook Air") == true)
         #expect(rig.log.entries[2].request?.responseBody == nil)
@@ -704,7 +704,7 @@ struct AppleActivityTests {
         #expect(await message {
             _ = try await rig.client.submitActivity(.assignWithMigrationDeadline, serials: ["A"], mdmServerID: "S",
                                                     migrationDeadline: Date().addingTimeInterval(91 * 24 * 3600))
-        } == "Apple Business Manager won’t accept a migration deadline more than 90 days from now.")
+        } == "Apple Business won’t accept a migration deadline more than 90 days from now.")
         #expect(school.server.requests.isEmpty)
         #expect(rig.server.requests.isEmpty)
     }
@@ -835,7 +835,7 @@ struct AppleWriteTests {
         let action = try #require(harness.actions.first)
         #expect(action.detail == "Unassigned 3 devices from device management")
         #expect(action.connection == "Apple Business Manager")
-        #expect(action.service == "Apple Business Manager")
+        #expect(action.service == "Apple Business")
     }
 
     @Test("Nothing assigned: nothing sent, nothing logged")
@@ -872,9 +872,9 @@ struct AppleWriteTests {
     func failedJob() async throws {
         let harness = AppleHarness(AppleActivityTests.activityServer(status: "FAILED"))
         let text = await message { try await harness.model.setMDMServer(reports: [AppleHarness.device("A")], to: "S1") }
-        #expect(text == "Assigned 1 device to S1. Apple reports the job failed (FAILED); its activity report in Apple Business Manager says why.")
+        #expect(text == "Assigned 1 device to S1. Apple reports the job failed (FAILED); its activity report in Apple Business says why.")
         let action = try #require(harness.actions.first)
-        #expect(action.detail == "Assigned 1 device to S1 — Apple reports the job failed (FAILED); its activity report in Apple Business Manager says why.")
+        #expect(action.detail == "Assigned 1 device to S1 — Apple reports the job failed (FAILED); its activity report in Apple Business says why.")
         #expect(action.isFailure)
     }
 

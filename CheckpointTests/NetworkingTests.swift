@@ -465,7 +465,7 @@ struct RecorderTests {
         _ = try? await abm.device(serial: "C02XK1JHJG5H")
 
         #expect(log.entries.map(\.category) == ["Sign-in", "API"])
-        #expect(log.entries.allSatisfy { $0.service == "Apple Business Manager" && $0.connection == "Apple Business" })
+        #expect(log.entries.allSatisfy { $0.service == "Apple Business" && $0.connection == "Apple Business" })
         #expect(log.entries.first?.request?.requestBody == nil)
         #expect(log.entries.last?.request?.responseBody?.contains("C02XK1JHJG5H") == true)
         #expect(!everything(log).contains("SECRET-"))
