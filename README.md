@@ -20,19 +20,20 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 | Apple Business / Apple School Manager | Jamf Pro | Jamf School | Intune |
 | --- | --- | --- | --- |
 | Assignment status and assigned MDM server | Record and device name | Record and device name | Record and device name |
-| Activation Lock state, and whether it is an MDM or a user lock | | | |
+| Activation Lock state, and whether it is an MDM or a user lock | Managed and supervised state | Managed and supervised state | Managed and supervised state |
 | Migration status and deadline | PreStage scope and site | Location and Apple ADE profile | Compliance state |
-| | Department, building and room | | |
 | Warranty and AppleCare coverage | Enrollment, inventory and contact dates | Last check-in | Enrollment date and last sync |
-| Model, order number, purchase source | MDM profile expiration | Managed and supervised state | Management certificate expiration |
-| | FileVault and passcode state | Passcode state | Encryption and supervised state |
-| | Installed OS version and build | Installed OS version | Installed OS version |
+| Model, order number, purchase source | MDM profile expiration | Passcode state | Management certificate expiration |
+| Hardware identifiers | FileVault and passcode state | Installed OS version | Encryption and passcode state |
+| Device history (Apple Business) | Installed OS version and build | Asset tag | Installed OS version |
+| Apple Device Management state (Apple Business) | Department, building and room; asset tag | | |
+| | Device compliance, relayed from its compliance vendor | | |
 | | Software update state, as the device reports it | | |
 | | Declaration status and enforced update target | | |
 
-With several Apple organizations configured, one lookup can search all of them at once and report which organization each device belongs to.
+With several Apple organizations configured, one lookup can search all of them at once and report which organization each device belongs to. With several MDM connections, **All Connections** reads every one of them and reports a finding per device: a record on another connection than the one Apple assigns the device to (a mismatch), or records left behind on other connections (stale records). A record is called stale only on evidence of activity or managed state, and **Remove Stale Records** removes exactly the records the findings name, each through its own connection.
 
-Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, record deletion, and MDM commands. See [Features](docs/features.md).
+Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, asset tags, record deletion, and MDM commands. **Demo Mode** shows all of it with sample organizations and connections, without a tenant. See [Features](docs/features.md).
 
 ![Checkpoint showing twenty-two Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
 
@@ -40,31 +41,31 @@ Right-click the column headers to choose what shows — more columns are availab
 
 ![The same window connected to Apple School Manager and Jamf School, showing location and ADE profile columns in place of the Jamf Pro ones](docs/screenshot-jamf-school.png)
 
-An Intune tenant, showing compliance and a single sync time in place of Jamf's four dates:
+An Intune tenant, showing compliance and a single sync time in place of Jamf’s four dates:
 
 ![The same window connected to Apple Business and Intune, showing compliance state in the inspector and the commands Intune can carry](docs/screenshot-intune.png)
 
 ## Documentation
 
-- **[Features](docs/features.md)** — actions, MDM commands, lookups, filtering and sorting, migration, software updates and declarations, recovery secrets, activity log
+- **[Features](docs/features.md)** — actions, MDM commands, lookups across several organizations and connections, findings, filtering and sorting, migration, software updates and declarations, device compliance, device history, Apple Device Management, recovery secrets, activity log, Demo Mode
 - **[Permissions](docs/permissions.md)** — the Apple role, the Jamf Pro privileges and the Jamf School API-key methods each feature needs
-- **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through Jamf's gateway, and the one command it cannot carry
-- **[Intune](docs/intune.md)** — connecting an Intune tenant, what Microsoft Graph does and does not expose, and the app registration it needs
+- **[Platform API](docs/platform-api.md)** — optional: connecting Jamf Pro through the Jamf Platform API gateway, and the one command it can’t carry
+- **[Intune](docs/intune.md)** — connecting an Intune tenant, what Microsoft Graph does and doesn’t expose, and the app registration it needs
 
 ## Requirements
 
 - macOS 15 or later
 - An Apple Business API account per organization, with the **Device Enrollment Manager** role or higher; Apple School Manager asks for no role
-- One of: a Jamf Pro server, connected by API client, username and password, or the Platform API gateway; a Jamf School instance, connected by Network ID and API key; or a Microsoft Intune tenant, connected by an Entra app registration
+- One of: a Jamf Pro server, connected by API client, username and password, or the Platform API gateway; a Jamf School instance, connected by Network ID and API key; or a Microsoft Intune tenant, connected by a Microsoft Entra ID app registration
 - Jamf Pro 11.30+ for the Last Contact attribute
 
 ## Security
 
-Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to the services you configure — Apple's API endpoints, your Jamf servers, and Microsoft Graph — plus one daily request to GitHub asking whether a newer release exists, which sends nothing else and can be turned off in Settings.
+Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to the services you configure — Apple’s API endpoints, your Jamf servers, and Microsoft Graph — plus one daily request to GitHub asking whether a newer release exists, which sends nothing else and can be turned off in Settings.
 
 Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 
-The activity log is kept in memory, never written to disk, and never records a secret or a device owner's personal details. See [Activity log](docs/features.md#activity-log).
+The activity log is kept in memory, never written to disk, and never records a secret or a device owner’s personal details. See [Activity log](docs/features.md#activity-log).
 
 ## Building
 
@@ -72,7 +73,7 @@ Open the project in Xcode 26 or later and build the `Checkpoint` scheme (⌘R). 
 
 ## Acknowledgements
 
-Inspired by [asbmutil](https://github.com/rodchristiansen/asbmutil) and [AxMJamfSync](https://github.com/karthikeyan-mac/AxMJamfSync), amongst many others.
+Inspired by [asbmutil](https://github.com/rodchristiansen/asbmutil) and [AxMJamfSync](https://github.com/karthikeyan-mac/AxMJamfSync), among many others.
 
 ## Support
 

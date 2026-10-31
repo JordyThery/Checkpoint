@@ -7,7 +7,7 @@ import Testing
 // An action on a record goes through the record's own connection, never the
 // toolbar's; when that connection has been removed, the action is refused
 // with a message. A record is identified by its connection and its record
-// ID, which repeat across connections (found during JTKit ROADMAP step 11).
+// ID, which repeat across connections.
 
 @Suite("Actions follow the record's own connection")
 @MainActor
@@ -18,7 +18,7 @@ struct RecordConnectionTests {
     /// Today's saved connections, the toolbar on "Example Jamf Pro".
     private func harness() -> CommandHarness {
         let harness = CommandHarness()
-        harness.model.selectedConnectionID = SavedData.proClientID
+        harness.model.mdmScope = .connection(SavedData.proClientID)
         return harness
     }
 
@@ -88,7 +88,7 @@ struct RecordConnectionTests {
         let again = ManagedDeviceInfo(recordID: "7", connectionID: SavedData.proClientID, kind: .mobileDevice)
         #expect(onSandbox.key != onPassword.key, "the same record ID on two servers is two records")
         #expect(onSandbox.key == again.key)
-        var report = DeviceReport(serial: "C02XK1JHJG5H")
+        var report = DeviceReport(serial: "TESTMAC0001")
         report.otherRecords = [onSandbox, onPassword]
         #expect(Set(report.otherRecords.map(\.key)).count == 2, "the inspector lists both")
     }

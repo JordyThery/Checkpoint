@@ -2,7 +2,7 @@ import JTKit
 import SwiftUI
 
 /// Confirms a command, or removing records, when something has to be typed
-/// first (JTKit's rules, ROADMAP step 7): the PIN twice for Lock and Wipe
+/// first (JTKit's rules): the PIN twice for Lock and Wipe
 /// Computer, and the number of devices for anything that can't be undone
 /// on two or more devices. The connection is named, and why fewer devices
 /// than selected receive it is said before anything is typed. When nothing
@@ -47,7 +47,7 @@ struct CommandConfirmationSheet: View {
                         SecureField("Confirm PIN", text: $pinAgain, prompt: Text("6 digits"))
                             .focused($focused, equals: .pinAgain)
                     } footer: {
-                        Text("Needed to unlock the Mac afterwards. Every selected Mac gets the same PIN; you can look it up later with Show Device Lock PIN.")
+                        Text("Needed to unlock the Mac afterward. Every selected Mac gets the same PIN; you can look it up later with Show Device Lock PIN.")
                     }
                 }
                 if let count = confirmation.typedCount {
@@ -61,7 +61,9 @@ struct CommandConfirmationSheet: View {
             }
             .formStyle(.grouped)
         } footer: {
-            if let problem, !(pin.isEmpty && pinAgain.isEmpty && typedCount.isEmpty) {
+            // A refused confirmation has nothing to type, so its reason shows
+            // at once; otherwise only once something has been typed.
+            if let problem, confirmation.isRefused || !(pin.isEmpty && pinAgain.isEmpty && typedCount.isEmpty) {
                 Text(problem)
                     .font(.callout)
                     .foregroundStyle(.secondary)

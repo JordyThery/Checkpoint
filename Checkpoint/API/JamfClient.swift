@@ -37,6 +37,9 @@ struct JamfComputerRecord: Sendable {
     /// method is its name for the flow, e.g. "PreStage enrollment".
     let enrolledViaADE: Bool?
     let enrollmentMethod: String?
+    /// Whether Jamf Pro still manages the device, and whether it's supervised.
+    var isManaged: Bool? = nil
+    var isSupervised: Bool? = nil
 }
 
 struct JamfMobileDeviceRecord: Sendable {
@@ -66,6 +69,8 @@ struct JamfMobileDeviceRecord: Sendable {
     /// e.g. "PreStage enrollment: [token] name (id)".
     let enrolledViaADE: Bool
     let enrollmentMethod: String?
+    var isManaged: Bool? = nil
+    var isSupervised: Bool? = nil
 }
 
 /// The outcome of a batched read: the records found, keyed by uppercased
@@ -138,10 +143,10 @@ struct JamfSoftwareUpdateStatus: Sendable {
     let failureCount: Int?
     let lastFailureReason: String?
     let lastFailureAt: Date?
-    /// The beta programme the device is enrolled in. Apple sends an empty
+    /// The beta program the device is enrolled in. Apple sends an empty
     /// string when there is none, so nil here means either.
     let betaEnrollment: String?
-    /// Whether the device reported its beta enrolment at all. Separates "not
+    /// Whether the device reported its beta enrollment at all. Separates "not
     /// enrolled", which is worth stating, from "never said", which is not.
     let betaReported: Bool
     /// Whether the device reported any software update status at all.
@@ -153,11 +158,6 @@ struct JamfSoftwareUpdateStatus: Sendable {
     /// one that is currently failing.
     var hasPendingUpdate: Bool {
         !state.isEmpty && state != "none"
-    }
-
-    /// The device is actively working on the update rather than stalled on it.
-    var isInstalling: Bool {
-        hasPendingUpdate && state != "failed"
     }
 
     /// The device reports the update itself as failed, as opposed to being
@@ -182,12 +182,6 @@ struct JamfSoftwareUpdateStatus: Sendable {
         !hasCurrentFailure && (failureCount ?? 0) > 0 && lastFailureAt != nil
     }
 
-    /// Whether the update is being enforced rather than left to the user.
-    /// Apple signals this two ways and either is enough.
-    var isEnforced: Bool {
-        deadline != nil || (installReason ?? "").lowercased().contains("declaration")
-    }
-
     /// Apple's states, in prose. Unknown values are sentence-cased rather than
     /// dropped, so a state added later still shows something truthful.
     var displayState: String {
@@ -202,7 +196,7 @@ struct JamfSoftwareUpdateStatus: Sendable {
         }
     }
 
-    /// The beta programme, or that there is none. Nil only when the device
+    /// The beta program, or that there is none. Nil only when the device
     /// has not reported either way.
     ///
     /// Unlike the version and the deadline, this is not stale: Apple requires
@@ -219,8 +213,8 @@ struct JamfSoftwareUpdateStatus: Sendable {
     /// The failure in one readable sentence.
     ///
     /// macOS reports these as a whole `NSError` description — domain, code,
-    /// debug text and localised text, several hundred characters of it. The
-    /// sentence worth showing is the localised one, which macOS has already
+    /// debug text and localized text, several hundred characters of it. The
+    /// sentence worth showing is the localized one, which macOS has already
     /// written for a person and in their language; the rest belongs in a
     /// tooltip. Anything that is already a plain sentence passes through.
     var failureSummary: String? {
@@ -298,7 +292,7 @@ nonisolated enum JamfDeclarationValidity: String, Sendable {
 /// One declaration as the device reports it in `management.declarations`.
 ///
 /// This is the device's own verdict, not the server's intent, which is what
-/// makes it worth reading: Jamf Pro reports a blueprint as deployed once it
+/// makes it worth reading: Jamf Pro reports a Blueprint as deployed once it
 /// has delivered the declaration, while the device says whether it could
 /// actually be applied.
 struct JamfDeclaration: Sendable, Identifiable {
@@ -311,7 +305,7 @@ struct JamfDeclaration: Sendable, Identifiable {
 
     var id: String { identifier }
 
-    /// The blueprint this came from, when Jamf built the identifier from one.
+    /// The Blueprint this came from, when Jamf built the identifier from one.
     /// They are shaped `Blueprint_<uuid>_s1_c1_sys_cfg1`.
     var blueprintID: String? {
         let prefix = "Blueprint_"
@@ -420,7 +414,7 @@ struct JamfDDMStatus: Sendable {
     ///
     /// Blueprint components are left out. Jamf Pro answers `500` with an
     /// empty error list for every `Blueprint_…` identifier, so asking costs a
-    /// request per declaration and returns nothing. A blueprint-driven
+    /// request per declaration and returns nothing. A Blueprint-driven
     /// enforcement that the device has *rejected* is still reported, since
     /// that comes from the status report rather than from this lookup.
     func declarationsWorthResolving(limit: Int = 8) -> [JamfDeclaration] {
@@ -551,12 +545,12 @@ struct JamfPrestage: Sendable, Identifiable, Hashable {
 /// API gateway. Authenticates with an API client (OAuth client credentials),
 /// a username and password (bearer token), or a gateway integration.
 ///
-/// Runs on JTKit's `JamfPlatform.Client` (ROADMAP step 7): its sign-in, the
+/// Runs on JTKit's `JamfPlatform.Client`: its sign-in, the
 /// shared retry rules, JTKit's error format with the Trace ID and the hints
 /// (a refused request names the missing privilege), and an activity log entry
 /// for every attempt. The lookups, asset tags, MDM commands, record deletes,
 /// Platform API device calls and Classic groups are JTKit's; the other reads
-/// and writes below are Checkpoint's own until they move in JTKit 0.8.2.
+/// and writes below are Checkpoint's own.
 actor JamfClient {
     struct APIError: LocalizedError {
         let message: String
@@ -581,7 +575,7 @@ actor JamfClient {
         guard config.authMethod != .entraApp,
               let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         let recorder = RequestRecorder(session: session, log: log,
-                                       service: ActivityService.jamfPro.rawValue, connection: config.displayName)
+                                       service: ActivityService.jamfPro.label, connection: config.displayName)
         authMethod = config.authMethod
         self.commandGuard = commandGuard
         do {
@@ -619,7 +613,7 @@ actor JamfClient {
 
     /// The computer records for these serials: JTKit's batches of fifty, one
     /// serial at a time when the filter is refused. Their answers are
-    /// recorded, trimmed to the sections asked for (ROADMAP step 5).
+    /// recorded, trimmed to the sections asked for.
     func computers(serials: [String]) async -> JamfBatch<JamfComputerRecord> {
         await batch(serials) {
             try await $0.computers(serials: serials, sections: Self.computerSections, recording: .results)
@@ -686,7 +680,9 @@ actor JamfClient {
             room: computer.userAndLocation?.room,
             assetTag: general?.assetTag,
             enrolledViaADE: general?.enrolledViaAutomatedDeviceEnrollment,
-            enrollmentMethod: general?.enrollmentMethod?.objectType
+            enrollmentMethod: general?.enrollmentMethod?.objectType,
+            isManaged: general?.managed,
+            isSupervised: general?.supervised
         )
     }
 
@@ -708,8 +704,7 @@ actor JamfClient {
                 MobileSecurityState(
                     passcodePresent: $0.passcodePresent,
                     passcodeCompliant: $0.passcodeCompliant,
-                    passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile,
-                    hardwareEncryption: $0.hardwareEncryption
+                    passcodeCompliantWithProfile: $0.passcodeCompliantWithProfile
                 )
             },
             osVersion: general?.osVersion,
@@ -721,7 +716,9 @@ actor JamfClient {
             enrolledViaADE: prestage != nil,
             enrollmentMethod: prestage.map { _ in
                 "PreStage enrollment: \(general?.enrollmentPreStageName ?? "") (\(general?.enrollmentPreStageID ?? ""))"
-            }
+            },
+            isManaged: general?.managed,
+            isSupervised: general?.supervised
         )
     }
 
@@ -734,9 +731,6 @@ actor JamfClient {
         try commandGuard.check("\(command.title) (Jamf Pro client), \(targets.count) device(s)")
         return try await jamf().send(command, to: targets, approval: approval)
     }
-
-    /// Where the requests go, which decides how Restart and Shut Down are sent.
-    var overPlatformAPI: Bool { authMethod == .platformGateway }
 
     func deleteComputer(id: String) async throws {
         try await jamf().deleteComputer(id: id)
@@ -790,7 +784,7 @@ actor JamfClient {
     /// without a serial (records that never completed inventory) are left out.
     func groupSerials(_ group: JamfGroup) async throws -> [String] {
         guard let kind = group.kind else {
-            throw APIError(message: "\(group.name) is not a Jamf Pro group.")
+            throw APIError(message: "\(group.name) isn’t a Jamf Pro group.")
         }
         let members = try await jamf().classicGroupMembers(
             JamfClassic.Group(id: group.id, name: group.name, isSmart: group.isSmart, kind: kind.classic))
@@ -952,7 +946,7 @@ actor JamfClient {
             lastFailureAt: text("softwareupdate.failure-reason.timestamp").flatMap(DateFormatting.parseStatusItemDate),
             betaEnrollment: text("softwareupdate.beta-enrollment"),
             // Presence, not value: Apple sends an empty string for a device
-            // in no beta programme.
+            // in no beta program.
             betaReported: values.keys.contains("softwareupdate.beta-enrollment"),
             isReported: true
         )
@@ -993,9 +987,9 @@ actor JamfClient {
     }
 
     /// Blueprint names, keyed by identifier (JTKit's Blueprint list).
-    /// Platform API only; empty when they can't be read.
+    /// Platform API only.
     func blueprintNames() async throws -> [String: String] {
-        guard let blueprints = try? await JamfPlatform.Blueprints(client: jamf()).list() else { return [:] }
+        let blueprints = try await JamfPlatform.Blueprints(client: jamf()).list()
         return Dictionary(blueprints.filter { !$0.name.isEmpty }.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
     }
 
@@ -1025,24 +1019,6 @@ actor JamfClient {
     /// Building names, as departments; needs Read Buildings.
     func buildingNames() async throws -> [String: String] {
         (try? await jamf().buildingNames()) ?? [:]
-    }
-
-    // MARK: Paths
-
-    /// A Jamf Pro path in the gateway's form: the Jamf Pro API under `/pro`,
-    /// the Classic API under `/proclassic`. Both replace the product segment,
-    /// so `/JSSResource/mobiledevices` becomes `/proclassic/mobiledevices`.
-    /// Platform paths pass through as they are.
-    ///
-    /// This prefix behaviour is described for users in `docs/platform-api.md`.
-    nonisolated static func gatewayPath(for path: String) -> String {
-        if path.hasPrefix("/api/") {
-            return "/pro/" + path.dropFirst("/api/".count)
-        }
-        if path.hasPrefix("/JSSResource/") {
-            return "/proclassic/" + path.dropFirst("/JSSResource/".count)
-        }
-        return path
     }
 }
 

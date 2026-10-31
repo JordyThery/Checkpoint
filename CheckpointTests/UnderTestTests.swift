@@ -5,7 +5,7 @@ import Testing
 @testable import Checkpoint
 
 // Under tests Checkpoint sends no MDM command, makes no Apple write, reads no
-// device secret and reaches no saved connection (JTKit ROADMAP step 11).
+// device secret and reaches no saved connection.
 // These tests write their attempts to a log of their own, never to the one
 // the release check reads.
 
@@ -18,7 +18,7 @@ private func temporaryLog() -> TestRun.AttemptLog {
 @MainActor
 private func activeGuards(_ log: TestRun.AttemptLog) -> UnderTestGuards {
     let on = ActionGuard(isActive: true, log: log)
-    return UnderTestGuards(commands: on, appleWrites: on, secretReads: on)
+    return UnderTestGuards(commands: on, appleWrites: on, secretReads: on, recordWrites: on)
 }
 
 @Suite("Under tests")
@@ -46,11 +46,22 @@ struct UnderTestTests {
         #expect(LookupModel(settings: Fixture().settings()).session === URLSession.shared)
     }
 
+    @Test("Test Connection on the saved connections gets the refusing network; on other settings the normal one")
+    func testConnectionSession() {
+        let keychain = AppSettings(defaults: Fixture().defaults,
+                                   secrets: KeychainSecretStore(service: "CheckpointTests.never-written"))
+        // Nothing is sent: a request would be recorded in the release check's log.
+        let refusing = keychain.testConnectionSession
+        #expect(refusing !== URLSession.shared)
+        #expect(refusing.configuration.protocolClasses?.first.map { String(describing: $0) } == "RefusingURLProtocol")
+        #expect(Fixture().settings().testConnectionSession === URLSession.shared)
+    }
+
     @Test("A request to a saved connection is refused before it's sent and recorded without its query")
     func savedConnectionRefused() async {
         let log = temporaryLog()
         let session = UnderTest.refusingSession(log: log)
-        let url = URL(string: "https://example.jamfcloud.com/api/v1/computers-inventory?filter=hardware.serialNumber==\"C02SERIAL\"")!
+        let url = URL(string: "https://example.jamfcloud.com/api/v1/computers-inventory?filter=hardware.serialNumber==\"TESTSERIAL01\"")!
         // Fails as no answer, with the refusal as its message.
         let error = await #expect(throws: URLError.self) { _ = try await session.data(from: url) }
         #expect(error?.code == .resourceUnavailable)
@@ -76,7 +87,28 @@ struct UnderTestTests {
         }
         #expect(harness.server.requests.isEmpty)
         #expect(log.attempts().count == cases.count)
-        #expect(!log.attempts().contains { $0.what.contains("C02XK1JHJG5H") || $0.what.contains("DMPXK1JHJG5H") })
+        #expect(!log.attempts().contains { $0.what.contains("TESTMAC0001") || $0.what.contains("TESTIPAD001") })
+    }
+
+    @Test("Record changes are refused before any request: delete, trash, site, PreStage, location, asset tag")
+    func recordWritesRefused() async throws {
+        let log = temporaryLog()
+        let harness = CommandHarness(underTest: activeGuards(log))
+        let model = harness.model
+        let mac = Devices.mac()
+        let ipad = Devices.mobile(on: SavedData.schoolServerID)
+        let intune = Devices.mobile(on: SavedData.intuneID)
+        for report in [mac, ipad, intune] {
+            let approval = try model.deleteConfirmation(reports: [report]).map { try CommandHarness.approve($0) }
+            #expect(await message { try await model.deleteMDMRecord(reports: [report], approval: approval) }?
+                .contains(UnderTest.refusal) == true)
+        }
+        #expect(await message { try await model.setSite(reports: [mac], to: "5") } == UnderTest.refusal)
+        #expect(await message { try await model.setPrestage(reports: [mac], to: "3", kind: .computer) } == UnderTest.refusal)
+        #expect(await message { try await model.setLocation(reports: [ipad], to: "2") } == UnderTest.refusal)
+        #expect(await message { try await model.setAssetTag("TAG-1", for: mac) } == UnderTest.refusal)
+        #expect(!harness.server.requests.contains { ["DELETE", "PUT", "PATCH", "POST"].contains($0.method) && !$0.path.hasSuffix("token") })
+        #expect(log.attempts().count == 7)
     }
 
     @Test("The Jamf Pro and Jamf School clients refuse commands too")

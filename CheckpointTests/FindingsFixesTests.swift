@@ -4,8 +4,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// Fixes for what JTKit ROADMAP step 11 (the release check) found in
-// Checkpoint, besides the record's connection (`RecordConnectionTests`).
+// Fixes for what the release check found in Checkpoint, besides the record's connection (`RecordConnectionTests`).
 
 /// Counts reads of Apple private keys.
 private final class CountingSecretStore: SecretStore, @unchecked Sendable {

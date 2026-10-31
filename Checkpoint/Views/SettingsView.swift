@@ -5,7 +5,7 @@ import SwiftUI
 // tab, below JTKit's Appearance, then the Connections tab, before Updates.
 
 /// How tall the Connections tab is: a list beside an editor has no natural
-/// height, so it keeps the height the Apple and MDM tabs had.
+/// height, so it gets a fixed one.
 private let connectionsTabHeight: CGFloat = 500
 
 // MARK: - General
@@ -15,7 +15,7 @@ struct GeneralSettingsSection: View {
 
     var body: some View {
         Section {
-            Toggle("Warn when a service is not configured", isOn: Binding(
+            Toggle("Warn when a service isn’t configured", isOn: Binding(
                 get: { !settings.configurationHintDismissed },
                 set: { settings.configurationHintDismissed = !$0 }
             ))
@@ -27,7 +27,7 @@ struct GeneralSettingsSection: View {
 // MARK: - Connections
 
 /// JTKit's shared Connections tab: the Apple organizations and the MDM
-/// connections in one list, each still saved where it always was.
+/// connections in one list, each saved in its own stored list.
 struct ConnectionsTab: View {
     @Environment(AppSettings.self) private var settings
     @Environment(LookupModel.self) private var model
@@ -57,7 +57,7 @@ struct ConnectionsTab: View {
                                       ? "Import the private key first."
                                       : "Enter the \(record.connection.signIn.secretName?.lowercased() ?? "secret") first.")
         }
-        // Under tests the saved connections are never reached (step 11).
+        // Under tests the saved connections are never reached.
         let session = settings.testConnectionSession
         switch record {
         case .apple(let org):
@@ -134,7 +134,7 @@ private struct ConnectionNotes: View {
         switch record {
         case .apple(let org):
             Section {
-                note("Import the .pem private key downloaded when creating the API account in \(org.kind.label) (Settings → Integrations → API). The account needs the Device Enrollment Manager role or higher. The key is stored only in your keychain.")
+                note("Import the .pem private key downloaded when creating the API account in \(org.kind.label) (your name at the bottom of the sidebar → Preferences → API).\(org.kind == .business ? " The account needs the Device Enrollment Manager role or higher." : "") The key is stored only in your keychain.")
                 if !org.kind.supportsRelease {
                     note("\(org.kind.label) uses the same API as Apple Business, except that it provides no way to release devices from the organization. That action is dimmed.")
                 }
@@ -145,7 +145,7 @@ private struct ConnectionNotes: View {
                 Section {
                     note("Requires an environment-scoped integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in. Requests go to the gateway; the Jamf Pro web address is still used to link devices to their Jamf Pro records.")
                     Label {
-                        Text("Renew MDM Profile cannot be sent over the Platform API. Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Restart and Shut Down.")
+                        Text(MDMCommand.unavailableOverPlatformAPI(.renewProfile) + " Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Restart and Shut Down.")
                     } icon: {
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.orange)
@@ -160,8 +160,8 @@ private struct ConnectionNotes: View {
             case .intune:
                 Section {
                     note("Requests go to Microsoft Graph, so no URL is needed. The tenant ID can be the GUID or a verified domain name.")
-                    note("Create an app registration in Entra, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, PrivilegedOperations.All to send commands, and ReadWrite.All to delete records. Application permissions need admin consent before any of them work.")
-                    note("Intune reports one sync time rather than Jamf's four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Retire Device unmanages it.")
+                    note("Create an app registration in Microsoft Entra ID, add a client secret, and grant it the application permissions under Microsoft Graph — DeviceManagementManagedDevices.Read.All to look devices up, PrivilegedOperations.All to send commands, and ReadWrite.All to delete records. Application permissions need admin consent before any of them work.")
+                    note("Intune reports one sync time rather than Jamf’s four dates, and has no sites, PreStage scope, declarative update reporting or recovery secrets, so the columns and actions for those are hidden. The enrollment profile is hidden too, because Graph reports what a device enrolled with rather than what is assigned to it. Compliance is shown instead. Deleting a record leaves the device enrolled; Retire Device unmanages it.")
                 }
             default:
                 EmptyView()

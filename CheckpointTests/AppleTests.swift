@@ -5,12 +5,9 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// Apple Business and Apple School Manager (ROADMAP step 9), written against
-// Checkpoint's own `ABMClient` before it moves to JTKit, so the move can be
-// checked against them: the private-key sign-in, every read, paging, Apple's
+// Apple Business and Apple School Manager: the private-key sign-in, every read, paging, Apple's
 // 18-a-minute limit and its retries, the writes and how they are confirmed,
 // and that the key and the signed sign-in request never leave the client.
-// Tests that pin down a flaw the move fixes on purpose say "Today".
 // Every test has its own fake Apple, key, clock and log.
 
 // MARK: - Fixtures
@@ -172,14 +169,14 @@ struct AppleSignInTests {
         #expect(Set(assertions).count == 2)
     }
 
-    @Test("A PKCS#8 key labelled EC PRIVATE KEY (Apple School Manager's files) is accepted")
+    @Test("A PKCS#8 key labeled EC PRIVATE KEY (Apple School Manager's files) is accepted")
     func schoolKeyLabel() async throws {
         let key = P256.Signing.PrivateKey()
-        let relabelled = key.pemRepresentation
+        let relabeled = key.pemRepresentation
             .replacingOccurrences(of: "BEGIN PRIVATE KEY", with: "BEGIN EC PRIVATE KEY")
             .replacingOccurrences(of: "END PRIVATE KEY", with: "END EC PRIVATE KEY")
         let rig = AppleRig(appleServer { $0.path == "/v1/mdmServers" ? .json(200, #"{"data":[]}"#) : nil },
-                           kind: .school, key: key, pem: relabelled)
+                           kind: .school, key: key, pem: relabeled)
         _ = try await rig.client.mdmServers()
         #expect(rig.signIns.count == 1)
         #expect(rig.api.count == 1)
@@ -189,23 +186,23 @@ struct AppleSignInTests {
     func unreadableKey() async {
         let rig = AppleRig(pem: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")
         let text = await message { _ = try await rig.client.mdmServers() }
-        // changed on purpose: JTKit's message, with where to get the right file
+        // The message says where to get the right file.
         #expect(text?.hasPrefix("The file doesn’t contain a private key. Choose the .pem file downloaded when the API account was created.\n") == true)
         #expect(rig.server.requests.isEmpty)
     }
 
     @Test("Five requests at once share one sign-in")
     func sharedSignIn() async {
-        let rig = AppleRig(appleServer { $0.path.hasPrefix("/v1/orgDevices/") ? .json(200, #"{"data":{"attributes":\#(AppleFixtures.device("C02XK1JHJG5H"))}}"#) : nil })
+        let rig = AppleRig(appleServer { $0.path.hasPrefix("/v1/orgDevices/") ? .json(200, #"{"data":{"attributes":\#(AppleFixtures.device("TESTMAC0001"))}}"#) : nil })
         let client = rig.client
         await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<5 { group.addTask { _ = try? await client.device(serial: "C02XK1JHJG5H") } }
+            for _ in 0..<5 { group.addTask { _ = try? await client.device(serial: "TESTMAC0001") } }
         }
         #expect(rig.signIns.count == 1)
         #expect(rig.api.count == 5)
     }
 
-    // changed on purpose (decided by Jordy): 60 s, JTKit's standard; was 120 s
+    // 60 s is JTKit's standard margin.
     @Test("The token is kept until 60 s before it runs out")
     func renewal() async {
         let rig = AppleRig()
@@ -218,7 +215,6 @@ struct AppleSignInTests {
         #expect(rig.signIns.count == 2)
     }
 
-    // changed on purpose: a 401 gets a new token and one more try (JTKit's rules)
     @Test("A 401 gets a new token and one more try")
     func retryAfter401() async {
         let rig = AppleRig(appleServer { $0.path == "/v1/mdmServers" ? AppleFixtures.error(401, title: "Unauthorized") : nil })
@@ -228,8 +224,8 @@ struct AppleSignInTests {
         #expect(rig.api.count == 2)
     }
 
-    // changed on purpose: only Apple's error and description, never the rest
-    // of its answer (the leak found by the secret tests below)
+    // Only Apple's error and description, never the rest of its answer,
+    // which could carry more than the user should see (see the secret tests below).
     @Test("A refused sign-in: Apple's error and description only")
     func refusedSignIn() async {
         let long = String(repeating: "x", count: 400)
@@ -255,10 +251,10 @@ struct AppleReadTests {
     func device() async throws {
         let extra = #","imei":[],"meid":["A1"],"eid":"E1","wifiMacAddress":"aa:bb","isMdmMigrationCapable":true,"mdmMigrationStatus":"STARTED""#
         let rig = AppleRig(appleServer { request in
-            request.path == "/v1/orgDevices/C02XK1JHJG5H"
-                ? .json(200, #"{"data":{"type":"orgDevices","id":"C02XK1JHJG5H","attributes":\#(AppleFixtures.device("C02XK1JHJG5H", extra: extra))}}"#) : nil
+            request.path == "/v1/orgDevices/TESTMAC0001"
+                ? .json(200, #"{"data":{"type":"orgDevices","id":"TESTMAC0001","attributes":\#(AppleFixtures.device("TESTMAC0001", extra: extra))}}"#) : nil
         })
-        let device = try #require(try await rig.client.device(serial: "C02XK1JHJG5H"))
+        let device = try #require(try await rig.client.device(serial: "TESTMAC0001"))
         #expect(device.deviceModel == "MacBook Air")
         #expect(device.orderNumber == "ORDER-1")
         #expect(device.imeiDisplay == nil)
@@ -287,14 +283,14 @@ struct AppleReadTests {
     @Test("AppleCare coverage: records, Active and Expired; 404 is none")
     func coverage() async throws {
         let rig = AppleRig(appleServer { request in
-            guard request.path == "/v1/orgDevices/C02XK1JHJG5H/appleCareCoverage" else { return nil }
+            guard request.path == "/v1/orgDevices/TESTMAC0001/appleCareCoverage" else { return nil }
             return .json(200, #"""
             {"data":[{"type":"appleCareCoverage","id":"A","attributes":{"description":"AppleCare+","status":"ACTIVE","startDateTime":"2025-01-01T00:00:00Z","endDateTime":"2099-01-01T00:00:00Z"}},
                      {"type":"appleCareCoverage","id":"B","attributes":{"description":"Limited Warranty","status":"INACTIVE","startDateTime":"2000-01-01T00:00:00Z","endDateTime":"2001-01-01T00:00:00Z"}},
                      {"type":"appleCareCoverage","id":"C","attributes":{"description":"Other","status":"INACTIVE","endDateTime":"2099-01-01T00:00:00Z"}}]}
             """#)
         })
-        let coverage = try await rig.client.appleCareCoverage(serial: "C02XK1JHJG5H")
+        let coverage = try await rig.client.appleCareCoverage(serial: "TESTMAC0001")
         #expect(coverage.map(\.id) == ["A", "B", "C"])
         #expect(coverage.map(\.displayStatus) == ["Active", "Expired", "Inactive"])
         #expect(coverage.first?.description == "AppleCare+")
@@ -314,7 +310,7 @@ struct AppleReadTests {
         })
         let lock = try #require(try await rig.client.activationLock(serial: "LOCKED"))
         #expect(lock.summary == "Enabled")
-        #expect(lock.detail == "MDM lock. A bypass code is escrowed, so clearing it does not need the owner.")
+        #expect(lock.detail == "MDM lock. A bypass code is escrowed, so clearing it doesn’t need the owner.")
         #expect(try await rig.client.activationLock(serial: "QUIRK") == nil)
         #expect(try await rig.client.activationLock(serial: "UNKNOWN") == nil)
         // a plain 500 is not retried (only 429 and 503 are)
@@ -388,9 +384,8 @@ struct AppleReadTests {
         #expect(snapshot.serials(inOrder: "ORDER-1") == ["DMPBBB", "DMPCCC", "c02aaa"])
     }
 
-    // changed on purpose (decided by Jordy): the server counts as unreadable,
-    // a warning goes in the log, and its devices' assignment is unknown,
-    // never "unassigned"
+    // The server counts as unreadable, a warning goes in the log, and its
+    // devices' assignment is unknown, never "unassigned".
     @Test("A server's device list that fails halfway: unknown assignments and a warning")
     func snapshotCutOff() async throws {
         let rig = AppleRig(appleServer { request in
@@ -412,7 +407,7 @@ struct AppleReadTests {
         #expect(rig.log.entries.contains { $0.isWarning && $0.note?.contains("Couldn’t read the devices of “Jamf Pro”") == true })
     }
 
-    // changed on purpose: tolerant records; one without a serial is left out
+    // Records are read tolerantly: one bad record doesn't fail the snapshot.
     @Test("A device record without a serial is left out; the snapshot is read")
     func snapshotWithoutSerial() async throws {
         let rig = AppleRig(appleServer { request in
@@ -425,7 +420,7 @@ struct AppleReadTests {
         #expect(Set(try await rig.client.organizationSnapshot().devices.keys) == ["A"])
     }
 
-    // changed on purpose: a next page on another host is refused (the token used to go there)
+    // The token must never be sent to another host.
     @Test("A next page on another host is refused; nothing is sent there")
     func nextPageElsewhere() async throws {
         let rig = AppleRig(appleServer { request in
@@ -438,7 +433,6 @@ struct AppleReadTests {
         #expect(!rig.server.requests.contains { $0.url.host() == "elsewhere.example" })
     }
 
-    // changed on purpose: 1,000 pages is an error (there was no limit)
     @Test("1,000 pages is an error, never a quiet cut-off")
     func pageLimit() async throws {
         let rig = AppleRig(appleServer { request in
@@ -488,7 +482,7 @@ struct AppleReadTests {
         })
         let start = Date(timeIntervalSince1970: 1_700_000_000)
         let end = Date(timeIntervalSince1970: 1_800_000_000)
-        let page = try await rig.client.auditEvents(serial: "C02XK1JHJG5H", start: start, end: end, cursor: "a+b c")
+        let page = try await rig.client.auditEvents(serial: "TESTMAC0001", start: start, end: end, cursor: "a+b c")
         #expect(page.events.map(\.id) == ["2", "3", "1", "4"])
         #expect(page.events.map(\.summary) == ["Assigned to Jamf Pro", "Unassigned from Old MDM", "Added from a reseller", "Some New Event"])
         #expect(page.events.first?.isFailure == true)
@@ -496,23 +490,22 @@ struct AppleReadTests {
         let request = try #require(rig.api.first)
         #expect(request.queryValue("filter[startTimestamp]") == "2023-11-14T22:13:20Z")
         #expect(request.queryValue("filter[endTimestamp]") == "2027-01-15T08:00:00Z")
-        #expect(request.queryValue("filter[subjectId]") == "C02XK1JHJG5H")
+        #expect(request.queryValue("filter[subjectId]") == "TESTMAC0001")
         #expect(request.queryValue("limit") == "100")
         // strict encoding now: the + is encoded too
         #expect(request.queryValue("cursor") == "a+b c")
         #expect(request.url.query(percentEncoded: true)?.contains("cursor=a%2Bb%20c") == true)
     }
 
-    // changed on purpose (decided by Jordy): letters and digits only,
-    // lowercase made uppercase; was sent unchecked
+    // Letters and digits only, lowercase made uppercase.
     @Test("A serial is checked before it goes into an address or a query")
     func serialChecked() async {
         let rig = AppleRig()
         let text = await message { _ = try await rig.client.auditEvents(serial: "X&limit=1", start: .distantPast, end: .distantFuture) }
         #expect(text == "“X&limit=1” isn’t a serial number: it may hold only letters and digits.")
         #expect(rig.server.requests.isEmpty)
-        _ = try? await rig.client.device(serial: "c02xk1jhjg5h")
-        #expect(rig.api.first?.path == "/v1/orgDevices/C02XK1JHJG5H")
+        _ = try? await rig.client.device(serial: "testmac0001")
+        #expect(rig.api.first?.path == "/v1/orgDevices/TESTMAC0001")
     }
 }
 
@@ -549,7 +542,7 @@ struct AppleLimitTests {
         #expect(rig.signIns.count == 1)
     }
 
-    // changed with JTKit 0.13.0: Apple counts its sign-in too
+    // Apple counts its sign-in too.
     @Test("The sign-in counts towards the limit: it takes one of the eighteen")
     func signInCounted() async throws {
         let rig = AppleRig(Self.devicesServer())
@@ -562,8 +555,7 @@ struct AppleLimitTests {
         #expect(rig.time.sleeps.count == 1)
     }
 
-    // changed on purpose (decided by Jordy): a write isn't repeated after a
-    // 503, only after a 429; JTKit's error format
+    // A write is never repeated after a server error, only after a 429.
     @Test("429 is retried for reads and writes, 503 for reads only, at 5, 15 and 45 s",
           arguments: [429, 503], ["GET", "POST"])
     func busy(status: Int, method: String) async {
@@ -610,7 +602,6 @@ struct AppleLimitTests {
         #expect(rig.time.sleeps == [5, 15, 45])
     }
 
-    // changed on purpose: a read is retried after any server error (JTKit's rules); other errors aren't
     @Test("A read is retried after a server error; a 400 isn't")
     func notRetried() async {
         let rig = AppleRig(appleServer { $0.path == "/v1/mdmServers" ? AppleFixtures.error(500, title: "Internal") : nil })
@@ -621,7 +612,7 @@ struct AppleLimitTests {
         #expect(refused.api.count == 1)
     }
 
-    // changed on purpose: JTKit's format (status line, every error, Error ID, hints)
+    // Status line, every error, Error ID, hints.
     @Test("Error messages in the shared format",
           arguments: [(AppleFixtures.error(403, title: "Forbidden", detail: "The API account lacks access."),
                        "HTTP 403 Forbidden\nForbidden — The API account lacks access.\nThe API account isn’t allowed to do this. Check its access in Apple Business."),
@@ -727,9 +718,8 @@ struct AppleActivityTests {
         #expect(try await rig.client.submitActivity(.release, serials: ["A"]) == nil)
     }
 
-    // Changed on purpose (ROADMAP step 9, decided by Jordy): Apple's job is
-    // watched for up to 2 minutes, checks from 2 s growing to 10 s, and what
-    // Apple made of it is read. Before: every 2 s for 30 s, then silence.
+    // Apple's job is watched for up to 2 minutes, checks from 2 s growing to
+    // 10 s, and what Apple made of it is read.
 
     @Test("Watching Apple: from 2 s, growing, until Apple has finished; its outcome is read")
     func watchesUntilDone() async throws {
@@ -833,7 +823,7 @@ struct AppleWriteTests {
         })
         #expect(byServer == ["S1": ["A", "B"], "S2": ["C"]])
         let action = try #require(harness.actions.first)
-        #expect(action.detail == "Unassigned 3 devices from device management")
+        #expect(action.detail == "Unassigned 3 devices from their MDM server")
         #expect(action.connection == "Apple Business Manager")
         #expect(action.service == "Apple Business")
     }
@@ -867,7 +857,6 @@ struct AppleWriteTests {
         #expect(action.identifiers.map(\.value).sorted() == ["A", "B"])
     }
 
-    // changed on purpose (decided by Jordy): Apple's outcome is read and logged
     @Test("A job Apple reports as FAILED is a failed Action entry, and the error is shown")
     func failedJob() async throws {
         let harness = AppleHarness(AppleActivityTests.activityServer(status: "FAILED"))
@@ -893,7 +882,6 @@ struct AppleWriteTests {
         let harness = AppleHarness(appleServer { $0.method == "POST" && $0.path == "/v1/orgDeviceActivities"
             ? AppleFixtures.error(400, title: "Bad Request", detail: "Device not found.") : nil })
         let text = await message { try await harness.model.releaseFromABM(reports: [AppleHarness.device("A")]) }
-        // changed on purpose: JTKit's format
         #expect(text == "HTTP 400 Bad Request\nBad Request — Device not found.")
         let action = try #require(harness.actions.first)
         #expect(action.detail == "Released 1 device from Apple Business Manager — HTTP 400 Bad Request\nBad Request — Device not found.")
@@ -923,7 +911,7 @@ struct AppleWriteTests {
         let due = ", due \(deadline.formatted(date: .abbreviated, time: .shortened))"
         #expect(harness.actions.map(\.detail) == ["Scheduled migration of 1 device to another service" + due,
                                                   "Moved the migration deadline for 1 device" + due,
-                                                  "Cancelled the migration of 1 device"])
+                                                  "Canceled the migration of 1 device"])
         #expect(await message { try await harness.model.cancelMigration(reports: [plain]) }
                 == "None of the selected devices have a migration in progress.")
         #expect(await message { try await harness.model.scheduleMigration(reports: [plain], to: "S2", deadline: deadline) }
@@ -933,9 +921,8 @@ struct AppleWriteTests {
 
 // MARK: - Confirmations
 
-// Changed on purpose (ROADMAP step 9, decided by Jordy): the dialogs follow
-// JTKit's rules. Before, no dialog named the organization and nothing was
-// typed, whatever the number of devices.
+// The dialogs follow JTKit's rules: they name the organization, and Release
+// and the deadlines ask for the device count from two devices.
 @Suite("Apple: confirmations by JTKit's rules")
 @MainActor
 struct AppleDialogTests {
@@ -966,9 +953,9 @@ struct AppleDialogTests {
     @Test("The dialog: the action and the device, the organization, what it does")
     func texts() throws {
         let harness = AppleHarness()
-        let report = try AppleHarness.device("C02XK1JHJG5H", server: "S0", extra: Self.migrating)
+        let report = try AppleHarness.device("TESTMAC0001", server: "S0", extra: Self.migrating)
         let release = try #require(harness.model.appleConfirmation(.release, reports: [report]))
-        #expect(release.title == "Release from Organization — C02XK1JHJG5H")
+        #expect(release.title == "Release from Organization — TESTMAC0001")
         #expect(release.dialogMessage == """
             On “Apple Business Manager”.
 
@@ -978,7 +965,7 @@ struct AppleDialogTests {
         let cancel = try #require(harness.model.appleConfirmation(.cancelMigration, reports: [report]))
         #expect(cancel.message.contains("stays assigned to S0 in Apple Business"))
         let assign = try #require(harness.model.appleConfirmation(.setServer("S1"), reports: [report]))
-        #expect(assign.title == "Assign to “S1” — C02XK1JHJG5H")
+        #expect(assign.title == "Assign to “S1” — TESTMAC0001")
     }
 
     @Test("Devices left out are explained before anything is typed")

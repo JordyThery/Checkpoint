@@ -4,9 +4,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// How every command behaves (ROADMAP step 7), written against Checkpoint's
-// own command code before it moved to JTKit, so the move can be checked
-// against them: which connections allow each command, the address and body
+// How every command behaves: which connections allow each command, the address and body
 // each one sends, how Jamf School and Intune are reached, and what the
 // activity log keeps. Every test has its own fake server, settings domain
 // and in-memory Keychain.
@@ -15,15 +13,15 @@ import Testing
 
 /// Devices on one of the saved connections in `SavedData`.
 nonisolated enum Devices {
-    static func mac(_ serial: String = "C02XK1JHJG5H", id: String = "7", managementID: String? = "M-7",
-                    udid: String? = "5D3B6C1A-0000-1111-2222-333344445555",
+    static func mac(_ serial: String = "TESTMAC0001", id: String = "7", managementID: String? = "M-7",
+                    udid: String? = "AAAAAAAA-0000-4000-8000-0000000000D1",
                     on connection: UUID = SavedData.proClientID) -> DeviceReport {
         report(serial, ManagedDeviceInfo(recordID: id, connectionID: connection, kind: .computer,
                                          udid: udid, managementID: managementID))
     }
 
-    static func mobile(_ serial: String = "DMPXK1JHJG5H", id: String = "12", managementID: String? = "M-12",
-                       udid: String? = "00008103-001A2C3E0C38001E",
+    static func mobile(_ serial: String = "TESTIPAD001", id: String = "12", managementID: String? = "M-12",
+                       udid: String? = "00001111-0000000000000001",
                        on connection: UUID = SavedData.proClientID) -> DeviceReport {
         report(serial, ManagedDeviceInfo(recordID: id, connectionID: connection, kind: .mobileDevice,
                                          udid: udid, managementID: managementID))
@@ -208,7 +206,7 @@ struct CommandAvailabilityTests {
             .shutDownMobile: "The device will shut down immediately and stay off until someone powers it back on.",
             .wipeMobile: "All data on the device will be erased. This can’t be undone.",
         ]
-        // Intune has its own texts (IntuneTests, ROADMAP step 8)
+        // Intune has its own texts (IntuneTests)
         for (command, message) in messages {
             for product in [MDMProduct.jamfPro, .jamfSchool] {
                 #expect(command.message(for: product) == message)
@@ -226,7 +224,7 @@ struct CommandAvailabilityTests {
     func clearPasscodeNeedsAPasscode() {
         var info = ManagedDeviceInfo(recordID: "12", kind: .mobileDevice)
         info.security = MobileSecurityState(passcodePresent: false, passcodeCompliant: nil,
-                                            passcodeCompliantWithProfile: nil, hardwareEncryption: nil)
+                                            passcodeCompliantWithProfile: nil)
         #expect(MDMCommand.clearPasscode.inapplicabilityReason(for: info) == "This device has no passcode set.")
         #expect(MDMCommand.lockMobile.inapplicabilityReason(for: info) == nil)
     }
@@ -298,7 +296,7 @@ struct JamfProCommandTests {
     @Test("Lock Device sends DEVICE_LOCK without a PIN, all devices in one request", arguments: Route.allCases)
     func lockMobile(route: Route) async throws {
         let harness = CommandHarness()
-        let devices = [Devices.mobile(on: route.id), Devices.mobile("DMPAAAAAAAAA", id: "13", managementID: "M-13", on: route.id)]
+        let devices = [Devices.mobile(on: route.id), Devices.mobile("TESTIPAD002", id: "13", managementID: "M-13", on: route.id)]
         #expect(await harness.send(.lockMobile, devices) == nil)
         let request = try #require(harness.sent.only)
         #expect(request.path == route.api("v2/mdm/commands"))
@@ -324,9 +322,9 @@ struct JamfProCommandTests {
         #expect(requests.count == 2)
         #expect(requests.first?.method == "GET")
         #expect(requests.first?.path == "/devices/v1/devices")
-        #expect(requests.first?.queryValue("filter") == #"serialNumber=="DMPXK1JHJG5H""#)
+        #expect(requests.first?.queryValue("filter") == #"serialNumber=="TESTIPAD001""#)
         #expect(requests.last?.method == "POST")
-        #expect(requests.last?.path == "/device-actions/v1/devices/platform-DMPXK1JHJG5H/\(action)")
+        #expect(requests.last?.path == "/device-actions/v1/devices/platform-TESTIPAD001/\(action)")
         #expect(requests.last?.body.isEmpty == true)
     }
 
@@ -337,7 +335,7 @@ struct JamfProCommandTests {
                 ? .json(200, #"{"results":[{"id":"someone-else","serialNumber":"OTHER"}]}"#) : nil
         })
         let error = await harness.send(.restartMobile, [Devices.mobile(on: SavedData.platformID)])
-        #expect(error?.contains("DMPXK1JHJG5H") == true)
+        #expect(error?.contains("TESTIPAD001") == true)
         #expect(error?.contains("No command was sent.") == true)
         #expect(!harness.sent.contains { $0.path.contains("device-actions") })
     }
@@ -348,7 +346,7 @@ struct JamfProCommandTests {
             request.path.hasSuffix("/devices/v1/devices") ? .json(200, #"{"results":[]}"#) : nil
         })
         let error = await harness.send(.shutDownMobile, [Devices.mobile(on: SavedData.platformID)])
-        #expect(error == "DMPXK1JHJG5H: not in the platform device inventory.")
+        #expect(error == "TESTIPAD001: not in the platform device inventory.")
     }
 
     @Test("Through the Platform API, a 422 is explained")
@@ -405,17 +403,17 @@ struct JamfProCommandTests {
         #expect(await harness.send(.renewProfile, [Devices.mac(on: route.id), Devices.mobile(on: route.id)]) == nil)
         let request = try #require(harness.sent.only)
         #expect(request.path == route.api("v1/mdm/renew-profile"))
-        #expect(body(request) == dictionary(#"{"udids":["5D3B6C1A-0000-1111-2222-333344445555","00008103-001A2C3E0C38001E"]}"#))
+        #expect(body(request) == dictionary(#"{"udids":["AAAAAAAA-0000-4000-8000-0000000000D1","00001111-0000000000000001"]}"#))
     }
 
     @Test("Renew MDM Profile names the devices Jamf Pro didn't renew")
     func renewNotProcessed() async {
         let harness = CommandHarness(commandServer { request in
             request.path.hasSuffix("/renew-profile")
-                ? .json(200, #"{"udidsNotProcessed":{"udids":["00008103-001A2C3E0C38001E"]}}"#) : nil
+                ? .json(200, #"{"udidsNotProcessed":{"udids":["00001111-0000000000000001"]}}"#) : nil
         })
         let error = await harness.send(.renewProfile, [Devices.mac(), Devices.mobile()])
-        #expect(error == "Jamf Pro accepted the request but renewed no profile for: DMPXK1JHJG5H")
+        #expect(error == "Sent to 1 of 2 devices.\nJamf Pro accepted the request but renewed no profile for: TESTIPAD001")
     }
 
     @Test("Renew MDM Profile without any UDID sends nothing")
@@ -454,7 +452,7 @@ struct JamfProCommandTests {
             request.path.hasSuffix("/blank-push") ? .json(200, #"{"errorUuids":["m-12"]}"#) : nil
         })
         let error = await harness.send(.blankPush, [Devices.mac(), Devices.mobile()])
-        #expect(error == "Jamf Pro couldn’t deliver the blank push to: DMPXK1JHJG5H")
+        #expect(error == "Sent to 1 of 2 devices.\nJamf Pro couldn’t deliver the blank push to: TESTIPAD001")
     }
 
     @Test("Blank Push without a management ID sends nothing")
@@ -481,7 +479,7 @@ struct JamfProCommandTests {
             request.path.hasSuffix("/detail") ? .json(200, #"{"ios":{}}"#) : nil
         })
         let error = await harness.send(.clearPasscode, [Devices.mobile()])
-        #expect(error == "DMPXK1JHJG5H: no escrowed unlock token in Jamf Pro for this device, so the passcode can’t be cleared.")
+        #expect(error == "TESTIPAD001: no escrowed unlock token in Jamf Pro for this device, so the passcode can’t be cleared.")
         #expect(!harness.sent.contains { $0.method == "POST" })
     }
 
@@ -499,7 +497,7 @@ struct JamfProCommandTests {
     func updateInventoryMac() async {
         let harness = CommandHarness()
         let error = await harness.send(.updateInventory, [Devices.mac()])
-        #expect(error == "Update Inventory doesn't apply to any of the selected devices.")
+        #expect(error == "Update Inventory doesn’t apply to any of the selected devices.")
         #expect(harness.server.requests.isEmpty)
     }
 
@@ -516,9 +514,9 @@ struct JamfProCommandTests {
     @Test("A device without a management ID is named; the others are still sent")
     func withoutManagementID() async {
         let harness = CommandHarness()
-        let devices = [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13", managementID: nil)]
+        let devices = [Devices.mobile(), Devices.mobile("TESTIPAD002", id: "13", managementID: nil)]
         let error = await harness.send(.lockMobile, devices)
-        #expect(error == "DMPAAAAAAAAA: the record has no management ID. Run a fresh lookup first.")
+        #expect(error == "Sent to 1 of 2 devices.\nTESTIPAD002: the record has no management ID. Run a fresh lookup first.")
         #expect(body(harness.sent[0])?["clientData"] as? [NSDictionary] == [["managementId": "M-12"]])
     }
 
@@ -527,9 +525,9 @@ struct JamfProCommandTests {
         let harness = CommandHarness(commandServer { request in
             request.path.hasSuffix("/mobile-devices/13/erase") ? .json(500, "{}") : nil
         })
-        let devices = [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13", managementID: "M-13")]
+        let devices = [Devices.mobile(), Devices.mobile("TESTIPAD002", id: "13", managementID: "M-13")]
         let error = await harness.send(.wipeMobile, devices)
-        #expect(error?.hasPrefix("DMPAAAAAAAAA: ") == true)
+        #expect(error?.hasPrefix("Sent to 1 of 2 devices.\nTESTIPAD002: ") == true)
         #expect(harness.sent.map(\.path) == ["/api/v2/mobile-devices/12/erase", "/api/v2/mobile-devices/13/erase"])
     }
 
@@ -578,7 +576,7 @@ struct DeleteRecordTests {
 @MainActor
 struct JamfSchoolCommandTests {
 
-    private func device(_ serial: String = "DMPXK1JHJG5H", udid: String = "u-1", kind: DeviceKind = .mobileDevice,
+    private func device(_ serial: String = "TESTIPAD001", udid: String = "u-1", kind: DeviceKind = .mobileDevice,
                         location: String? = "1") -> DeviceReport {
         var info = ManagedDeviceInfo(recordID: udid, connectionID: SavedData.schoolServerID, kind: kind, udid: udid)
         info.locationID = location
@@ -595,7 +593,7 @@ struct JamfSchoolCommandTests {
         #expect(await harness.send(command, [device()]) == nil)
         let request = try #require(harness.sent.only)
         #expect(request.method == "POST")
-        #expect(request.url.host() == "school.jamfcloud.com")
+        #expect(request.url.host() == "example-school.jamfcloud.com")
         #expect(request.path == "/api/devices/u-1/\(action)")
         #expect(request.bodyString == form)
         if !form.isEmpty {
@@ -608,7 +606,7 @@ struct JamfSchoolCommandTests {
     @Test("Wipe Computer reaches a Mac through the same wipe")
     func wipeMac() async throws {
         let harness = CommandHarness()
-        #expect(await harness.send(.wipeComputer, [device("C02XK1JHJG5H", udid: "u-9", kind: .computer)]) == nil)
+        #expect(await harness.send(.wipeComputer, [device("TESTMAC0001", udid: "u-9", kind: .computer)]) == nil)
         #expect(harness.sent.only?.path == "/api/devices/u-9/wipe")
     }
 
@@ -617,8 +615,8 @@ struct JamfSchoolCommandTests {
         let harness = CommandHarness(commandServer { request in
             request.path.hasPrefix("/api/devices/u-2/") ? .json(200, #"{"code":400,"message":"DeviceNotActive"}"#) : nil
         })
-        let error = await harness.send(.restartMobile, [device(), device("DMPAAAAAAAAA", udid: "u-2")])
-        #expect(error?.hasPrefix("DMPAAAAAAAAA: ") == true)
+        let error = await harness.send(.restartMobile, [device(), device("TESTIPAD002", udid: "u-2")])
+        #expect(error?.hasPrefix("Sent to 1 of 2 devices.\nTESTIPAD002: ") == true)
         #expect(error?.contains("the device is trashed or inactive, so it can’t be sent commands.") == true)
         #expect(harness.sent.count == 2)
     }
@@ -654,10 +652,10 @@ struct JamfSchoolCommandTests {
             request.path.hasSuffix("/migrate") ? .json(200, #"{"devicesMoved":["u-1"],"devicesMoveFailed":["u-2"]}"#) : nil
         })
         do {
-            try await harness.model.setLocation(reports: [device(), device("DMPAAAAAAAAA", udid: "u-2")], to: "2")
+            try await harness.model.setLocation(reports: [device(), device("TESTIPAD002", udid: "u-2")], to: "2")
             Issue.record("moved")
         } catch {
-            #expect(error.localizedDescription.hasPrefix("Jamf School did not move: DMPAAAAAAAAA."))
+            #expect(error.localizedDescription.hasPrefix("Jamf School didn’t move: TESTIPAD002."))
         }
     }
 
@@ -676,7 +674,7 @@ struct JamfSchoolCommandTests {
 struct IntuneCommandTests {
 
     private func device(kind: DeviceKind = .mobileDevice) -> DeviceReport {
-        Devices.report("DMPXK1JHJG5H", ManagedDeviceInfo(recordID: "i-1", connectionID: SavedData.intuneID, kind: kind))
+        Devices.report("TESTIPAD001", ManagedDeviceInfo(recordID: "i-1", connectionID: SavedData.intuneID, kind: kind))
     }
 
     @Test("Each command is a POST to the managed device's action",
@@ -719,13 +717,13 @@ struct CommandLogTests {
     @Test("A sent command is one Action entry with the connection and serials")
     func sentEntry() async throws {
         let harness = CommandHarness()
-        await harness.send(.lockMobile, [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13", managementID: "M-13")])
+        await harness.send(.lockMobile, [Devices.mobile(), Devices.mobile("TESTIPAD002", id: "13", managementID: "M-13")])
         let action = try #require(harness.actions.only)
         #expect(action.service == "Jamf Pro")
         #expect(action.connection == "Example Jamf Pro")
         #expect(!action.isFailure)
         let masked = ActivityLogExport.text(harness.log.entries, masked: true)
-        #expect(!masked.contains("DMPXK1JHJG5H") && !masked.contains("DMPAAAAAAAAA"))
+        #expect(!masked.contains("TESTIPAD001") && !masked.contains("TESTIPAD002"))
     }
 
     @Test("A failed command is a failed Action entry")
@@ -761,7 +759,7 @@ extension Array {
     var only: Element? { count == 1 ? first : nil }
 }
 
-// MARK: - Step 7: the confirmation rules and what the Action entry says
+// MARK: - The confirmation rules and what the Action entry says
 
 @Suite("Confirming commands and record removals")
 @MainActor
@@ -771,7 +769,7 @@ struct ConfirmationRuleTests {
     func wipeOne() throws {
         let harness = CommandHarness()
         let confirmation = try #require(harness.model.commandConfirmation(.wipeMobile, reports: [Devices.mobile()]))
-        #expect(confirmation.title == "Wipe Device — DMPXK1JHJG5H")
+        #expect(confirmation.title == "Wipe Device — TESTIPAD001")
         #expect(confirmation.connectionLine == "On “Example Jamf Pro”.")
         #expect(!confirmation.needsTyping)
         #expect(confirmation.dialogMessage == "On “Example Jamf Pro”.\n\nAll data on the device will be erased. This can’t be undone.")
@@ -780,7 +778,7 @@ struct ConfirmationRuleTests {
     @Test("Remove MDM Profile on three devices asks for the number")
     func unmanageThree() throws {
         let harness = CommandHarness()
-        let devices = [Devices.mac(), Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13")]
+        let devices = [Devices.mac(), Devices.mobile(), Devices.mobile("TESTIPAD002", id: "13")]
         let confirmation = try #require(harness.model.commandConfirmation(.unmanage, reports: devices))
         #expect(confirmation.title == "Remove MDM Profile — 3 Devices")
         #expect(confirmation.typedCount == 3)
@@ -794,7 +792,7 @@ struct ConfirmationRuleTests {
         #expect(lock.asksPINTwice && lock.typedCount == nil && lock.connectionLine == nil)
         var schoolMac = ManagedDeviceInfo(recordID: "u-9", connectionID: SavedData.schoolServerID, kind: .computer)
         schoolMac.udid = "u-9"
-        let wipe = try #require(harness.model.commandConfirmation(.wipeComputer, reports: [Devices.report("C02XK1JHJG5H", schoolMac)]))
+        let wipe = try #require(harness.model.commandConfirmation(.wipeComputer, reports: [Devices.report("TESTMAC0001", schoolMac)]))
         #expect(!wipe.asksPINTwice)
         #expect(wipe.connectionLine == "On “Jamf School”.")
     }
@@ -895,7 +893,7 @@ struct CommandApprovalTests {
         await #expect(throws: MDMCommand.Refusal("The confirmation was for another action. Nothing was sent.")) {
             try await harness.model.sendCommand(.unmanage, reports: [Devices.mobile()], approval: wipe)
         }
-        let two = [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13")]
+        let two = [Devices.mobile(), Devices.mobile("TESTIPAD002", id: "13")]
         await #expect(throws: MDMCommand.Refusal("The confirmation was for 1 device, not 2 devices. Nothing was sent.")) {
             try await harness.model.sendCommand(.wipeMobile, reports: two, approval: wipe)
         }
@@ -912,11 +910,11 @@ struct CommandApprovalTests {
     @Test("Intune's Delete Record deletes nothing without the approval")
     func intuneDeleteRecordNeedsApproval() async throws {
         let harness = CommandHarness()
-        let devices = [Devices.mobile(on: SavedData.intuneID), Devices.mobile("DMPAAAAAAAAA", id: "13", on: SavedData.intuneID)]
+        let devices = [Devices.mobile(on: SavedData.intuneID), Devices.mobile("TESTIPAD002", id: "13", on: SavedData.intuneID)]
         await #expect(throws: (any Error).self) { try await harness.deleteRecords(devices, approved: false) }
         #expect(!harness.server.requests.contains { $0.method == "DELETE" })
         do { try await harness.deleteRecords(devices, approved: false) } catch {
-            #expect(error.localizedDescription.contains("DMPXK1JHJG5H: Delete Record needs a confirmation first. Nothing was sent."))
+            #expect(error.localizedDescription == "Delete Record needs a confirmation first. Nothing was removed.")
         }
         try await harness.deleteRecords(devices)
         #expect(harness.server.requests.filter { $0.method == "DELETE" }.count == 2)
@@ -926,7 +924,7 @@ struct CommandApprovalTests {
     func intuneDeleteConfirmationUnchanged() throws {
         let harness = CommandHarness()
         let one = [Devices.mobile(on: SavedData.intuneID)]
-        let two = one + [Devices.mobile("DMPAAAAAAAAA", id: "13", on: SavedData.intuneID)]
+        let two = one + [Devices.mobile("TESTIPAD002", id: "13", on: SavedData.intuneID)]
         for (reports, action) in [(one, "Delete Record"), (two, "Delete Records")] {
             let confirmation = try #require(harness.model.deleteConfirmation(reports: reports))
             let before = MDMCommand.Confirmation(
@@ -946,7 +944,7 @@ struct CommandApprovalTests {
 
     @Test("The stale-record cleanup with Intune records confirms Delete Record, showing the same")
     func staleCleanupConfirmation() throws {
-        let shown = MDMCommand.Confirmation(action: "Remove Stale Records", subject: "C02XK1JHJG5H", count: 3,
+        let shown = MDMCommand.Confirmation(action: "Remove Stale Records", subject: "TESTMAC0001", count: 3,
                                             message: "Removes 3 on Example Intune.", irreversible: true,
                                             connectionName: nil, isDestructive: true)
         let confirmation = LookupModel.intuneDeleteRecord(as: shown, serials: ["A", "B", "C"], connectionName: nil)
@@ -966,12 +964,12 @@ struct CommandActionEntryTests {
     @Test("It counts the devices the command went to and names the skipped ones with the reason")
     func skipped() async throws {
         let harness = CommandHarness()
-        let devices = [Devices.mobile(), Devices.mobile("DMPAAAAAAAAA", id: "13", managementID: nil), Devices.mac()]
+        let devices = [Devices.mobile(), Devices.mobile("TESTIPAD002", id: "13", managementID: nil), Devices.mac()]
         _ = await harness.send(.lockMobile, devices)
         let action = try #require(harness.actions.only)
         #expect(action.detail == "Sent Lock Device to 1 of 3 devices")
-        #expect(action.note?.contains("DMPAAAAAAAAA: skipped — the record has no management ID. Run a fresh lookup first.") == true)
-        #expect(action.note?.contains("C02XK1JHJG5H: skipped — the command doesn’t apply to Macs.") == true)
+        #expect(action.note?.contains("TESTIPAD002: skipped — the record has no management ID. Run a fresh lookup first.") == true)
+        #expect(action.note?.contains("TESTMAC0001: skipped — the command doesn’t apply to Macs.") == true)
         #expect(action.isWarning && !action.isFailure)
     }
 
@@ -1017,7 +1015,7 @@ struct CommandActionEntryTests {
         })
         let error = await harness.send(.wipeMobile, [Devices.mobile()])
         #expect(error == """
-            DMPXK1JHJG5H: HTTP 403 Forbidden
+            TESTIPAD001: HTTP 403 Forbidden
             FORBIDDEN: Not allowed
             Trace ID: trace-1
             The API role is missing the “Send Mobile Device Remote Wipe Command” privilege. Add it in Jamf Pro under Settings › API Roles and Clients.

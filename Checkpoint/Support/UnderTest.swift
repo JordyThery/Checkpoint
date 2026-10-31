@@ -3,8 +3,9 @@ import JTKit
 import os
 
 /// Under tests the app sends no MDM command, makes no Apple Business or
-/// School Manager write, reads no device secret and makes no request to a
-/// saved connection (JTKit ROADMAP step 11, decided by Jordy). "Under tests"
+/// Apple School Manager write, changes no MDM record (delete, Move to Trash,
+/// site, PreStage, location, asset tag), reads no device secret and makes no
+/// request to a saved connection. "Under tests"
 /// is the host of the unit tests and a sandbox launch (`-JTKitSandbox`, which
 /// the UI tests use). Every attempt is refused before anything is sent and
 /// written down, so the release check can show it in its report and fail.
@@ -20,7 +21,7 @@ nonisolated enum UnderTest {
     static let folder = TestRun.attemptsFolder(named: "Checkpoint-under-test")
 
     /// The message a refused attempt gives.
-    static let refusal = "Refused under tests: the release check never sends a device command, an Apple write, a secret read or a request to a saved connection."
+    static let refusal = "Refused under tests: the release check never sends a device command, an Apple write, a record change, a secret read or a request to a saved connection."
 
     /// The network of settings holding the saved connections while under
     /// tests: every request, sign-in included, is refused before it's sent
@@ -47,6 +48,7 @@ extension TestRun.AttemptLog {
     nonisolated static let commands = TestRun.AttemptLog(name: "command-attempts")
     nonisolated static let appleWrites = TestRun.AttemptLog(name: "apple-write-attempts")
     nonisolated static let secretReads = TestRun.AttemptLog(name: "secret-read-attempts")
+    nonisolated static let recordWrites = TestRun.AttemptLog(name: "record-write-attempts")
     /// Method, host and path only, never the query.
     nonisolated static let savedConnections = TestRun.AttemptLog(name: "saved-connection-requests")
 
@@ -78,18 +80,23 @@ nonisolated struct UnderTestGuards: Sendable {
     /// MDM commands: erase, unmanage, lock, restart, clear passcode, remove
     /// MDM profile and every other command, on every product.
     var commands: ActionGuard
-    /// Apple Business / School Manager writes: assign, unassign, release,
+    /// Apple Business and Apple School Manager writes: assign, unassign, release,
     /// migration and its deadline.
     var appleWrites: ActionGuard
     /// FileVault key, Recovery Lock, lock PIN and local admin password.
     var secretReads: ActionGuard
+    /// Changes to an MDM record: Delete Record, Move to Trash, and the site,
+    /// PreStage, location and asset tag writes. Off only for the release
+    /// check's fenced delete of its own test record.
+    var recordWrites: ActionGuard
 
     /// On under tests, off otherwise.
     static let shared = UnderTestGuards(
         commands: ActionGuard(isActive: UnderTest.isActive, log: .commands),
         appleWrites: ActionGuard(isActive: UnderTest.isActive, log: .appleWrites),
-        secretReads: ActionGuard(isActive: UnderTest.isActive, log: .secretReads))
+        secretReads: ActionGuard(isActive: UnderTest.isActive, log: .secretReads),
+        recordWrites: ActionGuard(isActive: UnderTest.isActive, log: .recordWrites))
 
     /// For unit tests whose requests go to a mock server only.
-    static let off = UnderTestGuards(commands: .off, appleWrites: .off, secretReads: .off)
+    static let off = UnderTestGuards(commands: .off, appleWrites: .off, secretReads: .off, recordWrites: .off)
 }

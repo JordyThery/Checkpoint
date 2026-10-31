@@ -1,3 +1,4 @@
+import JTKit
 import SwiftUI
 
 /// Picks an Apple order and hands back the serial numbers on it. Both Apple
@@ -17,6 +18,10 @@ struct OrderPickerView: View {
     @State private var searchText = ""
     @State private var selection: String?
     @State private var isLoading = true
+    /// The organizations to read before any order can be listed, asked
+    /// about first, as a large lookup asks. Empty once they are in hand.
+    @State private var awaitingConsent: [String] = []
+    @State private var errorMessage: String?
 
     private var visible: [(number: String, count: Int)] {
         let query = searchText.trimmingCharacters(in: .whitespaces)
@@ -25,31 +30,26 @@ struct OrderPickerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Look Up an \(model.abmKind.label) Order")
-                    .font(.headline)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-
+        SheetFrame(title: "Look Up an \(model.abmKind.label) Order", systemImage: "shippingbox") {
             content
                 .frame(minHeight: 260)
-
-            Divider()
-            HStack {
-                if !isLoading && !orders.isEmpty {
+        } footer: {
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                } else if !isLoading && !orders.isEmpty {
                     Text("\(visible.count) order\(visible.count == 1 ? "" : "s")")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     // The list is reused for the session, so it needs a way
-                    // to pick up devices added in Apple Business meanwhile.
+                    // to pick up devices added to the organization meanwhile.
                     Button {
                         Task { await load(refresh: true) }
                     } label: {
-                        Image(systemName: "arrow.clockwise")
+                        Label("Read Again", systemImage: "arrow.clockwise")
+                            .labelStyle(.iconOnly)
                     }
                     .buttonStyle(.borderless)
                     .help("Read the organization again")
@@ -60,23 +60,40 @@ struct OrderPickerView: View {
                 Button("Look Up Order") { pick() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(selection == nil)
-            }
-            .padding(16)
         }
         .frame(width: 460, height: 420)
-        .task { await load() }
+        .task {
+            let unread = model.organizationsAwaitingRead.map(\.displayName)
+            if unread.isEmpty {
+                await load()
+            } else {
+                awaitingConsent = unread
+                isLoading = false
+            }
+        }
     }
 
     @ViewBuilder
     private var content: some View {
-        if isLoading {
+        if !awaitingConsent.isEmpty {
+            ContentUnavailableView {
+                Label("Read the Organization First", systemImage: "shippingbox")
+            } description: {
+                Text("Apple can’t search devices by order number, so \(awaitingConsent.formatted(.list(type: .and))) \(awaitingConsent.count == 1 ? "is" : "are") read in full first. That takes about a minute each; later lookups reuse it.")
+            } actions: {
+                Button(awaitingConsent.count == 1 ? "Read Organization" : "Read Organizations") {
+                    awaitingConsent = []
+                    Task { await load() }
+                }
+            }
+        } else if isLoading {
             VStack(spacing: 10) {
-                ProgressView()
+                ProgressView().accessibilityLabel("In progress")
                 Text(model.snapshotStatus ?? "Reading the organization…")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
-                Text("This takes a minute or two. Apple cannot search devices by order number and limits how often it can be asked, so Checkpoint reads the organization once and reuses it until you change something or quit.")
+                Text("This takes a minute or two. Apple can’t search devices by order number and limits how often it can be asked, so Checkpoint reads the organization once and reuses it until you change something or quit.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -87,7 +104,7 @@ struct OrderPickerView: View {
             ContentUnavailableView(
                 "No Orders",
                 systemImage: "shippingbox",
-                description: Text("No device in this \(model.abmKind.label) organization has an order number, or the organization could not be read.")
+                description: Text("No device in this \(model.abmKind.label) organization has an order number, or the organization couldn’t be read.")
             )
         } else {
             List(visible, id: \.number, selection: $selection) { order in
@@ -119,8 +136,12 @@ struct OrderPickerView: View {
     private func pick() {
         guard let number = selection else { return }
         Task {
+            errorMessage = nil
             let serials = await model.serials(inOrder: number)
-            guard !serials.isEmpty else { return }
+            guard !serials.isEmpty else {
+                errorMessage = "Order \(number) has no devices with a serial number."
+                return
+            }
             onPick(number, serials)
             dismiss()
         }

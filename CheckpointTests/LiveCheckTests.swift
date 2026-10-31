@@ -5,7 +5,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// Live checks (JTKit ROADMAP step 11), run only by Scripts/release-check.sh,
+// Live checks, run only by Scripts/release-check.sh,
 // which switches them on (JTKIT_LIVE=1). ⌘U skips them. Tenants are named by
 // role only:
 // - apple-business, apple-school: read only. Up to 5 serials are taken from
@@ -175,7 +175,9 @@ final class LiveModel {
     let model: LookupModel
     let activity = ActivityLog()
 
-    init(_ connections: [LiveConnection], session: URLSession) throws {
+    /// - Parameter allowingRecordWrites: only for the fenced Delete Record of
+    ///   the run's own test record; every other guard stays on.
+    init(_ connections: [LiveConnection], session: URLSession, allowingRecordWrites: Bool = false) throws {
         let (_, defaults) = TestSettings.makeDefaults("live")
         let orgs = connections.compactMap(\.org)
         let servers = connections.compactMap(\.mdm)
@@ -187,7 +189,9 @@ final class LiveModel {
         }
         let settings = AppSettings(defaults: defaults, secrets: secrets)
         precondition(!settings.holdsSavedConnections)
-        model = LookupModel(settings: settings, log: activity, session: session)
+        var guards = UnderTestGuards.shared
+        if allowingRecordWrites { guards.recordWrites = .off }
+        model = LookupModel(settings: settings, log: activity, session: session, underTest: guards)
     }
 
     /// The app's own lookup of these serials, in one connection or all.
@@ -204,8 +208,9 @@ final class LiveModel {
 func checkUnderTest(_ run: LiveCheckRun, when: String) {
     let logs: [(TestRun.AttemptLog, String)] = [
         (.commands, "no MDM command under tests"),
-        (.appleWrites, "no Apple Business or School Manager write under tests"),
+        (.appleWrites, "no Apple Business or Apple School Manager write under tests"),
         (.secretReads, "no device secret read under tests"),
+        (.recordWrites, "no record change under tests"),
         (.savedConnections, "no request to a saved connection under tests"),
     ]
     for (log, step) in logs {
@@ -293,7 +298,7 @@ struct TestDevices {
 
     /// An unmanaged record no device will ever enroll as, with no model or
     /// OS, like a record that never enrolled: Jamf types it "Unknown" and its
-    /// device list leaves out the name, which JTKit 0.12.4 then reads from the
+    /// device list leaves out the name, which JTKit then reads from the
     /// record itself also in a lookup of many serials (the app's). Its name is
     /// the first `<name>`, which the guarded network checks for the run's prefix.
     func createMobile(name: String, serial: String, udid: String) async throws -> String {
@@ -591,7 +596,7 @@ struct LiveLookupTests {
             do {
                 let picked = try await Inventory.firstSerial(connection, run)
                 guard let serial = picked.serial else {
-                    // Decided by Jordy: an empty inventory is reported, not failed.
+                    // An empty inventory is reported, not failed.
                     run.record(step: "\(connection.role): nothing to look up", passed: true, note: picked.counts)
                     continue
                 }
@@ -710,7 +715,7 @@ struct LiveLookupTests {
             run.record(step: step("diagnostic: a fresh question to Jamf for the iPad"), passed: false,
                        note: "totalCount \(total.map(String.init) ?? "unreadable"); caching headers: \(caching.isEmpty ? "none" : caching)")
         }
-        // The never-enrolled iPad's name comes from its own record (JTKit 0.12.4).
+        // The never-enrolled iPad's name comes from its own record.
         run.record(step: step("the app shows the never-enrolled iPad's name"), passed: iPad?.name == iPadName,
                    note: "“\(iPad?.name ?? "none")”")
         run.record(step: step("the app's lookup finds both test records"), passed: bothFound,
@@ -750,7 +755,7 @@ struct LiveLookupTests {
 
         // 4. The app's own Delete Record on the iPad, behind the fence.
         let fence = DeleteFence(inner: run.network.session, mobileID: iPadID)
-        let deleting = try LiveModel([testA], session: fence.session)
+        let deleting = try LiveModel([testA], session: fence.session, allowingRecordWrites: true)
         let before = await deleting.lookUp([iPadSerial], mdm: .connection(testA.id))
         try #require(before.first?.mdm.value?.recordID == iPadID, "The app's lookup didn't find the test iPad before the delete")
         try await attempt("the app's Delete Record removes the test iPad") {

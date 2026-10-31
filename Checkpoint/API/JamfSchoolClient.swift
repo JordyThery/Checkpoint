@@ -14,7 +14,6 @@ nonisolated struct JamfSchoolDevice: Sendable {
     let serialNumber: String
     let name: String?
     let locationID: String?
-    let modelName: String?
     let osPrefix: String?
     let osVersion: String?
     /// `ipad`, `iphone` or `mac`.
@@ -29,8 +28,6 @@ nonisolated struct JamfSchoolDevice: Sendable {
     /// Wall-clock time in the instance's own zone, with no offset attached.
     let lastCheckin: String?
     let assetTag: String?
-    let groupNames: [String]
-    let inTrash: Bool
 
     /// Computer or mobile device.
     ///
@@ -56,20 +53,18 @@ nonisolated struct JamfSchoolDevice: Sendable {
 struct JamfSchoolDeviceDetails: Sendable {
     let hasPasscode: Bool?
     let passcodeCompliant: Bool?
-    let isBootstrapStored: Bool?
     let timeZone: TimeZone?
 }
 
 struct JamfSchoolLocation: Sendable, Identifiable, Hashable {
     let id: String
     let name: String
-    let isDistrict: Bool
 }
 
 // MARK: - Client
 
-/// Checkpoint's Jamf School connection, on JTKit's `JamfSchool.Client`
-/// (ROADMAP step 7): Network ID and API key, 429 retried for every request
+/// Checkpoint's Jamf School connection, on JTKit's `JamfSchool.Client`:
+/// Network ID and API key, 429 retried for every request
 /// and server errors for reads, failures read from the status and from the
 /// answer itself (Jamf School can fail under HTTP 200), JTKit's error texts,
 /// and an activity log entry per attempt. Commands, Move to Trash and moving
@@ -92,9 +87,9 @@ actor JamfSchoolClient {
           commandGuard: ActionGuard = .off) {
         self.commandGuard = commandGuard
         let recorder = RequestRecorder(session: session, log: log,
-                                       service: ActivityService.jamfSchool.rawValue, connection: config.displayName)
+                                       service: ActivityService.jamfSchool.label, connection: config.displayName)
         // The device list and a device's details are recorded also when they
-        // succeed (ROADMAP step 5); personal blocks are hidden.
+        // succeed; personal blocks are hidden.
         guard let client = try? JamfSchool.Client(address: config.apiBaseURL, networkID: config.account, apiKey: secret,
                                                   recorder: recorder, recordsDeviceAnswers: true) else { return nil }
         self.client = client
@@ -122,7 +117,6 @@ actor JamfSchoolClient {
         return JamfSchoolDeviceDetails(
             hasPasscode: device.hasPasscode,
             passcodeCompliant: device.passcodeCompliant,
-            isBootstrapStored: device.isBootstrapStored,
             timeZone: device.timeZone.flatMap(TimeZone.init(identifier:))
         )
     }
@@ -134,7 +128,6 @@ actor JamfSchoolClient {
             serialNumber: serial,
             name: device.name,
             locationID: device.locationID,
-            modelName: device.modelName,
             osPrefix: device.osPrefix,
             osVersion: device.osVersion,
             deviceClass: device.deviceClass,
@@ -143,9 +136,7 @@ actor JamfSchoolClient {
             enrollType: device.enrollType,
             depProfile: device.depProfile,
             lastCheckin: wallClock(device.lastCheckIn),
-            assetTag: device.assetTag,
-            groupNames: device.groups,
-            inTrash: device.inTrash ?? false
+            assetTag: device.assetTag
         )
     }
 
@@ -176,7 +167,7 @@ actor JamfSchoolClient {
 
     func locations() async throws -> [JamfSchoolLocation] {
         try await client.locations().map {
-            JamfSchoolLocation(id: $0.id, name: $0.name ?? $0.id, isDistrict: $0.isDistrict ?? false)
+            JamfSchoolLocation(id: $0.id, name: $0.name ?? $0.id)
         }
     }
 

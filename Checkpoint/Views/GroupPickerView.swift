@@ -1,3 +1,4 @@
+import JTKit
 import SwiftUI
 
 /// Picks a Jamf group and hands back its serial numbers, so a group can be
@@ -28,21 +29,11 @@ struct GroupPickerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Look Up a \(model.mdmProduct.label) Group")
-                    .font(.headline)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
-            .padding(.bottom, 8)
-
+        SheetFrame(title: "Look Up a \(model.mdmProduct.label) Group", systemImage: "rectangle.3.group",
+                   isBusy: isFetchingMembers) {
             content
                 .frame(minHeight: 260)
-
-            Divider()
-            HStack {
+        } footer: {
                 if let errorMessage {
                     Text(errorMessage)
                         .font(.callout)
@@ -54,14 +45,11 @@ struct GroupPickerView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                if isFetchingMembers { ProgressView().controlSize(.small) }
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Look Up Group") { pick() }
                     .keyboardShortcut(.defaultAction)
                     .disabled(selectedGroup == nil || isFetchingMembers)
-            }
-            .padding(16)
         }
         .frame(width: 460, height: 420)
         .task { await load() }
@@ -71,14 +59,15 @@ struct GroupPickerView: View {
     private var content: some View {
         if isLoading {
             ProgressView("Loading groups…")
+                .accessibilityLabel("Loading groups")
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if groups.isEmpty {
             ContentUnavailableView(
                 "No Groups",
                 systemImage: "rectangle.3.group",
                 description: Text(model.mdmProduct == .jamfSchool
-                                  ? "The selected Jamf School server has no device groups, or the API key cannot read them."
-                                  : "The selected Jamf Pro server has no computer or mobile device groups, or the connection cannot read them.")
+                                  ? "The selected Jamf School server has no device groups, or the API key can’t read them."
+                                  : "The selected Jamf Pro server has no computer or mobile device groups, or the connection can’t read them.")
 
             )
         } else {

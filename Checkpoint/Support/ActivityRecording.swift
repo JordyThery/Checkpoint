@@ -5,16 +5,26 @@ import JTKit
 // recorded by JTKit's request recorder; this adds what the user asked for,
 // in the app's own words ("Action" entries).
 
-/// Which service an entry concerns, as the log names it. The Apple names are
-/// those of JTKit's `ABM.Service.label`, which names Apple's requests.
-nonisolated enum ActivityService: String, Sendable, CaseIterable, Identifiable {
-    case appleBusiness = "Apple Business"
-    case appleSchool = "Apple School Manager"
-    case jamfPro = "Jamf Pro"
-    case jamfSchool = "Jamf School"
-    case intune = "Intune"
+/// Which service an entry concerns. The log names it as JTKit names the
+/// service (`ConnectionService.displayName`), so the app's entries and
+/// JTKit's requests share one Source.
+nonisolated enum ActivityService: Sendable {
+    case appleBusiness
+    case appleSchool
+    case jamfPro
+    case jamfSchool
+    case intune
 
-    var id: String { rawValue }
+    /// The service's name in the log.
+    var label: String {
+        switch self {
+        case .appleBusiness: ConnectionService.appleBusinessManager.displayName
+        case .appleSchool: ConnectionService.appleSchoolManager.displayName
+        case .jamfPro: ConnectionService.jamfPro.displayName
+        case .jamfSchool: ConnectionService.jamfSchool.displayName
+        case .intune: ConnectionService.intune.displayName
+        }
+    }
 
     /// Both Apple services, as opposed to the device management ones.
     /// Enumerated rather than tested against one case, because it decides
@@ -30,7 +40,7 @@ nonisolated enum ActivityService: String, Sendable, CaseIterable, Identifiable {
 }
 
 extension MDMProduct {
-    /// How traffic to this product is labelled in the log. Separate entries
+    /// How traffic to this product is labeled in the log. Separate entries
     /// so a log cannot attribute a request to the wrong one.
     nonisolated var activityService: ActivityService {
         switch self {
@@ -42,7 +52,7 @@ extension MDMProduct {
 }
 
 extension AppleOrgKind {
-    /// How traffic to this service is labelled in the log. The two are
+    /// How traffic to this service is labeled in the log. The two are
     /// separate entries so a log cannot attribute a request to the wrong one.
     nonisolated var activityService: ActivityService {
         switch self {
@@ -68,7 +78,7 @@ extension ActivityLog {
         outcome: ActivityOutcome,
         serials: [String] = []
     ) {
-        recordAction(summary, failed: outcome == .failed, service: service.rawValue,
+        recordAction(summary, failed: outcome == .failed, service: service.label,
                      connection: connection, devices: serials)
     }
 }

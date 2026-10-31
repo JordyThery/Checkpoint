@@ -5,7 +5,7 @@ import SwiftUI
 import Testing
 @testable import Checkpoint
 
-// Demo Mode (ROADMAP step 10): the lookup engine runs against JTKit's demo
+// Demo Mode: the lookup engine runs against JTKit's demo
 // servers and DemoWorld, with the saved connections, the choices and the
 // Keychain left as they are.
 
@@ -103,7 +103,7 @@ struct DemoModeTests {
         let model = harness.model
         #expect(model.needsOrganizationRead(forDeviceCount: LookupModel.demoSerials.count), "the consent dialog still comes")
         await model.lookUp(serialsText: LookupModel.demoSerials.joined(separator: "\n"))
-        // As many as JTKit's sample devices, whatever their number (42 from JTKit 0.11.4).
+        // As many as JTKit's sample devices, whatever their number.
         #expect(model.reports.count == DemoWorld.devices.count)
 
         for device in DemoWorld.missingFromIntune {

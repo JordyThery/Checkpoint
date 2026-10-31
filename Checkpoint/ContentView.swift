@@ -23,6 +23,8 @@ struct ContentView: View {
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
     @State private var pendingLookup: PendingLookup?
+    /// What a group or order picker chose, loaded when its sheet has closed.
+    @State private var picked: (name: String, serials: [String])?
     /// Which of the two places that take keys has focus. Without this the
     /// serial field keeps it after a lookup, and the arrow keys edit text
     /// instead of moving down the results.
@@ -166,6 +168,9 @@ struct ContentView: View {
                     .inspectorColumnWidth(min: 320, ideal: 380, max: 500)
             } else if let report = selectedReports.first {
                 DeviceDetailView(report: report)
+                    // A fresh inspector per device: nothing loaded for one
+                    // device, nor a read still in flight, can reach another's.
+                    .id(report.serial)
                     .inspectorColumnWidth(min: 320, ideal: 380, max: 500)
             }
         }
@@ -188,15 +193,17 @@ struct ContentView: View {
             UpdateView()
                 .environment(updates)
         }
-        .sheet(isPresented: $showingGroupPicker) {
+        // The pick is loaded once the sheet is gone: a confirmation raised
+        // while it is still on screen may never appear.
+        .sheet(isPresented: $showingGroupPicker, onDismiss: loadPicked) {
             GroupPickerView { group, serials in
-                loadSerials(named: group.name, serials: serials)
+                picked = (group.name, serials)
             }
             .environment(model)
         }
-        .sheet(isPresented: $showingOrderPicker) {
+        .sheet(isPresented: $showingOrderPicker, onDismiss: loadPicked) {
             OrderPickerView { order, serials in
-                loadSerials(named: order, serials: serials)
+                picked = (order, serials)
             }
             .environment(model)
         }
@@ -216,7 +223,7 @@ struct ContentView: View {
             Text(pendingLookupMessage)
         }
         .alert(
-            "Import",
+            "Couldn’t Import File",
             isPresented: Binding(get: { importMessage != nil }, set: { if !$0 { importMessage = nil } })
         ) {
             Button("OK", role: .cancel) {}
@@ -266,7 +273,7 @@ struct ContentView: View {
             .disabled(model.isLoading || serialsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             if model.isLoading {
                 HStack(spacing: 6) {
-                    ProgressView()
+                    ProgressView().accessibilityLabel("In progress")
                         .controlSize(.small)
                     // Lookups run through a fixed window, so a large list
                     // takes long enough to be worth counting down. Reading
@@ -294,9 +301,9 @@ struct ContentView: View {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
             if !model.isABMConfigured && model.mdmConnections.isEmpty {
-                Text("\(model.appleScopeLabel) and \(model.mdmScopeLabel) are not configured yet.")
+                Text("\(model.appleScopeLabel) and \(model.mdmScopeLabel) aren’t configured yet.")
             } else if !model.isABMConfigured {
-                Text("\(model.appleScopeLabel) is not configured, so its columns will be empty.")
+                Text("\(model.appleScopeLabel) isn’t configured, so its columns will be empty.")
             } else {
                 Text("No device management server is configured, so its columns will be empty.")
             }
@@ -309,7 +316,8 @@ struct ContentView: View {
             Button {
                 settings.configurationHintDismissed = true
             } label: {
-                Image(systemName: "xmark")
+                Label("Hide Message", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
             }
             .buttonStyle(.borderless)
             .help("Hide this message. It can be brought back in Settings.")
@@ -508,8 +516,9 @@ struct ContentView: View {
                     if let url = report.mdm.value?.webURL {
                         Link(destination: url) {
                             Image(systemName: "arrow.up.forward.app")
+                                .accessibilityLabel("Open in \(model.product(for: report).label)")
                         }
-                        .help("Open in \(model.mdmProduct.label)")
+                        .help("Open in \(model.product(for: report).label)")
                     }
                 }
                 .width(28)
@@ -783,14 +792,20 @@ struct ContentView: View {
         }
     }
 
+    private func loadPicked() {
+        guard let picked else { return }
+        self.picked = nil
+        loadSerials(named: picked.name, serials: picked.serials)
+    }
+
     private var pendingLookupMessage: String {
         guard let pending = pendingLookup else { return "" }
         if model.needsOrganizationRead(forDeviceCount: pending.serials.count) {
             return model.readsAllABMOrgs
-                ? "Every configured Apple organization is read in full first, which takes about a minute each. Later lookups reuse them. Each device is then checked against \(model.mdmProduct.label)."
-                : "\(model.appleScopeLabel) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against \(model.mdmProduct.label)."
+                ? "Every configured Apple organization is read in full first, which takes about a minute each. Later lookups reuse them. Each device is then checked against \(model.mdmScopeLabel)."
+                : "\(model.appleScopeLabel) is read once for the whole organization first, which takes about a minute. Later lookups reuse it. Each device is then checked against \(model.mdmScopeLabel)."
         }
-        return "Each device is checked against both \(model.appleScopeLabel) and \(model.mdmProduct.label), so a list this size takes a while."
+        return "Each device is checked against both \(model.appleScopeLabel) and \(model.mdmScopeLabel), so a list this size takes a while."
     }
 
     /// Puts a group's or order's serials in the field, then either looks them
@@ -829,7 +844,7 @@ struct ContentView: View {
         defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
         guard let data = try? Data(contentsOf: url),
               let contents = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16) else {
-            importMessage = "Could not read the file as text."
+            importMessage = "Couldn’t read the file as text."
             return
         }
         let serials = LookupModel.parseImportedList(contents)
@@ -878,7 +893,7 @@ private extension FetchState {
 
 private extension DeviceReport {
     var abmStatusText: String {
-        abm.sortText(notConfigured: "Not configured", notFound: "Not in org") { info in
+        abm.sortText(notConfigured: "Not configured", notFound: "Not in organization") { info in
             if info.isReleased { return "Released" }
             // Case-insensitive, matching the status filter, so the cell and
             // the filter can never disagree about the same device.
@@ -1065,7 +1080,7 @@ struct MigrationCell: View {
                     .foregroundStyle(outcome == "Migrated" ? Color.green : Color.secondary)
                     .help(outcome == "Migrated"
                           ? "The device migrated to its assigned service."
-                          : "No migration is scheduled. Apple reports a cancelled migration and an unsuccessful one the same way, so this covers both. The organization assignment is unaffected.")
+                          : "No migration is scheduled. Apple reports a canceled migration and an unsuccessful one the same way, so this covers both. The organization assignment is unaffected.")
             } else {
                 Text("—").foregroundStyle(.tertiary)
             }
@@ -1079,11 +1094,11 @@ struct ABMStatusCell: View {
     var body: some View {
         switch state {
         case .pending:
-            ProgressView().controlSize(.small)
+            ProgressView().accessibilityLabel("In progress").controlSize(.small)
         case .notConfigured:
             Text("Not configured").foregroundStyle(.tertiary)
         case .notFound:
-            Text("Not in org").foregroundStyle(.red)
+            Text("Not in organization").foregroundStyle(.red)
         case .failed(let message):
             Label("Error", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
@@ -1106,7 +1121,7 @@ struct MDMStatusCell: View {
     var body: some View {
         switch state {
         case .pending:
-            ProgressView().controlSize(.small)
+            ProgressView().accessibilityLabel("In progress").controlSize(.small)
         case .notConfigured:
             Text("Not configured").foregroundStyle(.tertiary)
         case .notFound:

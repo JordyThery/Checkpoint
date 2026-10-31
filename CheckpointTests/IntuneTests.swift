@@ -4,9 +4,7 @@ import JTKitTestSupport
 import Testing
 @testable import Checkpoint
 
-// How Checkpoint's Intune code behaves (ROADMAP step 8, JTKit 0.9.1),
-// written against Checkpoint's own `IntuneClient` before it moved to JTKit:
-// reading the tenant page by page, matching serials, retries, the sign-in,
+// How Checkpoint's Intune code behaves: reading the tenant page by page, matching serials, retries, the sign-in,
 // the confirmations, and how a Graph device becomes a `ManagedDeviceInfo`.
 // Everything runs through `LookupModel`, so the tests outlive the client.
 
@@ -14,9 +12,9 @@ import Testing
 
 /// Graph devices as the tenant lists them.
 nonisolated enum GraphDevices {
-    static let mac = #"{"id":"i-mac","serialNumber":"C02XK1JHJG5H","deviceName":"Lab Mac","operatingSystem":"macOS","osVersion":"15.1","enrolledDateTime":"2026-01-02T03:04:05Z","lastSyncDateTime":"2026-10-25T08:00:00Z","managementCertificateExpirationDate":"2027-01-02T03:04:05Z","isEncrypted":true,"isSupervised":true,"managementAgent":"mdm","complianceState":"noncompliant","deviceEnrollmentType":"appleBulkWithUser"}"#
-    static let iPhone = #"{"id":"i-phone","serialNumber":"DMPXK1JHJG5H","deviceName":"Cart iPhone","operatingSystem":"iOS","osVersion":"18.1","isEncrypted":true,"isSupervised":false,"managementAgent":"mdm","complianceState":"compliant","deviceEnrollmentType":"userEnrollment"}"#
-    static let android = #"{"id":"i-android","serialNumber":"R58N123ABC","deviceName":"Pixel","operatingSystem":"Android","osVersion":"","isEncrypted":false,"managementAgent":"","complianceState":"inGracePeriod"}"#
+    static let mac = #"{"id":"i-mac","serialNumber":"TESTMAC0001","deviceName":"Lab Mac","operatingSystem":"macOS","osVersion":"15.1","enrolledDateTime":"2026-01-02T03:04:05Z","lastSyncDateTime":"2026-10-25T08:00:00Z","managementCertificateExpirationDate":"2027-01-02T03:04:05Z","isEncrypted":true,"isSupervised":true,"managementAgent":"mdm","complianceState":"noncompliant","deviceEnrollmentType":"appleBulkWithUser"}"#
+    static let iPhone = #"{"id":"i-phone","serialNumber":"TESTIPAD001","deviceName":"Cart iPhone","operatingSystem":"iOS","osVersion":"18.1","isEncrypted":true,"isSupervised":false,"managementAgent":"mdm","complianceState":"compliant","deviceEnrollmentType":"userEnrollment"}"#
+    static let android = #"{"id":"i-android","serialNumber":"TESTANDROID1","deviceName":"Pixel","operatingSystem":"Android","osVersion":"","isEncrypted":false,"managementAgent":"","complianceState":"inGracePeriod"}"#
 
     static func page(_ items: [String], next: String? = nil) -> String {
         let link = next.map { #","@odata.nextLink":"\#($0)""# } ?? ""
@@ -62,7 +60,7 @@ struct IntuneHarness {
         return model.reports.first { $0.serial == serial }?.mdm
     }
 
-    func device(_ serial: String = "DMPXK1JHJG5H", id: String = "i-1", kind: DeviceKind = .mobileDevice) -> DeviceReport {
+    func device(_ serial: String = "TESTIPAD001", id: String = "i-1", kind: DeviceKind = .mobileDevice) -> DeviceReport {
         Devices.report(serial, ManagedDeviceInfo(recordID: id, connectionID: SavedData.intuneID, kind: kind))
     }
 
@@ -99,7 +97,7 @@ struct IntunePagingTests {
     @Test("The first page asks for Checkpoint's 13 fields, 1,000 at a time")
     func firstPage() async throws {
         let harness = IntuneHarness()
-        _ = await harness.lookUp("C02XK1JHJG5H")
+        _ = await harness.lookUp("TESTMAC0001")
         let read = try #require(harness.deviceReads.only)
         #expect(read.url.host() == "graph.microsoft.com")
         #expect(read.path == "/v1.0/deviceManagement/managedDevices")
@@ -120,7 +118,7 @@ struct IntunePagingTests {
             default: .json(200, GraphDevices.page([GraphDevices.mac]))
             }
         })
-        #expect(await harness.lookUp("C02XK1JHJG5H")?.value?.recordID == "i-mac")
+        #expect(await harness.lookUp("TESTMAC0001")?.value?.recordID == "i-mac")
         #expect(harness.deviceReads.map { $0.queryValue("$skiptoken") } == [nil, "two", "three"])
         // the link is sent as given: no fields or page size added
         #expect(harness.deviceReads[1].queryValue("$select") == nil)
@@ -131,11 +129,11 @@ struct IntunePagingTests {
         let harness = IntuneHarness(intuneServer { _ in
             .json(200, GraphDevices.page([
                 #"{"id":"no-serial","serialNumber":""}"#, #"{"id":"null-serial"}"#,
-                #"{"id":"first","serialNumber":"c02xk1jhjg5h","operatingSystem":"macOS"}"#,
-                #"{"id":"second","serialNumber":"C02XK1JHJG5H","operatingSystem":"macOS"}"#,
+                #"{"id":"first","serialNumber":"testmac0001","operatingSystem":"macOS"}"#,
+                #"{"id":"second","serialNumber":"TESTMAC0001","operatingSystem":"macOS"}"#,
             ]))
         })
-        #expect(await harness.lookUp("C02XK1JHJG5H")?.value?.recordID == "first")
+        #expect(await harness.lookUp("TESTMAC0001")?.value?.recordID == "first")
         #expect(await harness.lookUp("ABSENT00000")?.isNotFound == true)
     }
 
@@ -146,8 +144,8 @@ struct IntunePagingTests {
                 ? .json(200, GraphDevices.page([GraphDevices.mac], next: "https://evil.example.com/v1.0/deviceManagement/managedDevices?$skiptoken=x"))
                 : .json(200, GraphDevices.page([]))
         })
-        let state = await harness.lookUp("C02XK1JHJG5H")
-        // changed on purpose: before JTKit the link was followed, token and all
+        let state = await harness.lookUp("TESTMAC0001")
+        // The token must never be sent to another host.
         #expect(!harness.server.requests.contains { $0.url.host() == "evil.example.com" })
         #expect(state?.failure?.contains("evil.example.com") == true)
     }
@@ -159,8 +157,8 @@ struct IntunePagingTests {
             return .json(200, GraphDevices.page(page == 0 ? [GraphDevices.mac] : [],
                                                 next: "https://graph.microsoft.com/v1.0/deviceManagement/managedDevices?$skiptoken=\(page + 1)"))
         })
-        let state = await harness.lookUp("C02XK1JHJG5H")
-        // changed on purpose: before JTKit it stopped after 101 pages without a word
+        let state = await harness.lookUp("TESTMAC0001")
+        // A cut-off is an error, never a silently short list.
         #expect(harness.deviceReads.count == 1_000)
         #expect(state?.failure?.contains("1000 pages") == true)
     }
@@ -170,8 +168,8 @@ struct IntunePagingTests {
         let harness = IntuneHarness(intuneServer { request in
             request.method == "GET" ? .json(403, #"{"error":{"code":"Forbidden","message":"Application is not authorized to perform this operation."}}"#) : nil
         })
-        let state = await harness.lookUp("C02XK1JHJG5H")
-        // changed on purpose: before JTKit the error was swallowed, so the device read as not found
+        let state = await harness.lookUp("TESTMAC0001")
+        // An error, not "not found".
         #expect(state?.isNotFound == false)
         #expect(state?.failure?.contains("HTTP 403") == true)
         #expect(state?.failure?.contains("DeviceManagementManagedDevices.Read.All") == true)
@@ -180,7 +178,7 @@ struct IntunePagingTests {
     @Test("Each request is in the activity log under Intune, the answer of the device read included")
     func recorded() async throws {
         let harness = IntuneHarness(intuneServer { _ in .json(200, GraphDevices.page([GraphDevices.mac])) })
-        _ = await harness.lookUp("C02XK1JHJG5H")
+        _ = await harness.lookUp("TESTMAC0001")
         let requests = harness.log.entries.filter { $0.request != nil }
         #expect(requests.map(\.category) == ["Sign-in", "Intune"]) // was "API"
         #expect(requests.allSatisfy { $0.service == "Intune" && $0.connection == "Example Intune" })
@@ -205,7 +203,7 @@ struct IntuneRetryTests {
                 ? .json(429, "{}", headers: ["Retry-After": "0"])
                 : .json(200, GraphDevices.page([GraphDevices.mac]))
         })
-        #expect(await harness.lookUp("C02XK1JHJG5H")?.value?.recordID == "i-mac")
+        #expect(await harness.lookUp("TESTMAC0001")?.value?.recordID == "i-mac")
         #expect(harness.deviceReads.count == 2)
         #expect(harness.log.entries.contains { $0.category == "Retry" && $0.isWarning })
     }
@@ -215,7 +213,7 @@ struct IntuneRetryTests {
         let harness = IntuneHarness(intuneServer { request in
             request.method == "GET" ? .json(429, "{}", headers: ["Retry-After": "0"]) : nil
         })
-        let state = await harness.lookUp("C02XK1JHJG5H")
+        let state = await harness.lookUp("TESTMAC0001")
         #expect(harness.deviceReads.count == 4)
         #expect(state?.failure?.contains("HTTP 429") == true) // was "not found"
     }
@@ -225,8 +223,7 @@ struct IntuneRetryTests {
         let harness = IntuneHarness(intuneServer { request in
             request.method == "GET" ? .json(503, "{}", headers: ["Retry-After": "0"]) : nil
         })
-        let state = await harness.lookUp("C02XK1JHJG5H")
-        // changed on purpose: before JTKit a read wasn't tried again
+        let state = await harness.lookUp("TESTMAC0001")
         #expect(harness.deviceReads.count == 4)
         #expect(state?.failure?.contains("HTTP 503") == true)
     }
@@ -236,8 +233,7 @@ struct IntuneRetryTests {
         let harness = IntuneHarness(intuneServer { request in
             request.method == "GET" ? .json(401, #"{"error":{"code":"InvalidAuthenticationToken","message":"Access token has expired."}}"#) : nil
         })
-        let state = await harness.lookUp("C02XK1JHJG5H")
-        // changed on purpose: before JTKit a 401 wasn't tried again
+        let state = await harness.lookUp("TESTMAC0001")
         #expect(harness.deviceReads.count == 2)
         #expect(harness.signIns.count == 2)
         #expect(state?.failure?.contains("HTTP 401") == true)
@@ -284,7 +280,7 @@ struct IntuneSignInTests {
     @Test("The app registration signs in with its client secret for Graph's .default scope")
     func form() async throws {
         let harness = IntuneHarness()
-        _ = await harness.lookUp("C02XK1JHJG5H")
+        _ = await harness.lookUp("TESTMAC0001")
         let signIn = try #require(harness.signIns.only)
         #expect(signIn.method == "POST")
         #expect(signIn.url.host() == "login.microsoftonline.com")
@@ -294,16 +290,16 @@ struct IntuneSignInTests {
             let pair = $0.split(separator: "=", maxSplits: 1).map(String.init)
             return (pair[0], pair[1].removingPercentEncoding ?? pair[1])
         })
-        #expect(form == ["client_id": "6F1B2C3D-0000-1111-2222-333344445555", "client_secret": "SECRET-entra",
+        #expect(form == ["client_id": "EEEEEEEE-2222-4000-8000-00000000C001", "client_secret": "SECRET-entra",
                          "grant_type": "client_credentials", "scope": "https://graph.microsoft.com/.default"])
     }
 
     @Test("One sign-in serves the lookup and the commands after it, also when they run at once")
     func shared() async throws {
         let harness = IntuneHarness()
-        _ = await harness.lookUp("C02XK1JHJG5H")
+        _ = await harness.lookUp("TESTMAC0001")
         async let first = harness.send(.updateInventory, [harness.device()])
-        async let second = harness.send(.restartMobile, [harness.device("DMPAAAAAAAAA", id: "i-2")])
+        async let second = harness.send(.restartMobile, [harness.device("TESTIPAD002", id: "i-2")])
         _ = await (first, second)
         #expect(harness.signIns.count == 1)
     }
@@ -334,7 +330,7 @@ struct IntuneCommandSendTests {
                       (.clearPasscode, "resetPasscode"), (.unmanage, "retire")])
     func actions(command: MDMCommand, action: String) async throws {
         let harness = IntuneHarness()
-        #expect(await harness.send(command, [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")]) == nil)
+        #expect(await harness.send(command, [harness.device(), harness.device("TESTIPAD002", id: "i-2")]) == nil)
         #expect(harness.graph.map(\.path) == ["/v1.0/deviceManagement/managedDevices/i-1/\(action)",
                                               "/v1.0/deviceManagement/managedDevices/i-2/\(action)"])
         #expect(harness.graph.allSatisfy { $0.method == "POST" })
@@ -343,7 +339,7 @@ struct IntuneCommandSendTests {
     @Test("A Mac is wiped with an empty JSON body and no PIN")
     func wipeMac() async throws {
         let harness = IntuneHarness()
-        #expect(await harness.send(.wipeComputer, [harness.device("C02XK1JHJG5H", kind: .computer)]) == nil)
+        #expect(await harness.send(.wipeComputer, [harness.device("TESTMAC0001", kind: .computer)]) == nil)
         let request = try #require(harness.graph.only)
         #expect(request.path == "/v1.0/deviceManagement/managedDevices/i-1/wipe")
         #expect(request.bodyString == "{}")
@@ -378,11 +374,11 @@ struct IntuneCommandSendTests {
         })
         var message: String?
         do {
-            try await harness.deleteRecords([harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")])
+            try await harness.deleteRecords([harness.device(), harness.device("TESTIPAD002", id: "i-2")])
         } catch { message = error.localizedDescription }
         #expect(harness.graph.filter { $0.method == "DELETE" }.map(\.path)
                 == ["/v1.0/deviceManagement/managedDevices/i-1", "/v1.0/deviceManagement/managedDevices/i-2"])
-        #expect(message?.hasPrefix("DMPAAAAAAAAA: ") == true)
+        #expect(message?.hasPrefix("TESTIPAD002: ") == true)
     }
 
     @Test("Sending is one Action entry under Intune with the connection")
@@ -416,7 +412,7 @@ struct IntuneConfirmationTests {
     func irreversibleTwo(command: MDMCommand) throws {
         let harness = IntuneHarness()
         let confirmation = try #require(harness.model.commandConfirmation(
-            command, reports: [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")]))
+            command, reports: [harness.device(), harness.device("TESTIPAD002", id: "i-2")]))
         #expect(confirmation.connectionLine == "On “Example Intune”.")
         #expect(confirmation.typedCount == 2)
         #expect(confirmation.problem(typedCount: "1") == "Type 2 to confirm.")
@@ -427,7 +423,7 @@ struct IntuneConfirmationTests {
     func wipeMacNoPIN() throws {
         let harness = IntuneHarness()
         let confirmation = try #require(harness.model.commandConfirmation(
-            .wipeComputer, reports: [harness.device("C02XK1JHJG5H", kind: .computer)]))
+            .wipeComputer, reports: [harness.device("TESTMAC0001", kind: .computer)]))
         #expect(!confirmation.asksPINTwice)
         #expect(confirmation.connectionLine == "On “Example Intune”.")
     }
@@ -436,11 +432,11 @@ struct IntuneConfirmationTests {
     func deleteRecord() throws {
         let harness = IntuneHarness()
         let one = try #require(harness.model.deleteConfirmation(reports: [harness.device()]))
-        #expect(one.title == "Delete Record — DMPXK1JHJG5H")
+        #expect(one.title == "Delete Record — TESTIPAD001")
         #expect(one.connectionLine == "On “Example Intune”.")
         #expect(one.typedCount == nil)
         #expect(one.message == "The record will be deleted from Intune. The device itself stays enrolled and will reappear at its next check-in; Retire Device is what unmanages it.")
-        let two = try #require(harness.model.deleteConfirmation(reports: [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")]))
+        let two = try #require(harness.model.deleteConfirmation(reports: [harness.device(), harness.device("TESTIPAD002", id: "i-2")]))
         #expect(two.typedCount == 2)
     }
 
@@ -449,7 +445,7 @@ struct IntuneConfirmationTests {
     func plain(command: MDMCommand) throws {
         let harness = IntuneHarness()
         let confirmation = try #require(harness.model.commandConfirmation(
-            command, reports: [harness.device(), harness.device("DMPAAAAAAAAA", id: "i-2")]))
+            command, reports: [harness.device(), harness.device("TESTIPAD002", id: "i-2")]))
         #expect(confirmation.connectionLine == nil)
         #expect(confirmation.typedCount == nil)
         #expect(!confirmation.needsTyping)
@@ -459,19 +455,19 @@ struct IntuneConfirmationTests {
     func texts() throws {
         let harness = IntuneHarness()
         let expected: [(MDMCommand, DeviceKind, String, String)] = [
-            (.updateInventory, .mobileDevice, "Sync Device — DMPXK1JHJG5H",
+            (.updateInventory, .mobileDevice, "Sync Device — TESTIPAD001",
              "Intune asks the device to check in now, so it picks up pending policies and actions and reports its state."),
-            (.restartMobile, .mobileDevice, "Restart Device — DMPXK1JHJG5H", "The device will restart immediately."),
-            (.shutDownMobile, .mobileDevice, "Shut Down Device — DMPXK1JHJG5H",
+            (.restartMobile, .mobileDevice, "Restart Device — TESTIPAD001", "The device will restart immediately."),
+            (.shutDownMobile, .mobileDevice, "Shut Down Device — TESTIPAD001",
              "The device will shut down immediately and stay off until someone powers it back on."),
-            (.lockMobile, .mobileDevice, "Lock Device — DMPXK1JHJG5H", "The device will lock immediately; the owner’s passcode unlocks it."),
-            (.clearPasscode, .mobileDevice, "Clear Passcode — DMPXK1JHJG5H",
+            (.lockMobile, .mobileDevice, "Lock Device — TESTIPAD001", "The device will lock immediately; the owner’s passcode unlocks it."),
+            (.clearPasscode, .mobileDevice, "Clear Passcode — TESTIPAD001",
              "Intune removes the device passcode. If a policy requires one, the user is asked to set a new one."),
-            (.wipeMobile, .mobileDevice, "Wipe Device — DMPXK1JHJG5H",
+            (.wipeMobile, .mobileDevice, "Wipe Device — TESTIPAD001",
              "All data on the device will be erased and it returns to factory settings. This can’t be undone."),
-            (.wipeComputer, .computer, "Wipe Computer — DMPXK1JHJG5H",
+            (.wipeComputer, .computer, "Wipe Computer — TESTIPAD001",
              "All data on the Mac will be erased and it returns to factory settings. This can’t be undone."),
-            (.unmanage, .mobileDevice, "Retire Device — DMPXK1JHJG5H",
+            (.unmanage, .mobileDevice, "Retire Device — TESTIPAD001",
              "The device is retired: company data and the management profile are removed, so Intune can no longer manage it. Its record is deleted too once the device acknowledges."),
         ]
         for (command, kind, title, message) in expected {
@@ -485,8 +481,8 @@ struct IntuneConfirmationTests {
     func skipsMac() throws {
         let harness = IntuneHarness()
         let confirmation = try #require(harness.model.commandConfirmation(
-            .lockMobile, reports: [harness.device(), harness.device("C02XK1JHJG5H", id: "i-mac", kind: .computer)]))
-        #expect(confirmation.title == "Lock Device — DMPXK1JHJG5H")
+            .lockMobile, reports: [harness.device(), harness.device("TESTMAC0001", id: "i-mac", kind: .computer)]))
+        #expect(confirmation.title == "Lock Device — TESTIPAD001")
         #expect(confirmation.explanation == "2 selected, 1 will receive the command; 1 is a Mac.")
     }
 }
@@ -504,7 +500,7 @@ struct IntuneConversionTests {
 
     @Test("A Mac: FileVault from the encryption flag, ADE from the enrollment type")
     func mac() async throws {
-        let info = try await found(GraphDevices.mac, serial: "C02XK1JHJG5H")
+        let info = try await found(GraphDevices.mac, serial: "TESTMAC0001")
         #expect(info.recordID == "i-mac")
         #expect(info.connectionID == SavedData.intuneID)
         #expect(info.kind == .computer)
@@ -526,7 +522,7 @@ struct IntuneConversionTests {
 
     @Test("An iPhone: the encryption flag is the passcode")
     func iPhone() async throws {
-        let info = try await found(GraphDevices.iPhone, serial: "DMPXK1JHJG5H")
+        let info = try await found(GraphDevices.iPhone, serial: "TESTIPAD001")
         #expect(info.kind == .mobileDevice)
         #expect(info.encryption == nil)
         #expect(info.security?.passcodePresent == true)
@@ -537,7 +533,7 @@ struct IntuneConversionTests {
 
     @Test("Another platform: storage encryption; empty values left out")
     func android() async throws {
-        let info = try await found(GraphDevices.android, serial: "R58N123ABC")
+        let info = try await found(GraphDevices.android, serial: "TESTANDROID1")
         #expect(info.kind == .mobileDevice)
         #expect(info.encryption?.fileVaultEnabled == false)
         #expect(info.security == nil)
@@ -553,15 +549,15 @@ struct IntuneConversionTests {
         ("configManager", "Managed by Configuration Manager"), ("unknown", "Unknown"), ("conflict", "Conflict"),
     ])
     func compliance(state: String, words: String) async throws {
-        let info = try await found(#"{"id":"i-1","serialNumber":"C02XK1JHJG5H","complianceState":"\#(state)"}"#, serial: "C02XK1JHJG5H")
+        let info = try await found(#"{"id":"i-1","serialNumber":"TESTMAC0001","complianceState":"\#(state)"}"#, serial: "TESTMAC0001")
         #expect(info.complianceSummary == words)
     }
 
     @Test("A retired device keeps its record with the agent cleared: managed is unknown, an EAS-only device isn't managed")
     func managed() async throws {
-        let eas = try await found(#"{"id":"i-1","serialNumber":"C02XK1JHJG5H","managementAgent":"eas"}"#, serial: "C02XK1JHJG5H")
+        let eas = try await found(#"{"id":"i-1","serialNumber":"TESTMAC0001","managementAgent":"eas"}"#, serial: "TESTMAC0001")
         #expect(eas.isManaged == false)
-        let both = try await found(#"{"id":"i-1","serialNumber":"C02XK1JHJG5H","managementAgent":"easMdm"}"#, serial: "C02XK1JHJG5H")
+        let both = try await found(#"{"id":"i-1","serialNumber":"TESTMAC0001","managementAgent":"easMdm"}"#, serial: "TESTMAC0001")
         #expect(both.isManaged == true)
     }
 }

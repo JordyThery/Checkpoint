@@ -46,7 +46,7 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         case .jamfPro: [.sites, .userAndLocation, .prestageScope, .enrollmentDate, .inventoryDates,
                         .mdmProfileExpiry, .fileVault, .passcodeState, .softwareUpdate,
                         .declarations, .recoverySecrets, .deviceLink, .deviceGroups,
-                        .enrollmentProfileName, .complianceOnDemand, .assetTag]
+                        .enrollmentProfileName, .complianceOnDemand, .assetTag, .managementState]
         case .jamfSchool: [.locations, .passcodeOnDemand, .deviceLink, .deviceGroups,
                            .enrollmentProfileName, .managementState, .assetTag]
         // Intune reports one sync time rather than Jamf's four dates, so it
@@ -111,21 +111,12 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         }
     }
 
-    /// Confirmation title for one device and for several.
-    func removeRecordPrompt(_ subject: String) -> String {
-        switch self {
-        case .jamfPro: "Delete the Jamf Pro record for \(subject)?"
-        case .jamfSchool: "Move the Jamf School record for \(subject) to the trash?"
-        case .intune: "Delete the Intune record for \(subject)?"
-        }
-    }
-
     /// What removing the record actually does, which is the part worth
     /// spelling out: only Jamf School's is reversible, and only Intune's
     /// leaves a device that will come back by itself.
     var removeRecordConsequence: String {
         switch self {
-        case .jamfPro: "The record will be deleted from the selected Jamf Pro server."
+        case .jamfPro: MDMCommand.deleteRecord.consequence(on: .jamfPro)
         case .jamfSchool: "The record moves to the trash in Jamf School. It stops being managed, and can be restored there."
         case .intune: MDMCommand.deleteRecord.consequence(on: .intune)
         }
@@ -140,24 +131,7 @@ nonisolated enum MDMProduct: String, Codable, CaseIterable, Identifiable, Sendab
         }
     }
 
-    /// Shown when the product has no record for a serial.
-    var noRecordHint: String {
-        switch self {
-        case .jamfPro: "No computer or mobile device record was found on the selected Jamf Pro server."
-        case .jamfSchool: "No device record was found on the selected Jamf School server."
-        case .intune: "No managed device record was found in the selected Intune tenant."
-        }
-    }
 
-    /// Jamf School trashes a device rather than deleting it, and a trashed
-    /// device can be restored, so the wording differs from Jamf Pro's delete.
-    var removeRecordLabel: String {
-        switch self {
-        case .jamfPro: "Remove from Jamf Pro"
-        case .jamfSchool: "Move to Trash in Jamf School"
-        case .intune: "Delete from Intune"
-        }
-    }
 }
 
 /// What a connection can report and do. Every capability is a gate on a
@@ -225,7 +199,7 @@ nonisolated struct MDMCapabilities: OptionSet, Sendable {
     /// user and location record, arriving with the lookup.
     static let userAndLocation = MDMCapabilities(rawValue: 1 << 19)
     /// Whether the device is still managed and supervised, reported with the
-    /// lookup. Jamf Pro reports neither on its list endpoints.
+    /// lookup by every product.
     static let managementState = MDMCapabilities(rawValue: 1 << 20)
     /// The asset tag, arriving with the lookup. Intune's API has no field
     /// for it.
@@ -235,22 +209,11 @@ nonisolated struct MDMCapabilities: OptionSet, Sendable {
 /// How a connection authenticates. The three cases are Jamf's; another
 /// product's method is added here, and the editor shows only the ones its
 /// product accepts. Raw values are persisted.
-nonisolated enum MDMAuthMethod: String, Codable, CaseIterable, Identifiable {
+nonisolated enum MDMAuthMethod: String, Codable {
     case apiClient
     case usernamePassword
     case platformGateway
     case entraApp
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .apiClient: "API Client (ID + Secret)"
-        case .usernamePassword: "Username + Password"
-        case .platformGateway: "Platform API (Jamf Account)"
-        case .entraApp: "Entra App Registration (Client Secret)"
-        }
-    }
 
     /// The methods a product accepts, so the editor cannot offer a Jamf
     /// method for an Intune tenant or the other way round.
@@ -284,7 +247,7 @@ nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
     /// Network ID as the user and the API key as the password.
     var authMethod: MDMAuthMethod = .apiClient
     /// Client ID or username depending on `authMethod`. The matching secret
-    /// (client secret or password) lives in the keychain under `secretKeychainKey`.
+    /// (client secret or password) lives in the Keychain under `CheckpointSecrets.account(for:)`.
     var account = ""
     /// Platform API only: which regional gateway to talk to.
     /// JTKit's region; the saved values (us, eu, apac) are the same.
@@ -297,11 +260,6 @@ nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
     /// part of the token URL rather than a header. A GUID or a verified
     /// domain name; Microsoft accepts either.
     var tenantID = ""
-
-    /// Keychain account for this connection's secret. The prefix is part of
-    /// the stored item's name, so it stays as it was written: changing it
-    /// would leave every saved secret unreadable and unfindable.
-    var secretKeychainKey: String { "jamf.\(id.uuidString)" }
 
     var displayName: String {
         if !name.isEmpty { return name }
@@ -364,7 +322,7 @@ extension MDMConnection {
     }
 }
 
-// Declared in an extension so the memberwise initialiser is still synthesised.
+// Declared in an extension so the memberwise initializer is still synthesized.
 extension MDMConnection {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -416,21 +374,6 @@ nonisolated enum AppleOrgKind: String, Codable, CaseIterable, Identifiable, Send
         }
     }
 
-    var host: URL {
-        switch self {
-        case .business: URL(string: "https://api-business.apple.com")!
-        case .school: URL(string: "https://api-school.apple.com")!
-        }
-    }
-
-    /// OAuth scope. The token endpoint is shared; only this value differs.
-    var scope: String {
-        switch self {
-        case .business: "business.api"
-        case .school: "school.api"
-        }
-    }
-
     /// Apple School Manager has no RELEASE_DEVICES activity, so devices
     /// cannot be released from the organization there.
     var supportsRelease: Bool { self == .business }
@@ -463,7 +406,7 @@ nonisolated struct ABMConfig: Identifiable, Codable, Hashable {
     }
 }
 
-// Declared in an extension so the memberwise initialiser is still synthesised.
+// Declared in an extension so the memberwise initializer is still synthesized.
 extension ABMConfig {
     init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -503,7 +446,7 @@ final class AppSettings {
     }
 
     /// The Apple organizations and MDM connections, in JTKit's shared list.
-    /// Saved in `abmOrgs` and `jamfServers`, as before.
+    /// Saved in `abmOrgs` and `jamfServers` (stored keys: never rename).
     let connections: ConnectionStore<CheckpointConnection>
 
     var mdmConnections: [MDMConnection] {
@@ -525,9 +468,9 @@ final class AppSettings {
     /// service is a deliberate setup for some people.
     var configurationHintDismissed: Bool { didSet { save() } }
     // The appearance and the daily update check are not stored here: JTKit's
-    // Settings window keeps them under "appearance" and "checksForUpdates",
-    // the keys this class used. Saving a copy here too would overwrite them
-    // whenever another setting changed.
+    // Settings window keeps them under "appearance" and "checksForUpdates"
+    // (stored keys: never rename). Saving a copy here too would overwrite
+    // them whenever another setting changed.
 
     /// Demo Mode: sample organizations and connections instead of the saved
     /// ones (JTKit's `DemoWorld`). Saved under `demoMode`.

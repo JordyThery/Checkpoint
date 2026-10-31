@@ -4,9 +4,9 @@
 >
 > See [Permissions](permissions.md) for a direct connection, and [Features](features.md) for what each feature does.
 
-Checkpoint can talk to Jamf Pro through Jamf's [Platform API gateway](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) instead of connecting to the server directly. This is optional: an API client connection is simpler and carries every command.
+Checkpoint can talk to Jamf Pro through the [Jamf Platform API](https://developer.jamf.com/platform-api/reference/getting-started-with-platform-api) gateway instead of connecting to the server directly. This is optional: a direct Jamf Pro connection with an API client is simpler and carries every command.
 
-> This page describes the release it ships with. What the gateway can and cannot carry changes as Jamf extends it, so opening this page from a tag shows what was true for that version.
+> This page describes the release it ships with. What the gateway can and can’t carry changes as Jamf extends it, so opening this page from a tag shows what was true for that version.
 
 ## Setting one up
 
@@ -14,22 +14,22 @@ Create an **environment-scoped** integration in **Jamf Account**. Then in Checkp
 
 - the client ID and client secret
 - the gateway region
-- the environment ID, found on the environment pill in the integration's **Integration details** panel
+- the environment ID, found on the environment pill in the integration’s **Integration details** panel
 - the Jamf Pro URL, as for any other connection
 
-A Jamf Pro API client will not work here — it has to be a Jamf Account integration. The region must match your environment, because gateway tokens are region-locked.
+A Jamf Pro API client won’t work here — it has to be a Jamf Account integration. The region must match your environment, because gateway tokens are region-locked.
 
-The Jamf Pro URL is still required even though requests go to the gateway: device rows link to their records in the Jamf Pro web interface, and the gateway host cannot serve those.
+The Jamf Pro URL is still required even though requests go to the gateway: device rows link to their records in the Jamf Pro web interface, and the gateway host can’t serve those.
 
 ### Why environment scope
 
-Environment scope is required rather than tenant scope. The Jamf Pro passthrough accepts either, but Restart and Shut Down run on Jamf's platform device actions, which accept only an environment ID. Environment scope is therefore a superset, and is what makes those two commands reachable.
+Environment scope is required rather than tenant scope. The Jamf Pro passthrough accepts either, but Restart and Shut Down run on Jamf’s platform device actions, which accept only an environment ID. Environment scope is therefore a superset, and is what makes those two commands reachable.
 
 Most Jamf Account instances already have an environment grouping their tenants, and you can create one if not.
 
 ## What the gateway does better
 
-Declaration status is the one thing a gateway connection reports more reliably than a direct one. Jamf Pro's API returns the device's declarations flattened into a single unquoted string, which has to be parsed; the platform's declaration reporting serves the same information as typed JSON, with each failure reason structured rather than embedded in free text. Checkpoint uses it whenever the connection is a gateway one and falls back to parsing when it is not, so the rows are the same either way.
+Declaration status is the one thing a gateway connection reports more reliably than a direct one. Jamf Pro’s API returns the device’s declarations flattened into a single unquoted string, which has to be parsed; the platform’s declaration reporting serves the same information as typed JSON, with each failure reason structured rather than embedded in free text. Checkpoint uses it whenever the connection is a gateway one and falls back to parsing when it isn’t, so the rows are the same either way.
 
 It costs one extra request: the platform keys devices by its own UUID rather than by the management ID the status report uses, so the serial has to be resolved first — the same lookup Restart and Shut Down already do.
 
@@ -60,9 +60,9 @@ Permissions are granted per capability on the integration, rather than per privi
 
 Device compliance takes two scopes because Checkpoint asks two questions: whether the Device Compliance integration is switched on at all, and what it says about a given device. Without `conditional-access:read` the first answer is simply unknown, and the per-device read decides on its own.
 
-The four secrets take four separate scopes, so granting one does not grant the others. Deleting a device record and changing a site declare no scope in the specification; the corresponding [Jamf Pro privileges](permissions.md) are the guide there.
+The four secrets take four separate scopes, so granting one doesn’t grant the others. Deleting a device record and changing a site declare no scope in the specification; the corresponding [Jamf Pro privileges](permissions.md) are the guide there.
 
-## What the gateway cannot carry
+## What the gateway can’t carry
 
 **One command is unavailable over the Platform API.** Checkpoint dims it and explains why, so nothing fails halfway.
 
@@ -70,9 +70,7 @@ The four secrets take four separate scopes, so granting one does not grant the o
 | --- | --- |
 | Renew MDM Profile | Accepted by the gateway, but renews nothing: every device comes back under `udidsNotProcessed`, for computers and mobile devices alike, on an instance that renews them fine over a direct connection |
 
-Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Remove MDM Profile, Restart and Shut Down. Use an API client connection when you need to renew an MDM profile.
-
-Lock and Clear Passcode became available in October 2026, when the gateway began accepting commands on Jamf Pro's batched MDM command endpoint rather than only reads. Checkpoint 2.7.0 and earlier still dim both over the Platform API.
+Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Remove MDM Profile, Restart and Shut Down. Use a Jamf Pro connection when you need to renew an MDM profile.
 
 FileVault state, mobile passcode state, software update state, managed local administrator accounts and the group lookup were each checked over both connections and returned identical results, so there is no difference in what Checkpoint can show.
 
@@ -80,11 +78,11 @@ Group membership comes from the Classic endpoints, which the gateway serves unde
 
 ## What only the gateway can do
 
-Blueprints are a platform feature with no endpoint on a Jamf Pro instance. A direct connection can show only the identifier a declaration carries; this one resolves it to the blueprint's name and links to it. Without `blueprints:read` the name is absent and the identifier is shown instead.
+Blueprints are a platform feature with no endpoint on a Jamf Pro instance. A direct connection can show only the identifier a declaration carries; this one resolves it to the Blueprint’s name and links to it. Without `blueprints:read` the name is absent and the identifier is shown instead.
 
-## Notes on gateway behaviour
+## Notes on gateway behavior
 
 Two things worth knowing if you are debugging a connection with the [activity log](features.md#activity-log) open:
 
 - The gateway fronts the Jamf Pro API under `/pro` and the Classic API under `/proclassic`, replacing the product segment rather than prefixing it. Each platform API has its own prefix too: device inventory under `/devices`, device actions under `/device-actions`.
-- An unknown product prefix answers `404 page not found`, while an unknown route within a valid prefix answers `403 BAD_PERMISSIONS`. A 403 therefore does not necessarily mean your capabilities are wrong.
+- An unknown product prefix answers `404 page not found`, while an unknown route within a valid prefix answers `403 BAD_PERMISSIONS`. A 403 therefore doesn’t necessarily mean your capabilities are wrong.

@@ -53,7 +53,7 @@ extension AboutConfiguration {
         appName: "Checkpoint",
         copyright: AboutCopyright(year: "2026", holder: "Jordy Thery"),
         author: "Created by Jordy Thery",
-        summary: "Cross-references Apple Business or School Manager with Jamf Pro, Jamf School and Intune.",
+        summary: "Cross-references Apple Business or Apple School Manager with Jamf Pro, Jamf School and Intune.",
         links: [
             AboutLink("github.com/JordyThery/Checkpoint", address: "https://github.com/JordyThery/Checkpoint"),
         ].compactMap { $0 }
