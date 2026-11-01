@@ -135,5 +135,5 @@ What this app waits for from Apple, Jamf or Microsoft, or must recheck: see WATC
 3. Verify: `codesign --verify --deep --strict`, `spctl -a -vvv -t install`, `xcrun stapler validate`. Zip with `ditto -c -k --keepParent` as `Checkpoint-X.Y.Z.zip`, unzip it elsewhere and run `spctl` again.
 4. GitHub release with the zip and short release notes. The in-app updater reads `releases/latest`.
 5. Update README and `docs/` if anything they say changed.
-6. Website: the app's page is `jordythery.be/checkpoint.html` (source outside this repo). Only when the release changes the app enough to make that page untrue or incomplete (new column, filter, capability or requirement), remind Jordy to update it.
+6. Website: follow ../jordythery.be/CLAUDE.md, section “When an app is released”. Every release checks this app's card on apps.html, and its own page if it has one, against the released README and CHANGELOG, and changes them on a branch with a pull request. Jordy merges, which publishes the site.
 7. Then follow the release gate in JTKit/ROADMAP.md.
