@@ -121,7 +121,9 @@ extension ABMConfig {
 extension MDMConnection {
     /// The server URL fills both the Jamf Pro server and the Platform API's
     /// Jamf Pro web address, and the account both the client ID and the
-    /// username, so switching between them keeps what was typed.
+    /// username, so switching between them keeps what was typed. A saved
+    /// address without a scheme reads with `https://`, and is saved so at
+    /// the next edit.
     nonisolated var connection: Connection {
         get {
             var shared = Connection(id: id, name: name, service: .jamfPro)
@@ -138,8 +140,8 @@ extension MDMConnection {
                 shared.service = .intune
                 shared.signIn = .entraClientSecret
             }
-            shared.serverURL = baseURL
-            shared.jamfProWebURL = baseURL
+            shared.serverURL = baseURLWithScheme
+            shared.jamfProWebURL = baseURLWithScheme
             shared.region = region
             shared.environmentID = environmentID
             shared.clientID = account

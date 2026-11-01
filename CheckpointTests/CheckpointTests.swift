@@ -357,6 +357,115 @@ struct MappingTests {
     }
 }
 
+// MARK: - Addresses saved without https://
+
+/// 2.8.1 accepted a server URL without a scheme and added `https://` itself;
+/// 2.9.0 handed the address to JTKit as saved, which refused it.
+@MainActor
+@Suite("Server URLs saved without https://")
+struct SchemeLessAddressTests {
+    static let message = "Enter the server URL, starting with https://."
+
+    /// A Jamf Pro and a Jamf School server as 2.8.1 saved them, and one on http://.
+    static let jamfServers = """
+    [{"id":"\(SavedData.proClientID)","baseURL":"myorg.example.com","name":"Pro","region":"us","environmentID":"","account":"client-1","tenantID":"","authMethod":"apiClient","product":"pro"},\
+    {"id":"\(SavedData.schoolServerID)","baseURL":"school.example.com","name":"School","region":"us","environmentID":"","account":"999001","tenantID":"","authMethod":"apiClient","product":"school"},\
+    {"id":"\(SavedData.proPasswordID)","baseURL":"http://plain.example.com","name":"Plain","region":"us","environmentID":"","account":"admin","tenantID":"","authMethod":"usernamePassword","product":"pro"}]
+    """
+
+    private func server(_ settings: AppSettings, _ id: UUID) throws -> MDMConnection {
+        guard case .mdm(let server) = try #require(settings.connections.record(id: id)) else {
+            throw CancellationError()
+        }
+        return server
+    }
+
+    @Test("A Jamf Pro address without a scheme reads with https:// and its requests go to https://")
+    func jamfPro() async throws {
+        let settings = Fixture(apple: nil, mdm: Self.jamfServers).settings()
+        let pro = try server(settings, SavedData.proClientID)
+        #expect(pro.connection.serverURL == "https://myorg.example.com")
+        #expect(pro.connection.issues.isEmpty)
+
+        let mock = readServer { request in
+            request.path.hasSuffix("/v3/computer-prestages") ? .json(200, #"{"totalCount":0,"results":[]}"#) : nil
+        }
+        let client = try #require(JamfClient(config: pro, secret: { "SECRET-client" }, session: mock.session))
+        _ = try await client.prestages(family: .computer)
+        #expect(!mock.requests.isEmpty)
+        #expect(mock.requests.allSatisfy { $0.url.scheme == "https" && $0.url.host() == "myorg.example.com" })
+    }
+
+    @Test("A Jamf School address without a scheme reads with https:// and its requests go to https://")
+    func jamfSchool() async throws {
+        let settings = Fixture(apple: nil, mdm: Self.jamfServers).settings()
+        let school = try server(settings, SavedData.schoolServerID)
+        #expect(school.connection.serverURL == "https://school.example.com")
+        #expect(school.connection.issues.isEmpty)
+
+        let mock = MockServer { request in
+            request.path == "/api/devices" ? .json(200, #"{"devices":[]}"#) : .json(200, "{}")
+        }
+        let client = try #require(JamfSchoolClient(config: school, secret: "SECRET-api-key", session: mock.session))
+        _ = try await client.fleet()
+        #expect(!mock.requests.isEmpty)
+        #expect(mock.requests.allSatisfy { $0.url.scheme == "https" && $0.url.host() == "school.example.com" })
+    }
+
+    @Test("Nothing is written until an edit, which saves https:// and keeps the secret")
+    func savedWithSchemeAtTheNextEdit() throws {
+        let fixture = Fixture(apple: nil, mdm: Self.jamfServers)
+        fixture.secrets.setSecret("SECRET-client", for: "jamf.\(SavedData.proClientID.uuidString)")
+        let settings = fixture.settings()
+        var record = try #require(settings.connections.record(id: SavedData.proClientID))
+        record.connection = record.connection
+        #expect(record == settings.connections.record(id: SavedData.proClientID))
+
+        record.connection.name = "Renamed"
+        try settings.connections.save(record)
+        #expect(try fixture.savedServers().first { $0.id == SavedData.proClientID }?.baseURL == "https://myorg.example.com")
+        #expect(fixture.secrets.secret(for: "jamf.\(SavedData.proClientID.uuidString)") == "SECRET-client")
+    }
+
+    @Test("An address with https:// is read and saved exactly as before")
+    func httpsUnchanged() throws {
+        let fixture = Fixture()
+        let settings = fixture.settings()
+        var record = try #require(settings.connections.record(id: SavedData.proClientID))
+        #expect(record.connection.serverURL == "https://example.jamfcloud.com/")
+        #expect(record.connection.jamfProWebURL == "https://example.jamfcloud.com/")
+        record.connection.name = "Renamed"
+        try settings.connections.save(record)
+        #expect(try fixture.savedServers().first { $0.id == SavedData.proClientID }?.baseURL == "https://example.jamfcloud.com/")
+    }
+
+    @Test("An http:// address is refused before any request")
+    func httpRefused() async throws {
+        let settings = Fixture(apple: nil, mdm: Self.jamfServers).settings()
+        let plain = try server(settings, SavedData.proPasswordID)
+        #expect(plain.connection.serverURL == "http://plain.example.com")
+        let mock = readServer { _ in .json(200, #"{"totalCount":0,"results":[]}"#) }
+        let client = try #require(JamfClient(config: plain, secret: { "SECRET-password" }, session: mock.session))
+        await #expect(throws: (any Error).self) { _ = try await client.prestages(family: .computer) }
+        #expect(mock.requests.isEmpty, "nothing is sent over http://")
+    }
+
+    @Test("Settings asks for https:// for an http:// address; fixing only the scheme keeps the secret")
+    func httpAsksForHTTPS() throws {
+        let fixture = Fixture(apple: nil, mdm: Self.jamfServers)
+        fixture.secrets.setSecret("SECRET-password", for: "jamf.\(SavedData.proPasswordID.uuidString)")
+        let settings = fixture.settings()
+        var record = try #require(settings.connections.record(id: SavedData.proPasswordID))
+        #expect(record.connection.issues == [Self.message])
+
+        record.connection.serverURL = "https://plain.example.com"
+        #expect(record.connection.issues.isEmpty)
+        try settings.connections.save(record)
+        #expect(try fixture.savedServers().first { $0.id == SavedData.proPasswordID }?.baseURL == "https://plain.example.com")
+        #expect(fixture.secrets.secret(for: "jamf.\(SavedData.proPasswordID.uuidString)") == "SECRET-password")
+    }
+}
+
 // MARK: - Keychain names
 
 @MainActor

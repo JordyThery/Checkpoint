@@ -274,6 +274,14 @@ nonisolated struct MDMConnection: Identifiable, Codable, Hashable {
         return url
     }
 
+    /// The server URL as Settings and JTKit get it: `https://` added when the
+    /// saved address has no scheme (2.8.1 accepted one without), otherwise
+    /// exactly as saved. An `http://` address stays as it is, so it is refused.
+    var baseURLWithScheme: String {
+        let url = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        return url.isEmpty || url.contains("://") ? baseURL : "https://" + url
+    }
+
     /// Host that API requests are sent to. Empty for Intune, whose client
     /// addresses Microsoft Graph directly and needs no URL configured.
     var apiBaseURL: String {

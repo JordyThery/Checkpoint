@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.9.1 — 2026-11-01
+
+- **A Jamf Pro or Jamf School server URL saved without `https://` works
+  again,** as it did in 2.8.1. In 2.9.0 every lookup on such a connection
+  failed and Settings wouldn’t save it. Settings now shows the address with
+  `https://` and saves it so at the next edit; the stored secret is kept.
+  An `http://` address is still refused: change it to `https://`.
+- **The Activity Log shortcut is ⇧⌘L** since 2.9.0 (it was ⌥⌘L).
+- **Command confirmations ask for the PIN twice, and for the device count
+  when two or more devices are selected,** since 2.9.0.
+
 ## 2.9.0 — 2026-10-31
 
 ### Findings
