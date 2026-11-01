@@ -133,7 +133,7 @@ What this app waits for from Apple, Jamf or Microsoft, or must recheck: see WATC
 1. Bump `MARKETING_VERSION` (and `CURRENT_PROJECT_VERSION`) in the project, commit and tag `vX.Y.Z` **before** archiving. The version is compiled into the app; verify it with `PlistBuddy -c "Print :CFBundleShortVersionString"` before zipping.
 2. Archive, sign with Developer ID, notarize and staple (steps 2–3 are from notes, not checked against a script). To judge signing, use `codesign -dvvv` on the built app or Xcode's Signing pane, not `security find-identity`.
 3. Verify: `codesign --verify --deep --strict`, `spctl -a -vvv -t install`, `xcrun stapler validate`. Zip with `ditto -c -k --keepParent` as `Checkpoint-X.Y.Z.zip`, unzip it elsewhere and run `spctl` again.
-4. GitHub release with the zip and short release notes. The in-app updater reads `releases/latest`.
+4. GitHub release with the zip and short release notes. The in-app updater reads `releases/latest`. Release notes (CHANGELOG entries and GitHub release notes) are for the end user: professional and concise, saying what changed for them, and never mentioning the release check, reviews, tests, test targets, AI tools, JTKit step numbers or how a problem was found (decided by Jordy on 2026-11-01).
 5. Update README and `docs/` if anything they say changed.
 6. Website: follow ../jordythery.be/CLAUDE.md, section “When an app is released”. Every release checks this app's card on apps.html, and its own page if it has one, against the released README and CHANGELOG, and changes them on a branch with a pull request. Jordy merges, which publishes the site.
 7. Then follow the release gate in JTKit/ROADMAP.md.
