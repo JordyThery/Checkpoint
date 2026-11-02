@@ -439,7 +439,10 @@ final class AppSettings {
     static let shared = TestRun.isUnitTestHost
         ? UnderTest.unitTestHostSettings()
         : DemoMode.isSandboxLaunch
-            ? AppSettings(defaults: DemoMode.sandboxDefaults(), secrets: SandboxSecretStore())
+            // A live UI test is a sandbox launch too: settings in memory, the
+            // release check's connections and its secrets (JTKit's `LiveLaunch`).
+            ? AppSettings(defaults: DemoMode.sandboxDefaults(),
+                          secrets: LiveLaunch.isSwitched ? LiveSecrets() : SandboxSecretStore())
             : AppSettings()
 
     /// Whether these settings are the saved connections: the app's own
@@ -475,10 +478,11 @@ final class AppSettings {
     /// Kept, rather than shown again each launch, because running against one
     /// service is a deliberate setup for some people.
     var configurationHintDismissed: Bool { didSet { save() } }
-    // The appearance and the daily update check are not stored here: JTKit's
-    // Settings window keeps them under "appearance" and "checksForUpdates"
-    // (stored keys: never rename). Saving a copy here too would overwrite
-    // them whenever another setting changed.
+    // The daily update check is not stored here: JTKit's Settings window
+    // keeps it under "checksForUpdates" (stored key: never rename). Saving a
+    // copy here too would overwrite it whenever another setting changed.
+    // The app follows the Mac's appearance; an "appearance" saved by an
+    // earlier version is ignored.
 
     /// Demo Mode: sample organizations and connections instead of the saved
     /// ones (JTKit's `DemoWorld`). Saved under `demoMode`.
@@ -504,7 +508,8 @@ final class AppSettings {
         LegacyABMMigration.run(defaults: defaults, secrets: secrets)
         connections = ConnectionStore(
             storage: CheckpointConnectionStorage(defaults: defaults, edits: edits),
-            secrets: [.main: SecretLocation(store: reporting, account: CheckpointSecrets.account(for:))])
+            secrets: [.main: SecretLocation(store: reporting, account: CheckpointSecrets.account(for:))],
+            liveRecord: CheckpointConnection.live)
         appleChoiceID = defaults.string(forKey: ConnectionChoiceKeys.apple).flatMap(UUID.init(uuidString:))
         mdmChoiceID = defaults.string(forKey: ConnectionChoiceKeys.mdm).flatMap(UUID.init(uuidString:))
         configurationHintDismissed = defaults.bool(forKey: "configurationHintDismissed")
@@ -513,8 +518,10 @@ final class AppSettings {
 
     /// A connection's secret: an MDM connection's client secret, password or
     /// API key, or an Apple organization's private key.
-    func secret(for record: CheckpointConnection) -> String? {
-        connections.secret(.main, for: record.connection)
+    /// - Throws: `SecretStoreError` when the Keychain can't be read, which
+    ///   isn't the same as no secret.
+    func readSecret(for record: CheckpointConnection) throws -> String? {
+        try connections.readSecret(.main, for: record.connection)
     }
 
     private func saveChoice(_ id: UUID?, _ key: String) {

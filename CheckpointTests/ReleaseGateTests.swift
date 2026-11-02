@@ -262,7 +262,7 @@ struct PartialWriteTests {
         harness.model.reports = [report]
         #expect(await message { try await harness.model.setMDMServer(reports: [report], to: "S1") } != nil)
         let posted = try #require(harness.server.requests.firstIndex { $0.path == "/v1/orgDeviceActivities" && $0.method == "POST" })
-        #expect(harness.server.requests[posted...].contains { $0.path == "/v1/orgDevices/A" }, "the row was read again")
+        #expect(harness.server.requests[posted...].contains { Self.readsDevice($0, "A") }, "the row was read again")
     }
 
     @Test("Unassign across two servers: when the second can't be submitted, the first is followed and both are reported")
@@ -286,7 +286,14 @@ struct PartialWriteTests {
         #expect(text.contains("1 of 2 devices weren’t sent"))
         #expect(harness.server.requests.contains { $0.path == "/v1/orgDeviceActivities/ACT-1" }, "the first was followed")
         #expect(harness.actions.last?.isFailure == true)
-        #expect(harness.server.requests.contains { $0.path == "/v1/orgDevices/A" })
+        #expect(harness.server.requests.contains { Self.readsDevice($0, "A") })
+    }
+
+    /// A read of the device: on its own, or with Apple's serial number filter.
+    static func readsDevice(_ request: RecordedRequest, _ serial: String) -> Bool {
+        request.path == "/v1/orgDevices/\(serial)"
+            || (request.path == "/v1/orgDevices"
+                && request.queryValue("filter[serialNumber]")?.split(separator: ",").contains(Substring(serial)) == true)
     }
 
     @Test("Schedule Migration's confirmation counts only what is sent")
@@ -450,7 +457,7 @@ struct ScopeAndCacheTests {
         let base = CountingStore(["jamf.x": "S"])
         var changed: [String] = []
         let edits = ConnectionEdits()
-        edits.onChange = { changed.append($0.uuidString) }
+        edits.onChange = { id, _ in changed.append(id.uuidString) }
         let store = ReportingSecretStore(base: base, edits: edits)
         #expect(try store.hasSecret(for: "jamf.x"))
         #expect(try store.readSecret(for: "jamf.x") == "S")
@@ -509,4 +516,62 @@ private final class Answers: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     func next() -> Int { lock.withLock { defer { count += 1 }; return count } }
+}
+
+@Suite("2.10: Apple's serial filter and a renamed organization")
+@MainActor
+struct AppleFilterTests {
+
+    /// A fake Apple that answers the serial filter with the devices it holds.
+    static func filterServer(holding held: Set<String>) -> MockServer {
+        appleServer { request in
+            switch request.path {
+            case "/v1/mdmServers":
+                return .json(200, #"{"data":[]}"#)
+            case "/v1/orgDevices":
+                guard let filter = request.queryValue("filter[serialNumber]") else { return nil }
+                let items = filter.split(separator: ",").map(String.init).filter(held.contains)
+                    .map { #"{"type":"orgDevices","id":"\#($0)","attributes":\#(AppleFixtures.device($0))}"# }
+                return .json(200, #"{"data":[\#(items.joined(separator: ","))]}"#)
+            default:
+                if request.path.hasSuffix("/relationships/assignedServer") { return .json(200, #"{"data":null}"#) }
+                return nil
+            }
+        }
+    }
+
+    @Test("A small lookup asks Apple for its devices together, with the serial filter")
+    func filteredLookup() async throws {
+        let server = Self.filterServer(holding: ["AAA111"])
+        let harness = AppleHarness(server)
+        harness.model.abmScope = .organization(SavedData.businessID)
+        await harness.model.lookUp(serialsText: "AAA111 BBB222")
+        let filtered = server.requests.filter { $0.path == "/v1/orgDevices" }
+        #expect(filtered.count == 1)
+        #expect(filtered.first?.queryValue("filter[serialNumber]") == "AAA111,BBB222")
+        #expect(!server.requests.contains { $0.path == "/v1/orgDevices/AAA111" }, "a device the filter returned isn't read again")
+        #expect(harness.model.reports.first { $0.serial == "AAA111" }?.abm.value != nil)
+        guard case .notFound? = harness.model.reports.first(where: { $0.serial == "BBB222" })?.abm else {
+            Issue.record("a serial Apple doesn't hold is not in the organization")
+            return
+        }
+    }
+
+    @Test("Renaming an organization keeps what was read from it; another edit doesn't")
+    func renameKeepsSnapshot() throws {
+        let harness = AppleHarness()
+        let settings = harness.model.settings
+        harness.model.abmScope = .organization(SavedData.businessID)
+        harness.model.abmSnapshots[SavedData.businessID] = ABMSnapshot(devices: [:], serverIDBySerial: [:], servers: [],
+                                                                        capturedAt: harness.time.now)
+
+        var record = try #require(settings.connections.record(id: SavedData.businessID))
+        record.connection.name = "Renamed Organization"
+        try settings.connections.save(record)
+        #expect(harness.model.abmSnapshots[SavedData.businessID] != nil, "a rename keeps the snapshot")
+
+        record.connection.keyID = "OTHERKEY1"
+        try settings.connections.save(record)
+        #expect(harness.model.abmSnapshots[SavedData.businessID] == nil, "a new key ID reads the organization again")
+    }
 }

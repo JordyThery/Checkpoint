@@ -169,10 +169,12 @@ nonisolated final class ABMClient: Sendable {
         session: URLSession = .shared,
         clock: ABMClock = .live,
         rateLimit: RateLimit? = ABM.rateLimit,
-        writeGuard: ActionGuard = .off
+        writeGuard: ActionGuard = .off,
+        waits: RequestWaits? = nil
     ) {
         self.writeGuard = writeGuard
-        let recorder = ABM.recorder(kind.service, session: session, log: log, connection: connectionName)
+        var recorder = ABM.recorder(kind.service, session: session, log: log, connection: connectionName)
+        recorder.waits = waits
         let tokens = ABM.TokenProvider(service: kind.service, clientID: clientID, keyID: keyID, privateKey: privateKey,
                                    recorder: recorder, now: clock.now)
         let sleep = clock.sleep
@@ -189,6 +191,9 @@ nonisolated final class ABMClient: Sendable {
     }
 
     func device(serial: String) async throws -> ABMDevice? { try await client.device(serial: serial) }
+    /// Several devices by serial, 50 to a request (Apple's serial number
+    /// filter); keyed by the serial uppercased, absent when not in the organization.
+    func devices(serials: [String]) async throws -> [String: ABMDevice] { try await client.devices(serials: serials) }
     func appleCareCoverage(serial: String) async throws -> [AppleCareCoverage] { try await client.appleCareCoverage(serial: serial) }
     func activationLock(serial: String) async throws -> ABMActivationLock? { try await client.activationLock(serial: serial) }
     func assignedServerID(serial: String) async throws -> String? { try await client.assignedServerID(serial: serial) }

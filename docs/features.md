@@ -45,7 +45,7 @@ A device belongs to one organization at a time, so there is no ambiguity to reso
 
 **Apple actions work in one organization at a time.** Every one of them names an MDM server, and a server ID means nothing outside the organization that issued it. A single device always resolves to one organization, so the inspector keeps working as usual; a bulk selection spanning two organizations disables the Apple actions and says which organizations are involved. The Jamf and Intune side is unaffected — it has one connection either way.
 
-Searching several organizations doesn’t mean reading them. Below the bulk threshold Checkpoint asks each organization about each device, which is cheaper than it sounds: an organization that doesn’t hold the device says so in one request and costs nothing more, so a serial costs one request per organization plus two for whichever one has it. A handful of serials across two organizations is a second’s work.
+Searching several organizations doesn’t mean reading them. Below the bulk threshold Checkpoint asks each organization for all the lookup’s devices at once, fifty serial numbers to a request. An organization that doesn’t hold a device costs nothing more for it, and the one that does costs two requests (its assignment and its AppleCare coverage). A handful of serials across two organizations is a second’s work.
 
 At 15 devices or more each organization is read in full instead, as a single-organization lookup does. Apple’s quota is per organization, so those reads run at the same time and the wait is the slowest organization rather than the sum. Snapshots are then cached per organization for the session, and a lookup about to spend that minute asks first.
 
@@ -71,7 +71,7 @@ All Connections reads two Platform API connections to different environments sep
 
 ## Reading in bulk
 
-At 15 devices or more the Apple organization is read in bulk instead of one device at a time, after you confirm it. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device doesn’t scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
+At 15 devices or more the Apple organization is read in bulk instead, after you confirm it. Apple allows an organization only about twenty requests a minute, and each device still costs a request for its assignment, so asking per device doesn’t scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
 
 **AppleCare coverage** is the one thing not available in bulk, because Apple serves it only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device. **Passcode state on Jamf School** works the same way, for the same reason: it appears only in that product’s per-device record, not in its device list.
 
@@ -183,7 +183,9 @@ Every service is logged the same way, including Microsoft Graph. The log is held
 
 ![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
 
-Copy and export each come in a masked form, replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognizable without being named. Use it when attaching a log to a bug report.
+Copy Log and the export each come in a masked form (Copy Log, Devices Masked and Export for Bug Report), replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognizable without being named. Use it when attaching a log to a bug report. Copy Entry copies one entry unmasked.
+
+While a service asks Checkpoint to wait before trying a request again (Jamf’s or Microsoft’s “try again in 40 s”, Apple’s per-minute limit), the wait shows in the window’s status bar with a Stop button, which ends the wait and stops those requests.
 
 ## Demo mode
 

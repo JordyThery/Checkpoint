@@ -568,14 +568,17 @@ actor JamfClient {
     ///   - secret: the client secret or password, read at each sign-in.
     ///   - log: where requests are recorded; nil records nothing.
     ///   - session: replaced in tests.
+    ///   - waits: where waits before a retry show while they last.
     init?(config: MDMConnection, secret: @escaping @Sendable () throws -> String,
-          log: ActivityLog? = nil, session: URLSession = .shared, commandGuard: ActionGuard = .off) {
+          log: ActivityLog? = nil, session: URLSession = .shared, commandGuard: ActionGuard = .off,
+          waits: RequestWaits? = nil) {
         // An Entra app registration can't sign in to Jamf Pro; the editor
         // offers it only for Intune.
         guard config.authMethod != .entraApp,
               let url = URL(string: config.apiBaseURL), url.host() != nil else { return nil }
         let recorder = RequestRecorder(session: session, log: log,
-                                       service: ActivityService.jamfPro.label, connection: config.displayName)
+                                       service: ActivityService.jamfPro.label, connection: config.displayName,
+                                       waits: waits)
         authMethod = config.authMethod
         self.commandGuard = commandGuard
         do {
@@ -728,7 +731,7 @@ actor JamfClient {
     /// the PIN of Lock and Wipe Computer) comes from the confirmation.
     func send(_ command: MDMCommand, to targets: [MDMCommand.Target],
               approval: MDMCommand.Confirmation.Approval?) async throws -> MDMCommand.Result {
-        try commandGuard.check("\(command.title) (Jamf Pro client), \(targets.count) device(s)")
+        try commandGuard.check(command, "\(command.title) (Jamf Pro client), \(targets.count) device(s)")
         return try await jamf().send(command, to: targets, approval: approval)
     }
 

@@ -50,6 +50,20 @@ nonisolated enum CheckpointConnection: ConnectionRecord {
         }
     }
 
+    /// The same entry under another name, to tell a rename from other edits.
+    func renamed(_ name: String) -> CheckpointConnection {
+        var copy = self
+        switch copy {
+        case .apple(var org):
+            org.name = name
+            copy = .apple(org)
+        case .mdm(var server):
+            server.name = name
+            copy = .mdm(server)
+        }
+        return copy
+    }
+
     /// The name in the toolbar and the menu.
     var displayName: String {
         switch self {
@@ -75,6 +89,22 @@ nonisolated enum CheckpointConnection: ConnectionRecord {
                 self = .mdm(server)
             }
         }
+    }
+
+    /// One of the release check's connections under the live-check switch
+    /// (JTKit's `LiveLaunch`), kept in memory with its own ID.
+    static func live(_ connection: Connection) -> CheckpointConnection {
+        var record = new(for: connection.service)
+        switch record {
+        case .apple(var org):
+            org.id = connection.id
+            record = .apple(org)
+        case .mdm(var server):
+            server.id = connection.id
+            record = .mdm(server)
+        }
+        record.connection = connection
+        return record
     }
 
     /// A new, unsaved entry for the service chosen with +.
@@ -227,8 +257,10 @@ final class CheckpointConnectionStorage: ConnectionStorage {
 
         let before = (savedOrgs ?? []).map(CheckpointConnection.apple) + (savedServers ?? []).map(CheckpointConnection.mdm)
         let ids = Set(before.map(\.id) + records.map(\.id))
-        for id in ids where before.first(where: { $0.id == id }) != records.first(where: { $0.id == id }) {
-            edits?.changed(id)
+        for id in ids {
+            let old = before.first { $0.id == id }, new = records.first { $0.id == id }
+            guard old != new else { continue }
+            edits?.changed(id, onlyName: old.map { $0.renamed(new?.connection.name ?? "") } == new)
         }
     }
 
@@ -255,10 +287,11 @@ final class CheckpointConnectionStorage: ConnectionStorage {
 /// a key holding the secret.
 @MainActor
 final class ConnectionEdits {
-    var onChange: ((UUID) -> Void)?
+    /// The connection's ID, and whether only its name changed.
+    var onChange: ((UUID, _ onlyName: Bool) -> Void)?
 
-    func changed(_ id: UUID) {
-        onChange?(id)
+    func changed(_ id: UUID, onlyName: Bool = false) {
+        onChange?(id, onlyName)
     }
 
     /// A Keychain item was written: `jamf.<UUID>` or `abm.<UUID>`.
@@ -281,7 +314,7 @@ nonisolated struct ReportingSecretStore: SecretStore {
     let edits: ConnectionEdits
 
     func secret(for account: String) -> String? {
-        base.secret(for: account)
+        try? base.readSecret(for: account)
     }
 
     @discardableResult
@@ -305,6 +338,28 @@ nonisolated struct ReportingSecretStore: SecretStore {
 
     func readSecret(for account: String) throws -> String? {
         try base.readSecret(for: account)
+    }
+}
+
+/// Under the live-check switch: the release check's secrets (JTKit's
+/// `LiveLaunch.secrets`, by connection ID) read by Checkpoint's account
+/// names, `jamf.<UUID>` and `abm.<UUID>`. Writes are refused and recorded.
+nonisolated struct LiveSecrets: SecretStore {
+    private static func id(_ account: String) -> String {
+        account.split(separator: ".", maxSplits: 1).last.map(String.init) ?? account
+    }
+
+    func secret(for account: String) -> String? {
+        try? readSecret(for: account)
+    }
+
+    func readSecret(for account: String) throws -> String? {
+        try LiveLaunch.secrets.readSecret(for: Self.id(account))
+    }
+
+    @discardableResult
+    func setSecret(_ secret: String?, for account: String) -> Bool {
+        LiveLaunch.secrets.setSecret(secret, for: Self.id(account))
     }
 }
 
@@ -335,7 +390,13 @@ nonisolated enum LegacyABMMigration {
         }
         guard let data = defaults.data(forKey: configKey),
               let legacy = try? JSONDecoder().decode(LegacyABMConfig.self, from: data) else { return }
-        let legacyPEM = secrets.secret(for: ABMConfig.legacyPrivateKeyKeychainKey)
+        // A Keychain that can't be read leaves everything as it is, for the next launch.
+        let legacyPEM: String?
+        do {
+            legacyPEM = try secrets.readSecret(for: ABMConfig.legacyPrivateKeyKeychainKey)
+        } catch {
+            return
+        }
         guard !legacy.clientID.isEmpty || !(legacyPEM ?? "").isEmpty else {
             defaults.removeObject(forKey: configKey)
             return
@@ -343,7 +404,7 @@ nonisolated enum LegacyABMMigration {
         let org = ABMConfig(name: "Apple Business", clientID: legacy.clientID, keyID: legacy.keyID)
         if let legacyPEM, !legacyPEM.isEmpty {
             secrets.setSecret(legacyPEM, for: org.privateKeyKeychainKey)
-            guard secrets.secret(for: org.privateKeyKeychainKey) == legacyPEM else {
+            guard (try? secrets.readSecret(for: org.privateKeyKeychainKey)) == legacyPEM else {
                 // Not left half-moved under the new account either.
                 secrets.setSecret(nil, for: org.privateKeyKeychainKey)
                 return

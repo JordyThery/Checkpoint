@@ -466,10 +466,23 @@ final class LookupModel {
 
     /// A connection's secret: the demo's fake one for a demo connection, else
     /// the saved one. A demo connection never reads the Keychain.
-    func secret(for record: CheckpointConnection) -> String? {
-        if record.connection.isDemo { return try? demoSource(for: record)?.secret() }
-        return settings.secret(for: record)
+    /// - Throws: when the Keychain can't be read, which isn't "no secret".
+    func readSecret(for record: CheckpointConnection) throws -> String? {
+        if record.connection.isDemo { return try demoSource(for: record)?.secret() }
+        return try settings.readSecret(for: record)
     }
+
+    /// Whether a secret is saved, asked without reading it. A Keychain that
+    /// can't answer counts as yes: the client is made, and its sign-in, which
+    /// reads the secret, reports the Keychain's error where the user sees it.
+    func hasSavedSecret(_ record: CheckpointConnection) -> Bool {
+        if record.connection.isDemo { return demoSource(for: record) != nil }
+        return (try? settings.connections.hasSecret(.main, for: record.connection)) ?? true
+    }
+
+    /// Why a connection's secret couldn't be read from the Keychain, for a
+    /// client that needs it when it is made (Jamf School).
+    @ObservationIgnored private var secretReadFailures: [UUID: String] = [:]
 
     /// What a demo connection's client uses instead of the Keychain and the
     /// network; nil for a saved connection, which never gets one.
@@ -555,8 +568,10 @@ final class LookupModel {
     /// is read once and kept.
     private var jamfSchoolTimeZones: [UUID: TimeZone] = [:]
     /// The last organization snapshot, per Apple Business organization.
-    /// Discarded whenever Checkpoint changes anything in Apple Business.
-    private var abmSnapshots: [UUID: ABMSnapshot] = [:]
+    /// Discarded whenever Checkpoint changes anything in Apple Business, and
+    /// when the organization's sign-in is edited (not when it's only renamed).
+    /// Not private: tests set and read it.
+    var abmSnapshots: [UUID: ABMSnapshot] = [:]
     /// Whether the Device Compliance integration is on, per Jamf Pro server.
     /// Instance-wide, so read once and kept. Nil means it has not been
     /// determined, which is not the same as off.
@@ -595,6 +610,10 @@ final class LookupModel {
     /// What is refused under tests on saved (non-demo) connections.
     let underTest: UnderTestGuards
 
+    /// Waits before a retry, shown in the window's status line with Stop
+    /// while they last (every client's recorder reports here).
+    let waits = RequestWaits()
+
     /// - Parameter underTest: `.off` only for unit tests whose requests go to
     ///   a mock server.
     init(settings: AppSettings, log: ActivityLog? = nil, session: URLSession = .shared, abmClock: ABMClock = .live,
@@ -612,19 +631,28 @@ final class LookupModel {
         // the default: most fleets are served by one organization at a time
         // — an MSP works per customer — and a combined read should never be
         // the surprise. JTKit's "All" is never saved, which guarantees it.
-        settings.edits.onChange = { [weak self] id in self?.forgetClients(for: id) }
+        settings.edits.onChange = { [weak self] id, onlyName in self?.forgetClients(for: id, keepingReads: onlyName) }
     }
 
     /// Drops the connection's client after it was edited (its secret
     /// included) or deleted. A Jamf Pro client still in use by a running
     /// lookup forgets its token too, so its next request signs in with the
     /// secret saved now.
-    func forgetClients(for id: UUID) {
+    /// - Parameter keepingReads: only the name changed: the clients go (they
+    ///   carry the name into the activity log), but what was read stays, so
+    ///   a renamed organization's snapshot isn't read again.
+    func forgetClients(for id: UUID, keepingReads: Bool = false) {
         hasPrivateKey[id] = nil
         keyRevision += 1
         abmClients[id] = nil
         jamfSchoolClients[id] = nil
         intuneClients[id] = nil
+        guard !keepingReads else {
+            if let jamf = jamfClients.removeValue(forKey: id)?.client {
+                pendingForget = Task { await jamf.forgetToken() }
+            }
+            return
+        }
         // What was read from the connection goes too: an edit can point the
         // same ID at another instance, whose lists and ADE map differ.
         taxonomyByConnection[id] = nil
@@ -887,7 +915,7 @@ final class LookupModel {
         _ = keyRevision    // redraws once a saved key changes
         return abmOrgsInScope.contains { org in
             if let known = hasPrivateKey[org.id] { return known }
-            let has = secret(for: .apple(org)) != nil
+            let has = hasSavedSecret(.apple(org))
             hasPrivateKey[org.id] = has
             return has
         }
@@ -980,8 +1008,10 @@ final class LookupModel {
 
     /// The refusal when the connection an action acts through has no saved
     /// secret: the same sentence everywhere.
-    static func noSavedSecretMessage(_ connection: MDMConnection?) -> String {
-        connection.map { "\($0.displayName) has no saved secret." } ?? "No MDM connection is selected or configured."
+    /// Why a connection has no client: its secret couldn't be read, or none is saved.
+    func noSavedSecretMessage(_ connection: MDMConnection?) -> String {
+        guard let connection else { return "No MDM connection is selected or configured." }
+        return secretReadFailures[connection.id] ?? "\(connection.displayName) has no saved secret."
     }
 
     /// The connection an action on this record acts through: the record's
@@ -1441,7 +1471,7 @@ final class LookupModel {
     func fileVaultRecoveryKey(for report: DeviceReport) async throws -> JamfFileVaultKey {
         let id = try computerID(for: report, action: "FileVault recovery keys")
         try checkSecretRead("FileVault recovery key", for: report)
-        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: Self.noSavedSecretMessage(connection(for: report))) }
+        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: noSavedSecretMessage(connection(for: report))) }
         // The activity log records that a key was read, never the key itself.
         // Jamf Pro keeps its own audit entry for this; ours makes it visible
         // without having to go and look.
@@ -1459,7 +1489,7 @@ final class LookupModel {
     func recoveryLockPassword(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Recovery Lock passwords")
         try checkSecretRead("Recovery Lock password", for: report)
-        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: Self.noSavedSecretMessage(connection(for: report))) }
+        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: noSavedSecretMessage(connection(for: report))) }
         return try await recording(.jamfPro, JamfPro.Secret.recoveryLockPassword.actionSummary(serial: report.serial),
                                    serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let password = try await jamf.recoveryLockPassword(computerID: id) else {
@@ -1474,7 +1504,7 @@ final class LookupModel {
     func deviceLockPIN(for report: DeviceReport) async throws -> String {
         let id = try computerID(for: report, action: "Device lock PINs")
         try checkSecretRead("Device lock PIN", for: report)
-        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: Self.noSavedSecretMessage(connection(for: report))) }
+        guard let jamf = makeJamfClient(for: report) else { throw ActionError(message: noSavedSecretMessage(connection(for: report))) }
         return try await recording(.jamfPro, JamfPro.Secret.deviceLockPIN.actionSummary(serial: report.serial),
                                    serials: [report.serial], connectionName: connection(for: report)?.displayName) {
             guard let pin = try await jamf.deviceLockPIN(computerID: id) else {
@@ -1901,7 +1931,7 @@ final class LookupModel {
     /// record came from (never the toolbar's), or nil without a web address.
     func blueprintURL(_ id: String, for report: DeviceReport) -> URL? {
         guard let base = connection(for: report)?.normalizedBaseURL, !base.isEmpty else { return nil }
-        return URL(string: "\(base)/view/mfe/blueprints/\(id)")
+        return JamfWebLink.blueprint(id: id, base: base)
     }
 
     /// The managed local administrator accounts for a Mac, or an empty list
@@ -1944,7 +1974,7 @@ final class LookupModel {
         _ = try actingConnection(for: info)
         try checkSecretRead("Local administrator password", for: report)
         guard let jamf = makeJamfClient(for: report) else {
-            throw ActionError(message: Self.noSavedSecretMessage(connection(for: report)))
+            throw ActionError(message: noSavedSecretMessage(connection(for: report)))
         }
         let summary = JamfPro.Secret.localAdminPassword.actionSummary(serial: report.serial, account: account.username)
         return try await recording(.jamfPro, summary, serials: [report.serial], connectionName: connection(for: report)?.displayName) {
@@ -2102,7 +2132,7 @@ final class LookupModel {
         let intune = makeIntuneClient(for: connection)
         let jamf = (school == nil && intune == nil) ? makeJamfClient(for: connection) : nil
         guard school != nil || intune != nil || jamf != nil else {
-            return entries.map { "\($0.serial): \(Self.noSavedSecretMessage(connection))" }
+            return entries.map { "\($0.serial): \(noSavedSecretMessage(connection))" }
         }
         var failures: [String] = []
         for entry in entries {
@@ -2170,7 +2200,7 @@ final class LookupModel {
         if let reason = mdmActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let connection = mdmActionConnection(for: reports),
               let school = makeJamfSchoolClient(for: connection) else {
-            throw ActionError(message: Self.noSavedSecretMessage(mdmActionConnection(for: reports)))
+            throw ActionError(message: noSavedSecretMessage(mdmActionConnection(for: reports)))
         }
         let moving = locationMoves(reports, to: locationID)
         guard !moving.isEmpty else { return }
@@ -2227,7 +2257,7 @@ final class LookupModel {
     }
 
     /// Devices per Jamf School location move, as JTKit sends them.
-    static let locationMoveBatchSize = 20
+    static let locationMoveBatchSize = JamfSchool.moveBatchSize
 
     /// Moves the devices of the given kind between PreStage scopes. Pass nil
     /// to remove them from their current PreStage without adding them to
@@ -2236,7 +2266,7 @@ final class LookupModel {
         if let reason = mdmActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let connection = mdmActionConnection(for: reports),
               let jamf = makeJamfClient(for: connection) else {
-            throw ActionError(message: Self.noSavedSecretMessage(mdmActionConnection(for: reports)))
+            throw ActionError(message: noSavedSecretMessage(mdmActionConnection(for: reports)))
         }
         let family: JamfPrestageFamily = kind == .computer ? .computer : .mobileDevice
         var removeByPrestage: [String: [String]] = [:]
@@ -2312,7 +2342,7 @@ final class LookupModel {
             switch connection.product {
             case .jamfPro:
                 guard let jamf = makeJamfClient(for: connection) else {
-                    throw ActionError(message: Self.noSavedSecretMessage(connection))
+                    throw ActionError(message: noSavedSecretMessage(connection))
                 }
                 switch info.kind {
                 case .computer:
@@ -2322,7 +2352,7 @@ final class LookupModel {
                 }
             case .jamfSchool:
                 guard let school = makeJamfSchoolClient(for: connection) else {
-                    throw ActionError(message: Self.noSavedSecretMessage(connection))
+                    throw ActionError(message: noSavedSecretMessage(connection))
                 }
                 try await school.setAssetTag(udid: info.recordID, assetTag: tag)
             case .intune:
@@ -2339,7 +2369,7 @@ final class LookupModel {
         if let reason = mdmActionUnavailableReason(for: reports) { throw ActionError(message: reason) }
         guard let connection = mdmActionConnection(for: reports),
               let jamf = makeJamfClient(for: connection) else {
-            throw ActionError(message: Self.noSavedSecretMessage(mdmActionConnection(for: reports)))
+            throw ActionError(message: noSavedSecretMessage(mdmActionConnection(for: reports)))
         }
         let withRecords = siteMoves(reports, to: siteID)
         guard !withRecords.isEmpty else { return }
@@ -2441,13 +2471,13 @@ final class LookupModel {
         }
         let product = connection.product
         // Under tests no command reaches a tenant, test records included.
-        try guards(for: .mdm(connection)).commands.check(
+        try guards(for: .mdm(connection)).commands.check(command,
             "\(command.title(for: product)) (\(product.label)), \(Self.deviceCount(reports.map(\.serial)))")
         let school = makeJamfSchoolClient(for: connection)
         let intune = makeIntuneClient(for: connection)
         let jamf = (school == nil && intune == nil) ? makeJamfClient(for: connection) : nil
         guard school != nil || intune != nil || jamf != nil else {
-            throw ActionError(message: Self.noSavedSecretMessage(connection))
+            throw ActionError(message: noSavedSecretMessage(connection))
         }
         // Fail before doing any work, so a command the connection cannot carry
         // never gets as far as a confirmation prompt.
@@ -2500,8 +2530,7 @@ final class LookupModel {
         // key changes (`forgetClients`), so the Keychain is read only when a
         // client has to be made.
         if let kept = abmClients[config.id], kept.config == config { return kept.client }
-        guard config.isConfigured,
-              let pem = secret(for: .apple(config)), !pem.isEmpty else { return nil }
+        guard config.isConfigured, hasSavedSecret(.apple(config)) else { return nil }
         // Read from the Keychain at each sign-in, so a new key is used at the
         // next one, and the key isn't kept in the client.
         let store = settings.secretStore
@@ -2513,7 +2542,7 @@ final class LookupModel {
             clientID: config.clientID,
             keyID: config.keyID,
             privateKey: demoSource?.secret ?? { @Sendable in
-                guard let pem = store.secret(for: account), !pem.isEmpty else {
+                guard let pem = try store.readSecret(for: account), !pem.isEmpty else {
                     throw ActionError(message: "No private key is saved for “\(name)”.")
                 }
                 return pem
@@ -2525,7 +2554,8 @@ final class LookupModel {
             clock: abmClock,
             // Apple's limit for every real organization; only a demo one goes without.
             rateLimit: ABM.rateLimit(for: connection),
-            writeGuard: guards(for: .apple(config)).appleWrites
+            writeGuard: guards(for: .apple(config)).appleWrites,
+            waits: waits
         )
         abmClients[config.id] = (config, client)
         return client
@@ -2553,7 +2583,7 @@ final class LookupModel {
     func makeJamfClient(for config: MDMConnection) -> JamfClient? {
         guard config.product == .jamfPro else { return nil }
         if let kept = jamfClients[config.id], kept.config == config { return kept.client }
-        guard let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
+        guard hasSavedSecret(.mdm(config)) else { return nil }
         // Read from the Keychain at each sign-in, so a changed secret is used
         // at the next one.
         let store = settings.secretStore
@@ -2561,12 +2591,12 @@ final class LookupModel {
         let name = config.displayName
         let demoSource = demoSource(for: .mdm(config))
         guard let client = JamfClient(config: config, secret: demoSource?.secret ?? { @Sendable in
-            guard let secret = store.secret(for: account), !secret.isEmpty else {
+            guard let secret = try store.readSecret(for: account), !secret.isEmpty else {
                 throw JamfClient.APIError(message: "\(name) has no saved secret.")
             }
             return secret
         }, log: log, session: demoSource?.session ?? session,
-           commandGuard: guards(for: .mdm(config)).commands) else { return nil }
+           commandGuard: guards(for: .mdm(config)).commands, waits: waits) else { return nil }
         jamfClients[config.id] = (config, client)
         return client
     }
@@ -2576,7 +2606,7 @@ final class LookupModel {
     func makeIntuneClient(for config: MDMConnection) -> Graph.Client? {
         guard config.product == .intune else { return nil }
         if let kept = intuneClients[config.id], kept.config == config { return kept.client }
-        guard let saved = secret(for: .mdm(config)), !saved.isEmpty else { return nil }
+        guard hasSavedSecret(.mdm(config)) else { return nil }
         // Read from the Keychain at each sign-in, so a changed secret is used
         // at the next one.
         let store = settings.secretStore
@@ -2584,11 +2614,11 @@ final class LookupModel {
         let name = config.displayName
         let demoSource = demoSource(for: .mdm(config))
         guard let client = Self.intuneClient(for: config, secret: demoSource?.secret ?? { @Sendable in
-            guard let secret = store.secret(for: account), !secret.isEmpty else {
+            guard let secret = try store.readSecret(for: account), !secret.isEmpty else {
                 throw ActionError(message: "\(name) has no saved secret.")
             }
             return secret
-        }, log: log, session: demoSource?.session ?? session) else { return nil }
+        }, log: log, session: demoSource?.session ?? session, waits: waits) else { return nil }
         intuneClients[config.id] = (config, client)
         return client
     }
@@ -2596,8 +2626,10 @@ final class LookupModel {
     /// A Graph client for an Intune connection; nil when its tenant or
     /// client ID can't be used. Also for Test Connection, with the typed secret.
     nonisolated static func intuneClient(for config: MDMConnection, secret: @escaping @Sendable () throws -> String,
-                                         log: ActivityLog?, session: URLSession = .shared) -> Graph.Client? {
-        let recorder = Graph.recorder(session: session, log: log, connection: config.displayName)
+                                         log: ActivityLog?, session: URLSession = .shared,
+                                         waits: RequestWaits? = nil) -> Graph.Client? {
+        var recorder = Graph.recorder(session: session, log: log, connection: config.displayName)
+        recorder.waits = waits
         guard let tokens = try? Graph.TokenProvider(connection: config.connection, secret: secret, recorder: recorder) else {
             return nil
         }
@@ -2611,10 +2643,18 @@ final class LookupModel {
     func makeJamfSchoolClient(for config: MDMConnection) -> JamfSchoolClient? {
         guard config.product == .jamfSchool else { return nil }
         if let kept = jamfSchoolClients[config.id], kept.config == config { return kept.client }
-        guard let secret = secret(for: .mdm(config)), !secret.isEmpty else { return nil }
+        let secret: String?
+        do {
+            secret = try readSecret(for: .mdm(config))
+            secretReadFailures[config.id] = nil
+        } catch {
+            secretReadFailures[config.id] = error.localizedDescription
+            return nil
+        }
+        guard let secret, !secret.isEmpty else { return nil }
         let session = demoSource(for: .mdm(config))?.session ?? session
         guard let client = JamfSchoolClient(config: config, secret: secret, log: log, session: session,
-                                            commandGuard: guards(for: .mdm(config)).commands) else { return nil }
+                                            commandGuard: guards(for: .mdm(config)).commands, waits: waits) else { return nil }
         jamfSchoolClients[config.id] = (config, client)
         return client
     }
@@ -2632,6 +2672,11 @@ final class LookupModel {
         /// device against Apple's quota, a large lookup would crawl instead
         /// of saying plainly that the organization could not be read.
         var snapshotFailed = false
+        /// Without a snapshot: the lookup's devices, read together with
+        /// Apple's serial number filter (keyed by the serial uppercased), or
+        /// why that read failed.
+        var devices: [String: ABMDevice]?
+        var devicesFailure: String?
         var mdmServerNames: [String: String] = [:]
     }
 
@@ -2761,13 +2806,14 @@ final class LookupModel {
         // would mean asking each of them in turn.
         let orgsToRead = orgs ?? abmOrgsInScope
         // The threshold alone decides, however many organizations are in
-        // scope. Asking per device across several is far cheaper than it
-        // looks: an organization that does not hold the device answers 404
-        // to the first request and costs nothing more, so a serial costs one
-        // request per organization plus two for the one that has it. Reading
-        // an organization in full costs a request per thousand devices plus
-        // one per device management service, which on a real tenant is a few
-        // dozen and can cross Apple's per-minute quota on its own.
+        // scope. Below it, each organization is asked for the lookup's
+        // devices together (Apple's serial number filter, 50 to a request),
+        // so a serial costs nothing in an organization that doesn't hold it,
+        // and two requests (its assignment and AppleCare) in the one that
+        // does. Reading an organization in full costs a request per thousand
+        // devices plus one per device management service, which on a real
+        // tenant is a few dozen and can cross Apple's per-minute quota on
+        // its own.
         let readInBulk = deviceCount >= Self.snapshotThreshold
         let pairs = orgsToRead.compactMap { org in
             makeABMClient(for: org).map { (org: org, client: $0) }
@@ -2790,11 +2836,29 @@ final class LookupModel {
             for await (id, list) in group { byOrg[id] = list }
             return byOrg
         }
+        // The devices of a lookup without a snapshot, per organization, together.
+        let filtered = await withTaskGroup(of: (UUID, Result<[String: ABMDevice], any Error>).self) { group in
+            for pair in needServices where !readInBulk {
+                group.addTask {
+                    do { return (pair.org.id, .success(try await pair.client.devices(serials: serials))) }
+                    catch { return (pair.org.id, .failure(error)) }
+                }
+            }
+            var byOrg: [UUID: Result<[String: ABMDevice], any Error>] = [:]
+            for await (id, result) in group { byOrg[id] = result }
+            return byOrg
+        }
         for pair in pairs {
             let org = pair.org
             var entry = ABMOrgContext(id: org.id, name: org.displayName, kind: org.kind, client: pair.client)
             entry.snapshot = cachedSnapshot(for: org) ?? fresh[org.id]
             entry.snapshotFailed = readInBulk && entry.snapshot == nil
+            if entry.snapshot == nil, let result = filtered[org.id] {
+                switch result {
+                case .success(let devices): entry.devices = devices
+                case .failure(let error): entry.devicesFailure = error.localizedDescription
+                }
+            }
             if let list = entry.snapshot?.servers ?? (servers[org.id] ?? nil) {
                 mdmServersByOrg[org.id] = list
             }
@@ -2948,7 +3012,12 @@ final class LookupModel {
             target.proComputers = await computers
             target.proMobileDevices = await mobileDevices
         case .jamfSchool:
-            guard let school = makeJamfSchoolClient(for: connection) else { return nil }
+            guard let school = makeJamfSchoolClient(for: connection) else {
+                // A Keychain that couldn't be read shows in every row, not as "not configured".
+                guard let failure = secretReadFailures[connection.id] else { return nil }
+                target.schoolFailure = failure
+                return target
+            }
             target.schoolClient = school
             // The whole fleet in one request. Jamf School offers no
             // pagination and no per-device serial route worth using, and has
@@ -3087,8 +3156,14 @@ final class LookupModel {
                 assignmentUnknown: snapshot.unknownAssignments.contains(serial.uppercased())
             ))
         }
+        if let failure = org.devicesFailure { return .failed(failure) }
         do {
-            guard let device = try await org.client.device(serial: serial) else { return .notFound }
+            let found = if let devices = org.devices {
+                devices[serial.uppercased()]
+            } else {
+                try await org.client.device(serial: serial)
+            }
+            guard let device = found else { return .notFound }
             // A failed coverage read is left for the inspector, which reads
             // it again and shows the error; a failed server read is an
             // unknown assignment, never "unassigned".
@@ -3149,7 +3224,7 @@ final class LookupModel {
             // The console addresses a device by its UDID, which is also what
             // its API keys on, so the link needs nothing the lookup does not
             // already have.
-            webURL: target.consoleBaseURL.flatMap { URL(string: "\($0)/devices/details/\(device.udid)") },
+            webURL: target.consoleBaseURL.flatMap { JamfWebLink.schoolDevice(udid: device.udid, base: $0) },
             locationID: device.locationID,
             locationName: device.locationID.map { target.schoolLocationNames[$0] ?? "Location \($0)" },
             isManaged: device.isManaged,
@@ -3418,7 +3493,7 @@ final class LookupModel {
 
     /// One connection's record for one serial, from what the context read.
     nonisolated private static func fetchMDM(target: MDMTargetContext, serial: String) -> FetchState<ManagedDeviceInfo> {
-        if target.schoolClient != nil {
+        if target.schoolClient != nil || target.schoolFailure != nil {
             return fetchJamfSchool(target: target, serial: serial)
         }
         if target.intuneClient != nil {
@@ -3432,7 +3507,7 @@ final class LookupModel {
         if let failure = target.proComputers.failures[upper] { return .failed(failure) }
         if let record = target.proComputers.records[upper] {
             let prestageID = target.computerPrestageBySerial[serial]
-            let webURL = target.consoleBaseURL.flatMap { URL(string: "\($0)/computers.html?id=\(record.id)&o=r") }
+            let webURL = target.consoleBaseURL.flatMap { JamfWebLink.computer(id: record.id, base: $0) }
             return .found(ManagedDeviceInfo(
                 recordID: record.id,
                 connectionID: target.connectionID,
@@ -3466,7 +3541,7 @@ final class LookupModel {
         if let failure = target.proMobileDevices.failures[upper] { return .failed(failure) }
         if let record = target.proMobileDevices.records[upper] {
             let prestageID = target.mobilePrestageBySerial[serial]
-            let webURL = target.consoleBaseURL.flatMap { URL(string: "\($0)/mobileDevices.html?id=\(record.id)&o=r") }
+            let webURL = target.consoleBaseURL.flatMap { JamfWebLink.mobileDevice(id: record.id, base: $0) }
             return .found(ManagedDeviceInfo(
                 recordID: record.id,
                 connectionID: target.connectionID,

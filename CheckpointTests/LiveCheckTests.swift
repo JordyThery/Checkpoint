@@ -98,7 +98,7 @@ enum LiveConnections {
 
     /// A saved connection's secret, read from Checkpoint's Keychain items (never written).
     static func savedSecret(_ record: CheckpointConnection) throws -> String {
-        guard let secret = CheckpointSecrets.keychain.secret(for: CheckpointSecrets.account(for: record.connection)),
+        guard let secret = try CheckpointSecrets.keychain.readSecret(for: CheckpointSecrets.account(for: record.connection)),
               !secret.isEmpty else { throw LiveFailure("No saved secret for the connection matched to this role") }
         return secret
     }

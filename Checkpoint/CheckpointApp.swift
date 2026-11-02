@@ -27,8 +27,7 @@ import SwiftUI
                 DemoModeToggle(demo: settings.demo)
             }
         }
-        // JTKit's General tab starts with Appearance; Checkpoint's own general
-        // settings go below it.
+        // Checkpoint's own general settings make up the General tab.
         // Tabs open by name, so "Edit Connections…" opens Connections.
         SettingsWindow(updates: updates, opensTabsByName: true) {
             GeneralSettingsSection()

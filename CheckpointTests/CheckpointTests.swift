@@ -364,7 +364,8 @@ struct MappingTests {
 @MainActor
 @Suite("Server URLs saved without https://")
 struct SchemeLessAddressTests {
-    static let message = "Enter the server URL, starting with https://."
+    /// JTKit 1.1 adds https:// to an address without a scheme and refuses http://.
+    static let message = "Use an https:// address."
 
     /// A Jamf Pro and a Jamf School server as 2.8.1 saved them, and one on http://.
     static let jamfServers = """
@@ -491,8 +492,8 @@ struct KeychainNameTests {
         fixture.secrets.setSecret("pem", for: "abm.\(SavedData.businessID.uuidString)")
         fixture.secrets.setSecret("password", for: "jamf.\(SavedData.proPasswordID.uuidString)")
         let settings = fixture.settings()
-        #expect(settings.secret(for: try #require(settings.connections.record(id: SavedData.businessID))) == "pem")
-        #expect(settings.secret(for: try #require(settings.connections.record(id: SavedData.proPasswordID))) == "password")
+        #expect(try settings.readSecret(for: try #require(settings.connections.record(id: SavedData.businessID))) == "pem")
+        #expect(try settings.readSecret(for: try #require(settings.connections.record(id: SavedData.proPasswordID))) == "password")
     }
 
     @Test func savingAndDeletingUseTheSameItems() throws {

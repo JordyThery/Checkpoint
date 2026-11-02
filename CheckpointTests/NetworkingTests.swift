@@ -147,7 +147,8 @@ struct JamfProTests {
         let sites = try #require(server.requests.last)
         #expect(sites.url.host() == "eu.api.jamfcloud.com")
         #expect(sites.path == "/pro/v1/sites")
-        #expect(sites.header("X-Environment-Id") == "EEEEEEEE-1111-4000-8000-00000000E001")
+        // JTKit 1.1 sends the Environment ID lowercased.
+        #expect(sites.header("X-Environment-Id") == "eeeeeeee-1111-4000-8000-00000000e001")
         #expect(server.requests.first?.url.host() == "eu.api.jamfcloud.com")
     }
 
@@ -544,7 +545,7 @@ struct ClientCacheTests {
         let fixture = Fixture()
         let settings = fixture.settings()
         var told = [UUID]()
-        settings.edits.onChange = { told.append($0) }
+        settings.edits.onChange = { id, _ in told.append(id) }
         let config = try #require(settings.mdmConnections.first { $0.id == id })
 
         try settings.connections.save(.mdm(config), secrets: [.main: "new"])
