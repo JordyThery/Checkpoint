@@ -84,10 +84,11 @@ actor JamfSchoolClient {
     private let commandGuard: ActionGuard
 
     init?(config: MDMConnection, secret: String, log: ActivityLog? = nil, session: URLSession = .shared,
-          commandGuard: ActionGuard = .off) {
+          commandGuard: ActionGuard = .off, waits: RequestWaits? = nil) {
         self.commandGuard = commandGuard
         let recorder = RequestRecorder(session: session, log: log,
-                                       service: ActivityService.jamfSchool.label, connection: config.displayName)
+                                       service: ActivityService.jamfSchool.label, connection: config.displayName,
+                                       waits: waits)
         // The device list and a device's details are recorded also when they
         // succeed; personal blocks are hidden.
         guard let client = try? JamfSchool.Client(address: config.apiBaseURL, networkID: config.account, apiKey: secret,
@@ -135,21 +136,10 @@ actor JamfSchoolClient {
             isSupervised: device.isSupervised,
             enrollType: device.enrollType,
             depProfile: device.depProfile,
-            lastCheckin: wallClock(device.lastCheckIn),
+            // As Jamf School sent it: the instance's wall clock, placed in its zone later.
+            lastCheckin: device.lastCheckInText,
             assetTag: device.assetTag
         )
-    }
-
-    /// The list reports the check-in as the instance's wall clock without a
-    /// zone; JTKit reads it in the Mac's zone, so it is written back the same
-    /// way for Checkpoint to place in the instance's zone.
-    private static func wallClock(_ date: Date?) -> String? {
-        guard let date else { return nil }
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
-        formatter.timeZone = .current
-        return formatter.string(from: date)
     }
 
     // MARK: Automated Device Enrollment
@@ -183,7 +173,7 @@ actor JamfSchoolClient {
     /// The approval comes from the confirmation.
     func send(_ command: MDMCommand, to targets: [MDMCommand.Target],
               approval: MDMCommand.Confirmation.Approval?) async throws -> MDMCommand.Result {
-        try commandGuard.check("\(command.title) (Jamf School client), \(targets.count) device(s)")
+        try commandGuard.check(command, "\(command.title) (Jamf School client), \(targets.count) device(s)")
         return try await client.send(command, to: targets, approval: approval)
     }
 

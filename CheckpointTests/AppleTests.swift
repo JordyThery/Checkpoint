@@ -186,8 +186,8 @@ struct AppleSignInTests {
     func unreadableKey() async {
         let rig = AppleRig(pem: "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----")
         let text = await message { _ = try await rig.client.mdmServers() }
-        // The message says where to get the right file.
-        #expect(text?.hasPrefix("The file doesn’t contain a private key. Choose the .pem file downloaded when the API account was created.\n") == true)
+        // The message says where to get the right key (JTKit 1.1: pasted or from any text file).
+        #expect(text?.hasPrefix("That isn’t a private key. Use the whole key downloaded when the API account was created.\n") == true)
         #expect(rig.server.requests.isEmpty)
     }
 
@@ -1077,7 +1077,7 @@ struct AppleSecretTests {
         let harness = AppleHarness(appleServer { echo.answer($0) })
         let org = try #require(harness.model.settings.abmOrgs.first { $0.id == SavedData.businessID })
         _ = await harness.model.organizationSnapshot(for: org)
-        let pem = try #require(harness.model.settings.secret(for: .apple(org)))
+        let pem = try #require(try harness.model.settings.readSecret(for: .apple(org)))
         let assertion = harness.server.requests.first { $0.path == AppleFixtures.tokenPath }
             .flatMap { AppleFixtures.form($0)["client_assertion"] }
         let text = everythingShown(harness.log, messages: [])

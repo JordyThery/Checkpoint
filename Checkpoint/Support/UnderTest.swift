@@ -11,6 +11,13 @@ import os
 /// written down, so the release check can show it in its report and fail.
 /// Demo connections are not tenants: their commands reach the in-app demo
 /// servers only and are never refused.
+///
+/// A live UI test (JTKit's live-check switch, `LiveLaunch`) is under tests
+/// too, with one exception: the non-interruptive commands in
+/// `liveCommands` may go out through a connection whose role lists test
+/// devices for the run (`LiveLaunch.receivesCommands`), through the release
+/// check's gateway, which sends them only to those devices. Everything else
+/// stays refused here, before the gateway sees it.
 nonisolated enum UnderTest {
     /// Whether this launch is under tests (JTKit's `TestRun.isActive`).
     static let isActive: Bool = TestRun.isActive
@@ -19,6 +26,10 @@ nonisolated enum UnderTest {
     /// the same for the test host and the app the UI tests launch. The
     /// release check empties it before every run.
     static let folder = TestRun.attemptsFolder(named: "Checkpoint-under-test")
+
+    /// The only commands a live UI test may send: Blank Push, and Update
+    /// Inventory, which is Jamf School's refresh and Intune's Sync Device.
+    static let liveCommands: Set<MDMCommand> = [.blankPush, .updateInventory]
 
     /// The message a refused attempt gives.
     static let refusal = "Refused under tests: the release check never sends a device command, an Apple write, a record change, a secret read or a request to a saved connection."
@@ -64,8 +75,16 @@ extension TestRun.AttemptLog {
 nonisolated struct ActionGuard: Sendable {
     let isActive: Bool
     let log: TestRun.AttemptLog
+    /// Commands let through while active (a live UI test's `liveCommands`).
+    var allowedCommands: Set<MDMCommand> = []
 
     static let off = ActionGuard(isActive: false, log: .commands)
+
+    /// Throws (and records) when active, unless the command is allowed.
+    func check(_ command: MDMCommand, _ what: String) throws {
+        guard !allowedCommands.contains(command) else { return }
+        try check(what)
+    }
 
     /// Throws (and records) when active.
     func check(_ what: String) throws {
@@ -96,6 +115,15 @@ nonisolated struct UnderTestGuards: Sendable {
         appleWrites: ActionGuard(isActive: UnderTest.isActive, log: .appleWrites),
         secretReads: ActionGuard(isActive: UnderTest.isActive, log: .secretReads),
         recordWrites: ActionGuard(isActive: UnderTest.isActive, log: .recordWrites))
+
+    /// The guards for one MDM connection: `liveCommands` let through only
+    /// when the connection may receive commands (under the live switch, its
+    /// role lists test devices); every other guard unchanged.
+    func forConnection(receivesCommands: Bool) -> UnderTestGuards {
+        var guards = self
+        guards.commands.allowedCommands = receivesCommands ? UnderTest.liveCommands : []
+        return guards
+    }
 
     /// For unit tests whose requests go to a mock server only.
     static let off = UnderTestGuards(commands: .off, appleWrites: .off, secretReads: .off, recordWrites: .off)

@@ -35,9 +35,8 @@ struct OrderPickerView: View {
                 .frame(minHeight: 260)
         } footer: {
                 if let errorMessage {
-                    Text(errorMessage)
+                    WarningLabel(errorMessage)
                         .font(.callout)
-                        .foregroundStyle(.red)
                         .lineLimit(2)
                 } else if !isLoading && !orders.isEmpty {
                     Text("\(visible.count) order\(visible.count == 1 ? "" : "s")")
@@ -107,7 +106,10 @@ struct OrderPickerView: View {
                 description: Text("No device in this \(model.abmKind.label) organization has an order number, or the organization couldn’t be read.")
             )
         } else {
-            List(visible, id: \.number, selection: $selection) { order in
+            // A field of its own: a sheet has no toolbar to hold a search field.
+            VStack(spacing: 8) {
+                PickerSearchField(prompt: "Search orders", text: $searchText)
+                List(visible, id: \.number, selection: $selection) { order in
                 HStack {
                     Text(order.number)
                         .lineLimit(1)
@@ -119,7 +121,13 @@ struct OrderPickerView: View {
                 }
                 .tag(order.number)
             }
-            .searchable(text: $searchText, placement: .toolbar, prompt: "Search orders")
+            // Double-clicking an order looks it up, as the default button does.
+            .contextMenu(forSelectionType: String.self, menu: { _ in }) { numbers in
+                guard let number = numbers.first else { return }
+                selection = number
+                pick()
+            }
+            }
         }
     }
 

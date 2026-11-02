@@ -22,11 +22,12 @@ import Testing
 //   JTKTEST mobile device record with made-up serials; the app looks both up,
 //   alone and in the stale/misplaced view (All Connections); the app's own
 //   Delete Record removes the iPad behind a fence; cleanup removes the rest.
-// Credentials: the Apple keys, jamfpro-readonly, jamfpro-production and
-// intune-test come from Checkpoint's own saved connections (matched to the
-// allow-list by client ID, host or tenant ID, read only, copied into memory);
-// jamfschool-readonly and jamf-test-a from the Keychain items the release
-// check reads. The saved connections themselves are never used or changed.
+// Credentials: the Apple keys, jamfpro-readonly, jamfpro-production,
+// jamfschool-readonly and intune-test come from Checkpoint's own saved
+// connections (matched to the allow-list by client ID, host or tenant ID,
+// read only, copied into memory); jamf-test-a from the Keychain items the
+// release check reads. For the live UI tests, `LiveHostCredentialsTests`
+// hands the same saved credentials to the release check's gateway. The saved connections themselves are never used or changed.
 // Throughout, the checks prove that no MDM command, Apple write, secret read
 // or request to a saved connection was attempted (`UnderTest`).
 
@@ -98,7 +99,7 @@ enum LiveConnections {
 
     /// A saved connection's secret, read from Checkpoint's Keychain items (never written).
     static func savedSecret(_ record: CheckpointConnection) throws -> String {
-        guard let secret = CheckpointSecrets.keychain.secret(for: CheckpointSecrets.account(for: record.connection)),
+        guard let secret = try CheckpointSecrets.keychain.readSecret(for: CheckpointSecrets.account(for: record.connection)),
               !secret.isEmpty else { throw LiveFailure("No saved secret for the connection matched to this role") }
         return secret
     }
@@ -141,11 +142,12 @@ enum LiveConnections {
             return LiveConnection(role: role, record: .mdm(server), secret: secret, source: "Checkpoint's saved connection")
         case Roles.readOnlySchool:
             let entry = try run.entry(role: role, service: .jamfSchool)
-            var server = MDMConnection(name: label, product: .jamfSchool)
-            server.baseURL = "https://" + (entry.host ?? "")
-            server.account = try run.credential(role, "network-id")
-            return LiveConnection(role: role, record: .mdm(server), secret: try run.credential(role, "api-key"),
-                                  source: "the release check's Keychain items")
+            guard var server = savedServers().first(where: {
+                $0.product == .jamfSchool && entry.hosts.contains(host($0.baseURL))
+            }) else { throw LiveFailure("\(role): no saved Checkpoint Jamf School connection to this host") }
+            let secret = try savedSecret(.mdm(server))
+            server.name = label
+            return LiveConnection(role: role, record: .mdm(server), secret: secret, source: "Checkpoint's saved connection")
         case Roles.testA:
             let entry = try run.entry(role: role, service: .jamfPlatform)
             var server = MDMConnection(name: label, product: .jamfPro, authMethod: .platformGateway)
@@ -838,5 +840,53 @@ struct LiveCleanupTests {
                    note: clean ? nil : "\(left.count) in the ledger and \(still.count) on the tenant not removed")
         #expect(left.isEmpty, "\(left.map { "\($0.resource) \($0.id) \($0.name)" })")
         #expect(still.isEmpty, "\(still.map { "\($0.resource) \($0.id) \($0.name)" })")
+    }
+}
+
+// MARK: Credentials for the live UI tests
+
+/// Run by the release check before each live UI test (HOST_CREDENTIALS_TEST,
+/// JTKit 1.3.1): reads Checkpoint's saved connections for the run's roles, in
+/// this test host as the checks above do, and hands them to the gateway over
+/// its token. Nothing is printed or written to a file; the gateway keeps them
+/// in memory and never takes one in place of the release check's own.
+@MainActor
+@Suite("Live: credentials for the live UI tests", .enabled(if: live), .serialized)
+struct LiveHostCredentialsTests {
+    @Test func provide() async throws {
+        let run = try LiveCheckRun.current()
+        let client = try LiveGatewayClient(runFolder: run.runFolder)
+        var items: [LiveSecretItem] = []
+        for role in [Roles.business, Roles.school, Roles.readOnlyPro, Roles.production, Roles.readOnlySchool, Roles.intune] {
+            guard let connection = try LiveConnections.connection(run, role: role) else { continue }
+            items += Self.items(connection, sharesRole: run.allowList.tenants.filter { $0.role == role }.count > 1)
+        }
+        let taken = try await client.provide(items)
+        #expect(!items.isEmpty, "no saved connection for this run's roles")
+        // names only, never a value
+        print("Handed to the gateway: \(taken.sorted().joined(separator: ", "))")
+    }
+
+    /// The release check's item names for a saved connection (JTKit's gateway).
+    static func items(_ connection: LiveConnection, sharesRole: Bool) -> [LiveSecretItem] {
+        let role = connection.role
+        func item(_ name: String, _ value: String) -> LiveSecretItem { LiveSecretItem(role: role, item: name, value: value) }
+        switch connection.record {
+        case .apple(let org):
+            return [item("key-id", org.keyID), item("private-key", connection.secret)]
+        case .mdm(let server):
+            switch server.product {
+            case .jamfPro:
+                // a role with a Platform API entry beside its Jamf Pro one keeps the Jamf Pro sign-in apart
+                let prefix = sharesRole ? "jamfpro-" : ""
+                return server.authMethod == .usernamePassword
+                    ? [item(prefix + "username", server.account), item(prefix + "password", connection.secret)]
+                    : [item(prefix + "client-id", server.account), item(prefix + "client-secret", connection.secret)]
+            case .jamfSchool:
+                return [item("network-id", server.account), item("api-key", connection.secret)]
+            case .intune:
+                return [item("client-id", server.account), item("client-secret", connection.secret)]
+            }
+        }
     }
 }

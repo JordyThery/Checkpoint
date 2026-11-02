@@ -20,9 +20,9 @@ Activation Lock state and AppleCare coverage need no privilege beyond the API ac
 
 **Apple School Manager can’t release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
 
-Each organization needs its own API account. You need the Client ID, the Key ID, and the downloaded `.pem` private key.
+Each organization needs its own API account. You need the Client ID, the Key ID, and the private key downloaded with the account: paste it in Settings → Connections, or import its file (any text file holding it, such as the `.pem`).
 
-Apple limits an organization to roughly **twenty requests a minute**, and doesn’t signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, and reads the whole organization in bulk rather than per device once a lookup reaches 15 devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
+Apple limits an organization to roughly **twenty requests a minute**, and doesn’t signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, asks for up to fifty devices in one request with Apple’s serial number filter, and reads the whole organization in bulk once a lookup reaches 15 devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
 
 ## Jamf School
 

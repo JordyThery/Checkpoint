@@ -1,8 +1,8 @@
 import JTKit
 import SwiftUI
 
-// Checkpoint's parts of JTKit's Settings window: a section for its General
-// tab, below JTKit's Appearance, then the Connections tab, before Updates.
+// Checkpoint's parts of JTKit's Settings window: its General tab, then the
+// Connections tab, before Updates.
 
 /// How tall the Connections tab is: a list beside an editor has no natural
 /// height, so it gets a fixed one.
@@ -52,7 +52,7 @@ struct ConnectionsTab: View {
     /// Tests the values in the editor, saved or not, with the secret typed
     /// there or else the stored one.
     private func test(_ record: CheckpointConnection, typed: [ConnectionSecretKind: String]) async throws -> String {
-        guard let secret = typed[.main] ?? settings.secret(for: record), !secret.isEmpty else {
+        guard let secret = try typed[.main] ?? settings.readSecret(for: record), !secret.isEmpty else {
             throw ConnectionTestError(record.connection.signIn == .applePrivateKey
                                       ? "Import the private key first."
                                       : "Enter the \(record.connection.signIn.secretName?.lowercased() ?? "secret") first.")
@@ -122,19 +122,15 @@ private struct ConnectionNotes: View {
     var body: some View {
         if let savedService = saved?.connection.service, savedService != record.connection.service {
             Section {
-                Label {
-                    Text("This connection is saved as \(savedService.displayName). Changing the service keeps the address, account and stored secret, which the new service is unlikely to accept — check them before saving.")
-                } icon: {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                }
-                .font(.caption)
+                // The stored secret is removed on Save; the shared editor says so at its field.
+                WarningLabel("This connection is saved as \(savedService.displayName). Changing the service keeps the address and account, which the new service is unlikely to accept: check them before saving.")
+                    .font(.caption)
             }
         }
         switch record {
         case .apple(let org):
             Section {
-                note("Import the .pem private key downloaded when creating the API account in \(org.kind.label) (your name at the bottom of the sidebar → Preferences → API).\(org.kind == .business ? " The account needs the Device Enrollment Manager role or higher." : "") The key is stored only in your keychain.")
+                note("Paste or import the private key downloaded when creating the API account in \(org.kind.label) (your name at the bottom of the sidebar → Preferences → API).\(org.kind == .business ? " The account needs the Device Enrollment Manager role or higher." : "") The key is stored only in your keychain.")
                 if !org.kind.supportsRelease {
                     note("\(org.kind.label) uses the same API as Apple Business, except that it provides no way to release devices from the organization. That action is dimmed.")
                 }
@@ -144,13 +140,8 @@ private struct ConnectionNotes: View {
             case .jamfPlatform:
                 Section {
                     note("Requires an environment-scoped integration created in Jamf Account, not a Jamf Pro API client. Copy the environment ID from its Integration details, and pick the region it is in. Requests go to the gateway; the Jamf Pro web address is still used to link devices to their Jamf Pro records.")
-                    Label {
-                        Text(MDMCommand.unavailableOverPlatformAPI(.renewProfile) + " Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Restart and Shut Down.")
-                    } icon: {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
-                    .font(.callout)
+                    WarningLabel(MDMCommand.unavailableOverPlatformAPI(.renewProfile) + " Everything else works, including lookups, PreStages, sites, Lock, Clear Passcode, Wipe, Restart and Shut Down.")
+                        .font(.callout)
                 }
             case .jamfSchool:
                 Section {

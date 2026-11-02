@@ -9,7 +9,9 @@ import SwiftUI
     )
 
     var body: some Scene {
-        WindowGroup("Checkpoint") {
+        // One main window: every window would show the same results and
+        // share one lookup, so a second one would only mislead.
+        Window("Checkpoint", id: "main") {
             ContentView()
                 .environment(settings)
                 .environment(model)
@@ -21,14 +23,15 @@ import SwiftUI
         }
         .commands {
             AppInfoCommands(appName: "Checkpoint") { updates.checkManually() }
+            LookupCommands()
+            DeviceCommands()
             // The same items as the two toolbar pickers: Apple, then MDM.
             ConnectionCommands(store: settings.connections, roles: [model.appleRole, model.mdmRole],
                                itemTitle: \.displayName) {
                 DemoModeToggle(demo: settings.demo)
             }
         }
-        // JTKit's General tab starts with Appearance; Checkpoint's own general
-        // settings go below it.
+        // Checkpoint's own general settings make up the General tab.
         // Tabs open by name, so "Edit Connections…" opens Connections.
         SettingsWindow(updates: updates, opensTabsByName: true) {
             GeneralSettingsSection()

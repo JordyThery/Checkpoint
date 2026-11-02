@@ -33,7 +33,7 @@ Double-clicking a row, or the arrow at the end of it, opens the device’s recor
 
 **Order…** lists the Apple order numbers in your organization with the number of devices on each. Apple can’t search devices by order number, so Checkpoint reads the whole organization once and reuses it for the session. Before that first read it asks, as a large lookup does; the read takes about a minute per organization, and later uses are immediate.
 
-Both fill the serial field. When the devices picked mean reading an Apple organization in full (15 devices or more, and not read yet this session), the confirmation appears after you pick the group or order, since neither a group name nor an order number reveals that it covers several hundred devices.
+Both are also in the Lookup menu (Look Up Group…, Look Up Order… ⇧⌘O), beside Look Up (⌘↩), Clear List (⌘K) and Stop Waiting (⌥⌘.); File › Import Serial Numbers… (⌘O) reads a text or CSV file. Checkpoint has one main window: every window would show the same results. Both fill the serial field. When the devices picked mean reading an Apple organization in full (15 devices or more, and not read yet this session), the confirmation appears after you pick the group or order, since neither a group name nor an order number reveals that it covers several hundred devices.
 
 ![The order picker listing Apple School Manager order numbers with the number of devices on each](screenshot-order.png)
 
@@ -45,7 +45,7 @@ A device belongs to one organization at a time, so there is no ambiguity to reso
 
 **Apple actions work in one organization at a time.** Every one of them names an MDM server, and a server ID means nothing outside the organization that issued it. A single device always resolves to one organization, so the inspector keeps working as usual; a bulk selection spanning two organizations disables the Apple actions and says which organizations are involved. The Jamf and Intune side is unaffected — it has one connection either way.
 
-Searching several organizations doesn’t mean reading them. Below the bulk threshold Checkpoint asks each organization about each device, which is cheaper than it sounds: an organization that doesn’t hold the device says so in one request and costs nothing more, so a serial costs one request per organization plus two for whichever one has it. A handful of serials across two organizations is a second’s work.
+Searching several organizations doesn’t mean reading them. Below the bulk threshold Checkpoint asks each organization for all the lookup’s devices at once, fifty serial numbers to a request. An organization that doesn’t hold a device costs nothing more for it, and the one that does costs two requests (its assignment and its AppleCare coverage). A handful of serials across two organizations is a second’s work.
 
 At 15 devices or more each organization is read in full instead, as a single-organization lookup does. Apple’s quota is per organization, so those reads run at the same time and the wait is the slowest organization rather than the sum. Snapshots are then cached per organization for the session, and a lookup about to spend that minute asks first.
 
@@ -71,7 +71,7 @@ All Connections reads two Platform API connections to different environments sep
 
 ## Reading in bulk
 
-At 15 devices or more the Apple organization is read in bulk instead of one device at a time, after you confirm it. Apple allows an organization only about twenty requests a minute and offers no way to filter the device list, so asking per device doesn’t scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
+At 15 devices or more the Apple organization is read in bulk instead, after you confirm it. Apple allows an organization only about twenty requests a minute, and each device still costs a request for its assignment, so asking per device doesn’t scale: a few hundred devices would otherwise take the best part of an hour. Reading the whole organization costs one request per thousand devices plus one per MDM server — about twenty for a typical organization — and a 389-device group completes in a little over a minute.
 
 **AppleCare coverage** is the one thing not available in bulk, because Apple serves it only per device. In a bulk lookup that column reads "Select to load" and fills in when you select the device. **Passcode state on Jamf School** works the same way, for the same reason: it appears only in that product’s per-device record, not in its device list.
 
@@ -183,11 +183,15 @@ Every service is logged the same way, including Microsoft Graph. The log is held
 
 ![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
 
-Copy and export each come in a masked form, replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognizable without being named. Use it when attaching a log to a bug report.
+Copy Log and the export each come in a masked form (Copy Log, Devices Masked and Export for Bug Report), replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognizable without being named. Use it when attaching a log to a bug report. Copy Entry copies one entry unmasked.
+
+While a service asks Checkpoint to wait before trying a request again (Jamf’s or Microsoft’s “try again in 40 s”, Apple’s per-minute limit), the wait shows in the window’s status bar with a Stop button (Lookup › Stop Waiting, ⌥⌘.), which ends the wait and stops those requests. A command stopped this way reports “Stopped: n sent, m not sent.”: the devices it reached received it and are never reported as failed, and its activity log entry names the devices it didn’t reach. A stopped lookup or other action reads “Stopped before it finished.”
+
+The **Device menu** holds the inspector’s actions for the selected device or devices: Open in Jamf Pro, Jamf School or Intune (⌥⌘O; more than 10 records ask first, since each opens a browser tab), the Apple assignment actions and the MDM commands, each through the same confirmation as its button.
 
 ## Demo mode
 
-Demo Mode shows Checkpoint with sample data and no tenant. Turn it on from either toolbar picker or the Connection menu, or with Try Demo Mode in the hint shown while nothing is configured. While it is on, every window’s title ends in "— Demo" and both pickers show the demo connections, with a test tube, above your own:
+Demo Mode shows Checkpoint with sample data and no tenant. Turn it on from either toolbar picker or the Connection menu, or with Try Demo Mode in the hint shown while nothing is configured. While it is on, every window’s title ends in "— Demo", the main window’s status bar shows a Demo Mode badge with Turn Off, and both pickers show the demo connections, with a test tube, above your own:
 
 - Apple: **Contoso (Demo)** in Apple Business and **Contoso Academy (Demo)** in Apple School Manager, plus All Organizations.
 - MDM: **Contoso Jamf Pro (Demo)**, **Contoso Intune (Demo)** and **Contoso Academy (Demo)** on Jamf School, plus All Connections.

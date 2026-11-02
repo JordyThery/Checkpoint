@@ -1,5 +1,70 @@
 # Changelog
 
+## 2.10.0 — 2026-11-02
+
+### Lookups
+
+- **Small lookups ask Apple for up to fifty devices at once,** using Apple’s
+  new serial number filter. With several organizations in scope, a device
+  barely costs anything in an organization that doesn’t hold it, so these
+  lookups finish sooner and use less of Apple’s per-minute limit.
+- **After an Apple change, only the changed devices are read again,** however
+  many there are; the organization is never read in full without asking.
+  Their AppleCare coverage loads when you select a device.
+- **Renaming an Apple organization keeps what was read from it.** The next
+  large lookup no longer asks to read the organization again.
+- **When a service asks Checkpoint to wait before trying again,** the wait
+  shows in the window with a Stop button, which ends it at once. A command
+  stopped this way says what happened: “Stopped: 3 sent, 7 not sent.” The
+  devices it reached are never reported as failed, and the activity log
+  names the ones it didn’t reach. A stopped lookup or action reads “Stopped
+  before it finished.”
+- **Jamf School check-in times** are read exactly as Jamf School reports them,
+  so a time near a daylight-saving change is no longer an hour off.
+- **An on-premises Jamf Pro under a path** (such as `/jamf`) opens records and
+  Blueprints at the right address.
+- **A Keychain that can’t be read is reported as such,** instead of as a
+  missing secret.
+
+### Window and menus
+
+- **One main window.** Every window showed the same results, so File › New
+  Window is gone; File › Import Serial Numbers… (⌘O) takes its place.
+- **A Lookup menu:** Look Up (⌘↩), Look Up Group…, Look Up Order… (⇧⌘O),
+  Stop Waiting (⌥⌘.) and Clear List (⌘K).
+- **A Device menu** with the inspector’s actions for the selected device or
+  devices: Open in Jamf Pro (⌥⌘O), the Apple assignment actions and the MDM
+  commands, each through the same confirmation as its button.
+- **Opening more than 10 records asks first,** since each opens in its own
+  browser tab.
+- **A status bar** at the bottom of the window shows a lookup’s progress,
+  waits, the device count and the outcome of the last action, failures
+  included. It clears when the next action starts, and replaces the “Command
+  Sent” message, which had to be dismissed.
+- **Demo Mode is marked in the window,** with a button to turn it off.
+- **Statuses read in words and badges,** not by color alone: Assigned,
+  Unassigned, Released, Not in organization, expired coverage, an expired
+  MDM profile, an overdue report. A dimmed action says why below it.
+- **Bulk actions show their device count the same way,** e.g. “Apply Site
+  (4)”. The single-device buttons read “Apply Site”, “Apply Location” and
+  “Apply PreStage”.
+- The Group and Order lists have a visible search field, and a double-click
+  picks a group or an order.
+- The link column is named “Link”; the right-click menu names the product
+  the records are in.
+- The Settings button left the toolbar: Settings is in the Checkpoint menu
+  (⌘,).
+- Import offers text and CSV files only.
+- The Appearance setting is gone: Checkpoint follows the Mac’s appearance.
+
+### Settings and the activity log
+
+- **An Apple private key can be pasted,** or imported from any text file
+  that holds it (`.pem`, `.p8`, `.txt`).
+- **Copy Log and Copy Log, Devices Masked** are back in the activity log.
+- Changing a connection’s service now says plainly that the stored secret is
+  removed on Save.
+
 ## 2.9.1 — 2026-11-01
 
 - **A Jamf Pro or Jamf School server URL saved without `https://` works

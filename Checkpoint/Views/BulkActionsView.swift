@@ -18,7 +18,6 @@ struct BulkActionsView: View {
     @State private var locationSelection: BulkChoice = .none
     @State private var isWorking = false
     @State private var errorMessage: String?
-    @State private var infoMessage: String?
     @State private var pending: PendingAction?
     /// A confirmation with something to type (a PIN, the number of devices).
     @State private var typed: TypedConfirmation?
@@ -238,26 +237,32 @@ struct BulkActionsView: View {
             noneLabel: "Unassigned",
             options: appleServers.map { ($0.id, $0.name) }
         )
-        Button("Apply MDM Assignment to \(count(abmCount))") { ask(.applyMDM) }
+        Button(counted("Apply MDM Assignment", abmCount)) { ask(.applyMDM) }
             .disabled(abmCount == 0 || mdmSelection == .mixed || mdmSelection == currentMDMState)
-        Button("Unassign \(count(assignedCount)) from MDM Server") { ask(.unassignMDM) }
+        Button(counted("Unassign from MDM Server", assignedCount)) { ask(.unassignMDM) }
             .disabled(assignedCount == 0)
         if migratableCount > 0 {
             DatePicker("Migration Deadline", selection: $migrationDeadline, in: migrationDeadlineRange)
-            Button("Assign with Migration Deadline to \(count(migratableCount))") { ask(.scheduleMigration) }
+            Button(counted("Assign with Migration Deadline", migratableCount)) { ask(.scheduleMigration) }
                 .disabled(mdmSelection.appliedID == nil || mdmSelection == .mixed || mdmSelection == currentMDMState)
         }
         if migratingCount > 0 {
-            Button("Update Deadline for \(count(migratingCount))") { ask(.updateDeadline) }
-            Button("Cancel Migration for \(count(migratingCount))", role: .destructive) { ask(.cancelMigration) }
+            Button(counted("Update Deadline", migratingCount)) { ask(.updateDeadline) }
+            Button(counted("Cancel Migration", migratingCount), role: .destructive) { ask(.cancelMigration) }
         }
         let releaseUnavailable = model.releaseUnavailabilityReason(for: reports)
         // Named after the organization being released from, as the
         // single-device button is, rather than after the service.
         let releaseFrom = model.appleActionOrg(for: reports)?.displayName ?? model.appleScopeLabel
-        Button("Release \(count(abmCount)) from \(releaseFrom)", role: .destructive) { ask(.release) }
+        Button(counted("Release from \(releaseFrom)", abmCount), role: .destructive) { ask(.release) }
             .disabled(abmCount == 0 || releaseUnavailable != nil)
             .help(releaseUnavailable ?? "")
+            .accessibilityHint(releaseUnavailable ?? "")
+        if let releaseUnavailable {
+            Text(releaseUnavailable)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// The device management side of the bulk inspector.
@@ -271,32 +276,32 @@ struct BulkActionsView: View {
         let capabilities = actionConnection?.capabilities ?? model.mdmCapabilities
         if capabilities.contains(.sites), managedCount > 0, !actionSites.isEmpty {
             bulkPicker("Site", selection: $siteSelection, currentState: currentSiteState, noneLabel: "None", options: actionSites.map { ($0.id, $0.name) })
-            Button("Apply Site to \(count(siteMoveCount))") { pending = .applySite }
+            Button(counted("Apply Site", siteMoveCount)) { pending = .applySite }
                 .disabled(siteSelection == .mixed || siteSelection == currentSiteState || siteMoveCount == 0)
         }
         if capabilities.contains(.locations), managedCount > 0, !actionLocations.isEmpty {
             bulkPicker("Location", selection: $locationSelection, currentState: currentLocationState, noneLabel: "None", options: actionLocations.map { ($0.id, $0.name) })
-            Button("Apply Location to \(count(locationMoveCount))") { pending = .applyLocation }
+            Button(counted("Apply Location", locationMoveCount)) { pending = .applyLocation }
                 .disabled(locationSelection.appliedID == nil || locationSelection == .mixed || locationSelection == currentLocationState
                           || locationMoveCount == 0)
         }
         if capabilities.contains(.prestageScope) {
             if computerCount > 0 {
                 bulkPicker("Computer PreStage", selection: $computerPrestageSelection, currentState: currentPrestageState(kind: .computer), noneLabel: "None", options: prestageOptions(kind: .computer).map { ($0.id, $0.displayName) })
-                Button("Apply PreStage to \(count(prestageMoveCount(.computer)))") { pending = .applyComputerPrestage }
+                Button(counted("Apply PreStage", prestageMoveCount(.computer))) { pending = .applyComputerPrestage }
                     .disabled(computerPrestageSelection == .mixed || computerPrestageSelection == currentPrestageState(kind: .computer)
                               || prestageMoveCount(.computer) == 0)
             }
             if mobileCount > 0 {
                 bulkPicker("Mobile Device PreStage", selection: $mobilePrestageSelection, currentState: currentPrestageState(kind: .mobileDevice), noneLabel: "None", options: prestageOptions(kind: .mobileDevice).map { ($0.id, $0.displayName) })
-                Button("Apply PreStage to \(count(prestageMoveCount(.mobileDevice)))") { pending = .applyMobilePrestage }
+                Button(counted("Apply PreStage", prestageMoveCount(.mobileDevice))) { pending = .applyMobilePrestage }
                     .disabled(mobilePrestageSelection == .mixed || mobilePrestageSelection == currentPrestageState(kind: .mobileDevice)
                               || prestageMoveCount(.mobileDevice) == 0)
             }
         }
         Button(
-            "\(actionProduct.removeRecordAction) for \(count(managedCount))"
-                + (model.deleteConfirmation(reports: reports)?.needsTyping == true ? "…" : ""),
+            counted(actionProduct.removeRecordAction, managedCount,
+                    opensSheet: model.deleteConfirmation(reports: reports)?.needsTyping == true),
             role: .destructive
         ) {
             guard let confirmation = model.deleteConfirmation(reports: reports) else { return }
@@ -309,6 +314,46 @@ struct BulkActionsView: View {
         .disabled(managedCount == 0)
     }
 
+    /// The command's confirmation, from its button or the Device menu.
+    private func requestCommand(_ command: MDMCommand) {
+        guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
+        if confirmation.needsTyping {
+            typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
+        } else {
+            pending = .command(command)
+        }
+    }
+
+    /// The bulk inspector's actions for the Device menu: the same buttons,
+    /// titles and confirmations, dimmed when the button is.
+    private var deviceMenu: DeviceActions {
+        var actions = DeviceActions()
+        if abmCount > 0 {
+            let releaseUnavailable = model.releaseUnavailabilityReason(for: reports)
+            let releaseFrom = model.appleActionOrg(for: reports)?.displayName ?? model.appleScopeLabel
+            let applies = mdmSelection != .mixed && mdmSelection != currentMDMState
+            actions.apple = [
+                DeviceMenuItem(id: "apply", title: counted("Apply MDM Assignment", abmCount),
+                               action: applies ? { ask(.applyMDM) } : nil),
+                DeviceMenuItem(id: "unassign", title: counted("Unassign from MDM Server", assignedCount),
+                               action: assignedCount > 0 ? { ask(.unassignMDM) } : nil),
+                DeviceMenuItem(id: "release", title: counted("Release from \(releaseFrom)", abmCount), isDestructive: true,
+                               action: releaseUnavailable == nil ? { ask(.release) } : nil),
+            ]
+        }
+        let product = actionProduct
+        actions.commands = MDMCommand.allInDisplayOrder.filter { commandCount($0) > 0 }.map { command in
+            let unavailable = model.mdmActionUnavailableReason(for: reports)
+                ?? model.unavailabilityReason(for: command, reports: reports)
+            let opensSheet = model.commandConfirmation(command, reports: reports)?.needsTyping == true
+            return DeviceMenuItem(id: command.rawValue,
+                                  title: counted(command.title(for: product), commandCount(command), opensSheet: opensSheet),
+                                  isDestructive: command.isDestructive,
+                                  action: unavailable == nil ? { requestCommand(command) } : nil)
+        }
+        return actions
+    }
+
     @ViewBuilder
     private func commandButton(_ command: MDMCommand) -> some View {
         let product = actionProduct
@@ -316,17 +361,13 @@ struct BulkActionsView: View {
             ?? model.unavailabilityReason(for: command, reports: reports)
         // An ellipsis when it opens a sheet to type into (a PIN, the number).
         let opensSheet = model.commandConfirmation(command, reports: reports)?.needsTyping == true
-        Button("\(command.title(for: actionProduct))\(opensSheet ? "…" : "") (\(commandCount(command)))",
+        Button(counted(command.title(for: actionProduct), commandCount(command), opensSheet: opensSheet),
                role: command.isDestructive ? .destructive : nil) {
-            guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
-            if confirmation.needsTyping {
-                typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
-            } else {
-                pending = .command(command)
-            }
+            requestCommand(command)
         }
         .disabled(unavailable != nil)
         .help(unavailable ?? command.message(for: product))
+        .accessibilityHint(unavailable ?? "")
     }
 
     var body: some View {
@@ -357,7 +398,7 @@ struct BulkActionsView: View {
                     // Deliberately not gated on a single connection: removal
                     // follows each record home, which is the point.
                     let opensSheet = model.staleRemovalConfirmation(reports: reports).needsTyping
-                    Button("Remove \(staleEntries.count) Stale Record\(staleEntries.count == 1 ? "" : "s")\(opensSheet ? "…" : "")",
+                    Button(counted("Remove Stale Records", staleEntries.count, opensSheet: opensSheet),
                            role: .destructive) {
                         let confirmation = model.staleRemovalConfirmation(reports: reports)
                         if confirmation.needsTyping {
@@ -388,6 +429,8 @@ struct BulkActionsView: View {
             }
         }
         .onChange(of: reportIDs) { syncSelections() }
+        // The Device menu offers the same actions.
+        .focusedSceneValue(\.deviceActions, deviceMenu)
         .onChange(of: currentMDMState) { _, newValue in mdmSelection = newValue }
         .onChange(of: currentPrestageState(kind: .computer)) { _, newValue in computerPrestageSelection = newValue }
         .onChange(of: currentPrestageState(kind: .mobileDevice)) { _, newValue in mobilePrestageSelection = newValue }
@@ -400,14 +443,6 @@ struct BulkActionsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
-        }
-        .alert(
-            "Command Sent",
-            isPresented: Binding(get: { infoMessage != nil }, set: { if !$0 { infoMessage = nil } })
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(infoMessage ?? "")
         }
         .sheet(item: $typed) { item in
             CommandConfirmationSheet(confirmation: item.confirmation) { approval in
@@ -474,8 +509,15 @@ struct BulkActionsView: View {
 
     // MARK: Confirmation
 
+    /// "3 Devices", for the confirmations' titles.
     private func count(_ n: Int) -> String {
         "\(n) Device\(n == 1 ? "" : "s")"
+    }
+
+    /// Every bulk button the same way: the action, an ellipsis when it opens
+    /// a sheet to type into, then how many devices (or records) it acts on.
+    private func counted(_ title: String, _ n: Int, opensSheet: Bool = false) -> String {
+        "\(title)\(opensSheet ? "…" : "") (\(n))"
     }
 
     // How many devices each move would change, as the model sends it:
@@ -662,7 +704,7 @@ struct BulkActionsView: View {
         let product = actionProduct
         runReporting {
             let sent = try await model.sendCommand(command, reports: reports, approval: approval)
-            return "\(command.title(for: product)) was sent to \(LookupModel.deviceCount(sent)) in \(product.label)."
+            return "\(command.title(for: product)): sent to \(LookupModel.deviceCount(sent)) in \(product.label)."
         }
     }
 
@@ -676,11 +718,17 @@ struct BulkActionsView: View {
     /// Runs an action; a message it returns is shown when it succeeds.
     private func runReporting(_ operation: @escaping () async throws -> String?) {
         isWorking = true
+        model.clearStatus()
         Task {
             do {
-                if let message = try await operation() { infoMessage = message }
+                // In the window's status bar, not a pop-up to dismiss.
+                if let message = try await operation() { model.report(message) }
+            } catch where Stopping.isStop(error) {
+                // Stopped by the user: said in the status bar, not as a failure.
+                model.report(describe(error))
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = describe(error)
+                model.report(describe(error), failed: true)
             }
             isWorking = false
         }

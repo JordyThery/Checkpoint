@@ -209,7 +209,7 @@ struct DemoModeTests {
     func noCrossing() throws {
         let harness = DemoHarness()
         let demoOrg = CheckpointConnection.apple(LookupModel.demoOrgs[0])
-        #expect(harness.model.secret(for: demoOrg)?.contains("BEGIN PRIVATE KEY") == true)
+        #expect((try harness.model.readSecret(for: demoOrg))?.contains("BEGIN PRIVATE KEY") == true)
         #expect(harness.fixture.secrets.secret(for: CheckpointSecrets.account(for: demoOrg.connection)) == nil)
         #expect(harness.settings.demo.source(for: CheckpointConnection.mdm(harness.settings.mdmConnections[0]).connection) == nil)
         #expect(throws: ConnectionStoreError.self) { try harness.settings.connections.save(demoOrg) }

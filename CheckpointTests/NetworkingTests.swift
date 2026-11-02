@@ -147,7 +147,8 @@ struct JamfProTests {
         let sites = try #require(server.requests.last)
         #expect(sites.url.host() == "eu.api.jamfcloud.com")
         #expect(sites.path == "/pro/v1/sites")
-        #expect(sites.header("X-Environment-Id") == "EEEEEEEE-1111-4000-8000-00000000E001")
+        // JTKit 1.1 sends the Environment ID lowercased.
+        #expect(sites.header("X-Environment-Id") == "eeeeeeee-1111-4000-8000-00000000e001")
         #expect(server.requests.first?.url.host() == "eu.api.jamfcloud.com")
     }
 
@@ -214,6 +215,8 @@ struct JamfProTests {
         let filters = Locked<[String]>([])
         let server = MockServer { request in
             if request.path.hasSuffix("/oauth/token") { return .json(200, #"{"access_token":"t","expires_in":1200}"#) }
+            // JTKit's Jamf Pro version read (once per server per run, by whichever test comes first)
+            if request.path.hasSuffix("/jamf-pro-version") { return .json(200, #"{"version":"11.33.1"}"#) }
             let filter = request.queryValue("filter") ?? ""
             filters.withLock { $0.append(filter) }
             return filter.contains("=in=") ? .json(400, "{}") : .json(200, Laced.computers)
@@ -544,7 +547,7 @@ struct ClientCacheTests {
         let fixture = Fixture()
         let settings = fixture.settings()
         var told = [UUID]()
-        settings.edits.onChange = { told.append($0) }
+        settings.edits.onChange = { id, _ in told.append(id) }
         let config = try #require(settings.mdmConnections.first { $0.id == id })
 
         try settings.connections.save(.mdm(config), secrets: [.main: "new"])
