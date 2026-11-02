@@ -241,6 +241,8 @@ struct DeviceDetailView: View {
             }
         }
         .onAppear(perform: syncSelections)
+        // The Device menu offers the same actions.
+        .focusedSceneValue(\.deviceActions, deviceMenu)
         // Keyed on resolution as well as the serial: a row selected while its
         // lookup is still running resolves without changing serial, and the
         // fetch must re-run once there is a record to fetch detail for.
@@ -1481,6 +1483,45 @@ struct DeviceDetailView: View {
 
     // MARK: MDM commands
 
+    /// The command's confirmation, from its button or the Device menu.
+    private func requestCommand(_ command: MDMCommand) {
+        guard let confirmation = model.commandConfirmation(command, reports: [report]) else { return }
+        if confirmation.needsTyping {
+            typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
+        } else {
+            pending = .command(command)
+        }
+    }
+
+    /// The inspector's actions for the Device menu: the same buttons, the
+    /// same confirmations, dimmed when the button is.
+    private var deviceMenu: DeviceActions {
+        var actions = DeviceActions()
+        if let info = report.abm.value, !info.isReleased {
+            let releaseUnavailable = model.releaseUnavailabilityReason(for: [report])
+            actions.apple = [
+                DeviceMenuItem(id: "apply", title: "Apply MDM Assignment",
+                               action: mdmSelection == info.mdmServerID ? nil : { pending = .applyMDM }),
+                DeviceMenuItem(id: "unassign", title: "Unassign from MDM Server",
+                               action: info.mdmServerID == nil ? nil : { pending = .unassignMDM }),
+                DeviceMenuItem(id: "release", title: "Release from \(info.orgName ?? model.abmKind.label)", isDestructive: true,
+                               action: releaseUnavailable == nil ? { pending = .release } : nil),
+            ]
+        }
+        if let info = report.mdm.value {
+            let product = model.product(for: report)
+            actions.commands = MDMCommand.commands(for: info.kind, product: product).map { command in
+                let unavailable = model.unavailabilityReason(for: command, reports: [report])
+                    ?? command.inapplicabilityReason(for: info)
+                let opensSheet = model.commandConfirmation(command, reports: [report])?.needsTyping == true
+                return DeviceMenuItem(id: command.rawValue, title: command.title(for: product) + (opensSheet ? "…" : ""),
+                                      isDestructive: command.isDestructive,
+                                      action: unavailable == nil ? { requestCommand(command) } : nil)
+            }
+        }
+        return actions
+    }
+
     @ViewBuilder
     private func commandButtons(_ info: ManagedDeviceInfo) -> some View {
         let product = model.product(for: report)
@@ -1491,12 +1532,7 @@ struct DeviceDetailView: View {
             let opensSheet = model.commandConfirmation(command, reports: [report])?.needsTyping == true
             Button(command.title(for: model.product(for: report)) + (opensSheet ? "…" : ""),
                    role: command.isDestructive ? .destructive : nil) {
-                guard let confirmation = model.commandConfirmation(command, reports: [report]) else { return }
-                if confirmation.needsTyping {
-                    typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
-                } else {
-                    pending = .command(command)
-                }
+                requestCommand(command)
             }
             .disabled(unavailable != nil)
             .help(unavailable ?? command.message(for: product))

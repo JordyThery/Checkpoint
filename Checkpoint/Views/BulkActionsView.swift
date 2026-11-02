@@ -314,6 +314,46 @@ struct BulkActionsView: View {
         .disabled(managedCount == 0)
     }
 
+    /// The command's confirmation, from its button or the Device menu.
+    private func requestCommand(_ command: MDMCommand) {
+        guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
+        if confirmation.needsTyping {
+            typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
+        } else {
+            pending = .command(command)
+        }
+    }
+
+    /// The bulk inspector's actions for the Device menu: the same buttons,
+    /// titles and confirmations, dimmed when the button is.
+    private var deviceMenu: DeviceActions {
+        var actions = DeviceActions()
+        if abmCount > 0 {
+            let releaseUnavailable = model.releaseUnavailabilityReason(for: reports)
+            let releaseFrom = model.appleActionOrg(for: reports)?.displayName ?? model.appleScopeLabel
+            let applies = mdmSelection != .mixed && mdmSelection != currentMDMState
+            actions.apple = [
+                DeviceMenuItem(id: "apply", title: counted("Apply MDM Assignment", abmCount),
+                               action: applies ? { ask(.applyMDM) } : nil),
+                DeviceMenuItem(id: "unassign", title: counted("Unassign from MDM Server", assignedCount),
+                               action: assignedCount > 0 ? { ask(.unassignMDM) } : nil),
+                DeviceMenuItem(id: "release", title: counted("Release from \(releaseFrom)", abmCount), isDestructive: true,
+                               action: releaseUnavailable == nil ? { ask(.release) } : nil),
+            ]
+        }
+        let product = actionProduct
+        actions.commands = MDMCommand.allInDisplayOrder.filter { commandCount($0) > 0 }.map { command in
+            let unavailable = model.mdmActionUnavailableReason(for: reports)
+                ?? model.unavailabilityReason(for: command, reports: reports)
+            let opensSheet = model.commandConfirmation(command, reports: reports)?.needsTyping == true
+            return DeviceMenuItem(id: command.rawValue,
+                                  title: counted(command.title(for: product), commandCount(command), opensSheet: opensSheet),
+                                  isDestructive: command.isDestructive,
+                                  action: unavailable == nil ? { requestCommand(command) } : nil)
+        }
+        return actions
+    }
+
     @ViewBuilder
     private func commandButton(_ command: MDMCommand) -> some View {
         let product = actionProduct
@@ -323,12 +363,7 @@ struct BulkActionsView: View {
         let opensSheet = model.commandConfirmation(command, reports: reports)?.needsTyping == true
         Button(counted(command.title(for: actionProduct), commandCount(command), opensSheet: opensSheet),
                role: command.isDestructive ? .destructive : nil) {
-            guard let confirmation = model.commandConfirmation(command, reports: reports) else { return }
-            if confirmation.needsTyping {
-                typed = TypedConfirmation(confirmation: confirmation, action: .command(command))
-            } else {
-                pending = .command(command)
-            }
+            requestCommand(command)
         }
         .disabled(unavailable != nil)
         .help(unavailable ?? command.message(for: product))
@@ -394,6 +429,8 @@ struct BulkActionsView: View {
             }
         }
         .onChange(of: reportIDs) { syncSelections() }
+        // The Device menu offers the same actions.
+        .focusedSceneValue(\.deviceActions, deviceMenu)
         .onChange(of: currentMDMState) { _, newValue in mdmSelection = newValue }
         .onChange(of: currentPrestageState(kind: .computer)) { _, newValue in computerPrestageSelection = newValue }
         .onChange(of: currentPrestageState(kind: .mobileDevice)) { _, newValue in mobilePrestageSelection = newValue }

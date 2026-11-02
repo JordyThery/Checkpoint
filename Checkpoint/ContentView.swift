@@ -23,6 +23,8 @@ struct ContentView: View {
     @State private var showingGroupPicker = false
     @State private var showingOrderPicker = false
     @State private var pendingLookup: PendingLookup?
+    /// Record pages waiting for "Open N Records?" (more than 10).
+    @State private var pendingOpen: [URL]?
     /// What a group or order picker chose, loaded when its sheet has closed.
     @State private var picked: (name: String, serials: [String])?
     /// Which of the two places that take keys has focus. Without this the
@@ -153,6 +155,21 @@ struct ContentView: View {
         }
         // The window's actions in the menu bar too (`LookupCommands`).
         .focusedSceneValue(\.lookupActions, lookupActions)
+        .focusedSceneValue(\.openRecords, OpenRecords(
+            title: openTitle(Set(selectedReports.map(\.id))) ?? "Open Record",
+            action: openTitle(Set(selectedReports.map(\.id))) == nil ? nil : { openInConsole(Set(selectedReports.map(\.id))) }))
+        .alert(
+            "Open \(pendingOpen?.count ?? 0) Records?",
+            isPresented: Binding(get: { pendingOpen != nil }, set: { if !$0 { pendingOpen = nil } })
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Open \(pendingOpen?.count ?? 0) Records") {
+                pendingOpen?.forEach { openURL($0) }
+                pendingOpen = nil
+            }
+        } message: {
+            Text("Each record opens in its own browser tab.")
+        }
         .focusedSceneValue(\.stopWaiting, stopWaiting)
         // Driven by the visible selection rather than the raw one: a selection
         // holding only filtered-out devices would otherwise open an inspector
@@ -605,10 +622,8 @@ struct ContentView: View {
         .focused($focus, equals: .results)
         .contextMenu(forSelectionType: DeviceReport.ID.self) { ids in
             // Named by the records' own product; absent when none has a page.
-            let linked = model.reports.filter { ids.contains($0.id) && $0.mdm.value?.webURL != nil }
-            let products = Set(linked.map { model.product(for: $0).label })
-            if !linked.isEmpty {
-                Button(products.count == 1 ? "Open in \(products.first ?? "")" : "Open Records") { openInConsole(ids) }
+            if let title = openTitle(ids) {
+                Button(title) { openInConsole(ids) }
             }
         } primaryAction: { ids in
             openInConsole(ids)
@@ -913,12 +928,27 @@ struct ContentView: View {
         model.clearReports()
     }
 
+    /// Above this many records, opening them asks first: each is a browser tab.
+    static let openRecordsAskAbove = 10
+
+    /// Opens the records' pages, in the order of the list; asks first above
+    /// `openRecordsAskAbove`.
     private func openInConsole(_ ids: Set<DeviceReport.ID>) {
-        for id in ids {
-            if let url = model.reports.first(where: { $0.id == id })?.mdm.value?.webURL {
-                openURL(url)
-            }
+        let urls = sortedReports.filter { ids.contains($0.id) }.compactMap { $0.mdm.value?.webURL }
+        if urls.count > Self.openRecordsAskAbove {
+            pendingOpen = urls
+        } else {
+            urls.forEach { openURL($0) }
         }
+    }
+
+    /// "Open in Jamf Pro" when every record with a page is in one product,
+    /// else "Open Records"; nil when none has a page.
+    private func openTitle(_ ids: Set<DeviceReport.ID>) -> String? {
+        let linked = model.reports.filter { ids.contains($0.id) && $0.mdm.value?.webURL != nil }
+        guard !linked.isEmpty else { return nil }
+        let products = Set(linked.map { model.product(for: $0).label })
+        return products.count == 1 ? "Open in \(products.first ?? "")" : "Open Records"
     }
 
     private func handleImport(_ result: Result<URL, Error>) {

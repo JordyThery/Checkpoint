@@ -241,4 +241,28 @@ final class DemoSmokeUITests: JTKitUITestCase {
         let filled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", mac1), object: serialField)
         XCTAssertEqual(XCTWaiter.wait(for: [filled], timeout: 20), .completed, "The group's serials weren't filled in")
     }
+
+    /// The Device menu offers the inspector's actions, through the same confirmation.
+    func test16DeviceMenu() {
+        lookUp([mac1])
+        select(mac1)
+        tap(app.menuBars.menuBarItems["Device"], timeout: 10)
+        XCTAssertTrue(app.menuItems["Open in Jamf Pro"].firstMatch.exists, "The Device menu has no Open in Jamf Pro")
+        XCTAssertTrue(app.menuItems["Unassign from MDM Server"].firstMatch.exists, "The Device menu has no Apple actions")
+        tap(app.menuItems["Send Blank Push"].firstMatch)
+        tap(dialogButton("Send Blank Push"), timeout: 10)
+        XCTAssertTrue(anyContaining("sent to \(mac1)").waitForExistence(timeout: 30), "The status bar doesn't say the command was sent")
+    }
+
+    /// Opening more than 10 records asks first; Cancel opens nothing.
+    func test17OpenManyRecordsAsks() {
+        lookUpSampleSerials(allConnections: false)
+        select(mac1)
+        app.typeKey("a", modifierFlags: .command)
+        tap(app.menuBars.menuBarItems["Device"], timeout: 10)
+        tap(app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'Open'")).firstMatch)
+        let ask = app.staticTexts.matching(NSPredicate(format: "value MATCHES 'Open [0-9]+ Records\\?' OR label MATCHES 'Open [0-9]+ Records\\?'")).firstMatch
+        XCTAssertTrue(ask.waitForExistence(timeout: 10), "Opening many records didn't ask first")
+        tap(dialogButton("Cancel"))
+    }
 }

@@ -55,3 +55,68 @@ struct LookupCommands: Commands {
         }
     }
 }
+
+// MARK: - Device menu
+
+/// One of the inspector's actions in the Device menu: its title as the
+/// inspector's button reads, and what the button does (the same
+/// confirmation). Nil: dimmed.
+struct DeviceMenuItem: Identifiable {
+    let id: String
+    let title: String
+    var isDestructive = false
+    let action: (() -> Void)?
+}
+
+/// The selected device's (or devices') actions, published by the inspector.
+struct DeviceActions {
+    var apple: [DeviceMenuItem] = []
+    var commands: [DeviceMenuItem] = []
+}
+
+/// Open the selected records in their product's web interface.
+struct OpenRecords {
+    /// "Open in Jamf Pro", or "Open Records" when the products differ.
+    let title: String
+    let action: (() -> Void)?
+}
+
+extension FocusedValues {
+    @Entry var deviceActions: DeviceActions?
+    @Entry var openRecords: OpenRecords?
+}
+
+/// The Device menu: Open in…, then the inspector's Apple actions and MDM
+/// commands, each through the inspector's own confirmation.
+struct DeviceCommands: Commands {
+    @FocusedValue(\.deviceActions) private var actions
+    @FocusedValue(\.openRecords) private var open
+
+    var body: some Commands {
+        CommandMenu("Device") {
+            Button(open?.title ?? "Open Record") { open?.action?() }
+                .keyboardShortcut("o", modifiers: [.command, .option])
+                .disabled(open?.action == nil)
+            Divider()
+            if let actions, !actions.apple.isEmpty || !actions.commands.isEmpty {
+                if !actions.apple.isEmpty {
+                    Section("Apple") { items(actions.apple) }
+                }
+                if !actions.commands.isEmpty {
+                    Section("MDM Commands") { items(actions.commands) }
+                }
+            } else {
+                Button("Select a Device to See Its Actions") {}
+                    .disabled(true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func items(_ list: [DeviceMenuItem]) -> some View {
+        ForEach(list) { item in
+            Button(item.title, role: item.isDestructive ? .destructive : nil) { item.action?() }
+                .disabled(item.action == nil)
+        }
+    }
+}

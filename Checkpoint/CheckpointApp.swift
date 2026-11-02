@@ -24,6 +24,7 @@ import SwiftUI
         .commands {
             AppInfoCommands(appName: "Checkpoint") { updates.checkManually() }
             LookupCommands()
+            DeviceCommands()
             // The same items as the two toolbar pickers: Apple, then MDM.
             ConnectionCommands(store: settings.connections, roles: [model.appleRole, model.mdmRole],
                                itemTitle: \.displayName) {
