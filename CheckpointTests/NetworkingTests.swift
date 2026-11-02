@@ -215,6 +215,8 @@ struct JamfProTests {
         let filters = Locked<[String]>([])
         let server = MockServer { request in
             if request.path.hasSuffix("/oauth/token") { return .json(200, #"{"access_token":"t","expires_in":1200}"#) }
+            // JTKit's Jamf Pro version read (once per server per run, by whichever test comes first)
+            if request.path.hasSuffix("/jamf-pro-version") { return .json(200, #"{"version":"11.33.1"}"#) }
             let filter = request.queryValue("filter") ?? ""
             filters.withLock { $0.append(filter) }
             return filter.contains("=in=") ? .json(400, "{}") : .json(200, Laced.computers)

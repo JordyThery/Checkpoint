@@ -20,8 +20,10 @@ nonisolated func readServer(_ answer: @escaping @Sendable (RecordedRequest) -> M
 }
 
 /// Requests other than sign-ins.
+/// The requests a test made: not the sign-in, nor JTKit's Jamf Pro version
+/// read (asked once per server per run, by whichever test reaches it first).
 nonisolated func calls(_ server: MockServer) -> [RecordedRequest] {
-    server.requests.filter { !$0.path.hasSuffix("/token") }
+    server.requests.filter { !$0.path.hasSuffix("/token") && !$0.path.hasSuffix("/jamf-pro-version") }
 }
 
 /// Where a request went: straight to Jamf Pro or through the Platform API.
