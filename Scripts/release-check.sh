@@ -37,11 +37,14 @@ ROLES=(apple-business apple-school jamfpro-readonly jamfschool-readonly intune-t
 # delete (the app refuses every other write under tests), and intune-test
 # keeps its test device for Sync Device.
 READ_ONLY_ROLES=()
-# role:service:item, read from the Keychain service the allow-list names. The
-# Apple keys, jamfpro-readonly, jamfpro-production and intune-test come from
-# Checkpoint's own saved connections, read inside its test host.
-CREDENTIALS=("jamfschool-readonly:jamfSchool:network-id" "jamfschool-readonly:jamfSchool:api-key"
-             "jamf-test-a:jamfPlatform:client-id" "jamf-test-a:jamfPlatform:client-secret")
+# role:service:item, read from the Keychain service the allow-list names:
+# jamf-test-a only. The Apple keys, jamfpro-readonly, jamfpro-production,
+# jamfschool-readonly and intune-test come from Checkpoint's own saved
+# connections, read inside its test host: by the unit-test live checks
+# themselves, and for the live UI tests by HOST_CREDENTIALS_TEST, which hands
+# them to the gateway over its token (JTKit 1.3.1), never through a file.
+CREDENTIALS=("jamf-test-a:jamfPlatform:client-id" "jamf-test-a:jamfPlatform:client-secret")
+HOST_CREDENTIALS_TEST="CheckpointTests/LiveHostCredentialsTests"
 LEGACY_PREFIXES=""
 APP_FAULTS=(command-attempt apple-write-attempt)
 DOMAIN="be.jordythery.checkpoint"
