@@ -52,11 +52,23 @@ final class DemoSmokeUITests: JTKitUITestCase {
         checkAbout()
     }
 
+    /// Opens Settings from the Checkpoint menu: JTKit's checks then find it
+    /// open. Pressing ⌘, on the whole app makes XCTest look up the app's
+    /// display, which crashes the runner when macOS's display setup changed
+    /// since login (seen after the lid was closed and opened).
+    private func openSettingsFromMenu() {
+        tap(app.menuBars.menuBarItems[appName], timeout: 10)
+        tap(app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'Settings'")).firstMatch)
+        XCTAssertTrue(settingsWindow.waitForExistence(timeout: 10), "Settings didn’t open")
+    }
+
     func test3SettingsTabs() {
+        openSettingsFromMenu()
         checkSettingsTabs(["General", "Connections", "Updates"])
     }
 
     func test4ConnectionsEditor() {
+        openSettingsFromMenu()
         // Made-up values: the connection lives only in this run's in-memory list.
         checkConnectionsEditor(service: "Jamf Pro") { settings in
             let server = settings.textFields.matching(NSPredicate(format: "placeholderValue BEGINSWITH 'https://yourorg'")).firstMatch
