@@ -15,7 +15,7 @@ Every action except the asset tag works on a single device or in bulk across a m
 | Jamf School | Change the location. Move to Trash, from where Jamf School can restore the record |
 | Intune | Delete Record, which leaves the device enrolled. See [Intune](intune.md) for why retiring it is a command rather than an action |
 
-Multiple organizations, of either Apple service, and multiple Jamf servers, of either product, can be configured together and switched from the toolbar. Everything Checkpoint sends is recorded in the [activity log](#activity-log).
+Multiple organizations, of either Apple service, and multiple MDM connections (Jamf Pro, Jamf School or Microsoft Intune) can be configured together and switched from the toolbar or the Connection menu. Everything Checkpoint sends is recorded in the [activity log](#activity-log).
 
 Double-clicking a row, or the arrow at the end of it, opens the device’s record in the product’s web interface. An Intune device opens in the Intune console. A Jamf Pro server reached through the [Jamf Platform API](platform-api.md) still links to its own URL, since the gateway host serves no web interface.
 
@@ -33,9 +33,9 @@ Double-clicking a row, or the arrow at the end of it, opens the device’s recor
 
 **Order…** lists the Apple order numbers in your organization with the number of devices on each. Apple can’t search devices by order number, so Checkpoint reads the whole organization once and reuses it for the session. Before that first read it asks, as a large lookup does; the read takes about a minute per organization, and later uses are immediate.
 
-Both are also in the Lookup menu (Look Up Group…, Look Up Order… ⇧⌘O), beside Look Up (⌘↩), Clear List (⌘K) and Stop Waiting (⌥⌘.); File › Import Serial Numbers… (⌘O) reads a text or CSV file. Checkpoint has one main window: every window would show the same results. Both fill the serial field. When the devices picked mean reading an Apple organization in full (15 devices or more, and not read yet this session), the confirmation appears after you pick the group or order, since neither a group name nor an order number reveals that it covers several hundred devices.
+Both are also in the Lookup menu (Look Up Group…, Look Up Order… ⇧⌘O), beside Look Up (⌘↩), Clear List (⌘K) and Stop Waiting (⌥⌘.). Both fill the serial field. File › Import Serial Numbers… (⌘O) reads a text or CSV file. Checkpoint has one main window: every window would show the same results. When the devices picked mean reading an Apple organization in full (15 devices or more, and not read yet this session), the confirmation appears after you pick the group or order, since neither a group name nor an order number reveals that it covers several hundred devices.
 
-![The order picker listing Apple School Manager order numbers with the number of devices on each](screenshot-order.png)
+![The order picker listing Apple Business order numbers with the number of devices on each](screenshot-order.png)
 
 ## Several Apple organizations at once
 
@@ -79,7 +79,7 @@ At 15 devices or more the Apple organization is read in bulk instead, after you 
 
 Jamf School has no request quota and no pagination, and serves the whole instance in one request, so a lookup of any size costs one request there whatever its size.
 
-**Intune is read the same way**, for a different reason: Microsoft Graph documents which properties `$filter` accepts and the serial number isn’t among them, so there is no per-serial query to make. The tenant is read once per lookup, a thousand devices per page, and matched locally. Graph throttles per application, and a throttled request is retried once its `Retry-After` has passed.
+**Intune is read the same way**, for a different reason: Microsoft Graph documents which properties `$filter` accepts and the serial number isn’t among them, so there is no per-serial query to make. The tenant is read once per lookup, a thousand devices per page, and matched locally. Graph throttles per application, and a throttled request is retried after the delay Microsoft asks for, up to three times.
 
 ## Filtering the results
 
@@ -173,15 +173,15 @@ Managed local administrator accounts are listed as Jamf Pro lists them, one row 
 
 ## Updates
 
-Checkpoint checks GitHub once a day for a newer release, and Checkpoint → Check for Updates… asks on demand. When one exists, a sheet shows its release notes; Download fetches the zip and saves it where you choose, and installing remains replacing the app in Applications — the sandbox doesn’t permit an app to replace itself. The check is one request to GitHub’s release API, sends nothing but the request itself, and can be turned off in Settings → Updates.
+Checkpoint checks GitHub once a day for a newer release, and Checkpoint › Check for Updates… asks on demand. When one exists, a sheet shows its release notes; Download fetches the zip and saves it where you choose, and installing remains replacing the app in Applications — the sandbox doesn’t permit an app to replace itself. The check is one request to GitHub’s release API, sends nothing but the request itself, and can be turned off in Settings › Updates.
 
 ## Activity log
 
-Window → Activity Log (⇧⌘L) shows what Checkpoint asked each service to do and how it answered, in two tiers: the action you requested, and each HTTP request made to carry it out. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
+Window › Activity Log (⇧⌘L) shows what Checkpoint asked each service to do and how it answered, in two tiers: the action you requested, and each HTTP request made to carry it out. It is searchable by serial number, so you can follow one device through a bulk operation, and it records reads of recovery secrets as well as changes.
 
-Every service is logged the same way, including Microsoft Graph. The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Personal details are masked wherever a product reports them beside a device: Jamf School attaches an owner to every record, which in a school is a pupil, and Jamf Pro’s user and location assignment carries a name, e-mail address, telephone number and job title. Each is masked whole rather than field by field, so nothing inside it can be missed.
+Every service is logged the same way, including Microsoft Graph. The log is held in memory only and is discarded when Checkpoint quits. Nothing is written to disk, and no secret reaches it: request headers are never recorded, sign-ins are logged without either body, and the endpoints carrying a recovery key, password, PIN or unlock token withhold their bodies entirely. Personal details are masked wherever a product reports them beside a device: Jamf School attaches an owner to every record, which in a school is a pupil, and Jamf Pro’s user and location assignment carries a name, email address, telephone number and job title. Each is masked whole rather than field by field, so nothing inside it can be missed.
 
-![The activity log listing requests to Apple School Manager and Jamf School, with the response body of the selected request below](screenshot-activity-log.png)
+![The activity log listing requests to Apple School Manager and Jamf School, with the details of the selected request below](screenshot-activity-log.png)
 
 Copy Log and the export each come in a masked form (Copy Log, Devices Masked and Export for Bug Report), replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognizable without being named. Use it when attaching a log to a bug report. Copy Entry copies one entry unmasked.
 
@@ -189,15 +189,15 @@ While a service asks Checkpoint to wait before trying a request again (Jamf’s 
 
 The **Device menu** holds the inspector’s actions for the selected device or devices: Open in Jamf Pro, Jamf School or Intune (⌥⌘O; more than 10 records ask first, since each opens a browser tab), the Apple assignment actions and the MDM commands, each through the same confirmation as its button.
 
-## Demo mode
+## Demo Mode
 
 Demo Mode shows Checkpoint with sample data and no tenant. Turn it on from either toolbar picker or the Connection menu, or with Try Demo Mode in the hint shown while nothing is configured. While it is on, every window’s title ends in "— Demo", the main window’s status bar shows a Demo Mode badge with Turn Off, and both pickers show the demo connections, with a test tube, above your own:
 
 - Apple: **Contoso (Demo)** in Apple Business and **Contoso Academy (Demo)** in Apple School Manager, plus All Organizations.
 - MDM: **Contoso Jamf Pro (Demo)**, **Contoso Intune (Demo)** and **Contoso Academy (Demo)** on Jamf School, plus All Connections.
 
-It starts on Contoso and Contoso Jamf Pro; All is one click away, as with your own connections. Sample Serials fills in all 42 demo devices. They appear the same way in every service and include the gaps a real fleet has: three iPhones Apple sends to Intune that Intune doesn’t know, a Mac with expired AppleCare, a new iPad assigned to no server, a Mac Apple has released that Jamf Pro still manages, a Mac Jamf Pro hasn’t heard from in over four months, and a Mac in Jamf Pro that is in no Apple organization.
+It starts on Contoso and Contoso Jamf Pro; All is one click away, as with your own connections. Sample Serials (or Lookup › Fill In Sample Serials) fills in all 42 demo devices. They appear the same way in every service and include the gaps a real fleet has: three iPhones Apple sends to Intune that Intune doesn’t know, a Mac with expired AppleCare, a new iPad assigned to no server, a Mac Apple has released that Jamf Pro still manages, a Mac Jamf Pro hasn’t heard from in over four months, and a Mac in Jamf Pro that is in no Apple organization.
 
 Lookups, MDM commands, Apple’s assignments and migrations, asset tags, sites, PreStages and record deletions all work, with the usual confirmations naming the demo connection. Recovery secrets read back obviously fake values. Everything is answered inside Checkpoint: nothing is sent to Apple, Jamf or Microsoft, and changes last until Checkpoint quits. Apple’s request limit applies only to real organizations, so demo lookups don’t wait.
 
-Your saved connections, the ones in use and their Keychain items are left untouched; Settings → Connections still shows and edits your real connections, and Test Connection there always uses the real service. Choosing one of your own connections in a picker leaves demo mode. Checking for updates still works.
+Your saved connections, the ones in use and their Keychain items are left untouched; Settings › Connections still shows and edits your real connections, and Test Connection there always uses the real service. Choosing one of your own connections in a picker leaves Demo Mode. Checking for updates still works.

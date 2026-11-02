@@ -10,7 +10,7 @@ For what each feature actually does, see [Features](features.md).
 
 ## Apple Business and Apple School Manager
 
-The two are the same API behind different hosts, so most of the setup is identical. In either service, select your name at the bottom of the sidebar, then **Preferences → API → Get Started**. Name the account, create it, and choose **Generate Private Key**: the `.pem` file downloads once and can’t be downloaded again.
+The two are the same API behind different hosts, so most of the setup is identical. In either service, select your name at the bottom of the sidebar, then **Preferences › API › Get Started**. Name the account, create it, and choose **Generate Private Key**: the `.pem` file downloads once and can’t be downloaded again.
 
 They differ in one respect. **Apple Business** asks for a role — set it to **Device Enrollment Manager** or higher, otherwise the account can’t manage device assignments. **Apple School Manager** asks for no role at all; creating the account is enough, and only an Administrator or Site Manager can create one.
 
@@ -20,7 +20,7 @@ Activation Lock state and AppleCare coverage need no privilege beyond the API ac
 
 **Apple School Manager can’t release devices from the organization.** It defines no such activity, so Checkpoint dims Release for those organizations. Assign, unassign and the three migration actions all work.
 
-Each organization needs its own API account. You need the Client ID, the Key ID, and the private key downloaded with the account: paste it in Settings → Connections, or import its file (any text file holding it, such as the `.pem`).
+Each organization needs its own API account. You need the Client ID, the Key ID, and the private key downloaded with the account: paste it in Settings › Connections, or import its file (any text file holding it, such as the `.pem`).
 
 Apple limits an organization to roughly **twenty requests a minute**, and doesn’t signal this with HTTP 429 — past the limit it simply stops completing connections, so failures arrive as network errors. Checkpoint paces itself to stay inside the limit, asks for up to fifty devices in one request with Apple’s serial number filter, and reads the whole organization in bulk once a lookup reaches 15 devices. Nothing needs configuring; it is described here because it explains why a large lookup pauses.
 
@@ -28,7 +28,7 @@ Apple limits an organization to roughly **twenty requests a minute**, and doesn�
 
 A different product from Jamf Pro with a much smaller API, so Checkpoint shows less for it. Choose **Jamf School** as the product when adding the server; what it has no source for is hidden rather than shown empty.
 
-Create the key under **Organization → Settings → API → Add API Key**. Authentication is the **Network ID** as the user and the **API key** as the password; the Network ID is under **Devices → Enroll Device(s)**.
+Create the key under **Organization › Settings › API › Add API Key**. Authentication is the **Network ID** as the user and the **API key** as the password; the Network ID is under **Devices › Enroll Device(s)**.
 
 Each key carries its own list of permitted methods, chosen when you create it. Grant only what you intend to use: a missing method refuses one feature rather than the connection, and Checkpoint reports it as a missing method rather than as bad credentials.
 
@@ -56,7 +56,7 @@ Timestamps come back in the instance’s own time zone with no offset attached. 
 
 ## Jamf Pro
 
-Create an API client under **Settings → API Roles and Clients**, and grant its role the privileges for the features you want.
+Create an API client under **Settings › API Roles and Clients**, and grant its role the privileges for the features you want.
 
 | Feature | Privilege |
 | --- | --- |

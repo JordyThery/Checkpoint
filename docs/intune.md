@@ -12,7 +12,7 @@ Intune is reached through Microsoft Graph with a **Microsoft Entra ID app regist
 
 1. In the Microsoft Entra admin center, register an application.
 2. Add a **client secret** and copy its value — Entra shows it once.
-3. Under **API permissions → Microsoft Graph → Application permissions**, add the permissions below, then **grant admin consent**. Application permissions do nothing until consented.
+3. Under **API permissions › Microsoft Graph › Application permissions**, add the permissions below, then **grant admin consent**. Application permissions do nothing until consented.
 4. In Checkpoint, add a connection, choose **Intune**, and supply the tenant ID, the client ID and the secret, then use Test Connection.
 
 The tenant ID may be the GUID or a verified domain name; Microsoft accepts either in the token URL.

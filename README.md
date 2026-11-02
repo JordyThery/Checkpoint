@@ -33,9 +33,9 @@ Enter serial numbers — typed, pasted, imported from a text or CSV file, or tak
 
 With several Apple organizations configured, one lookup can search all of them at once and report which organization each device belongs to. With several MDM connections, **All Connections** reads every one of them and reports a finding per device: a record on another connection than the one Apple assigns the device to (a mismatch), or records left behind on other connections (stale records). A record is called stale only on evidence of activity or managed state, and **Remove Stale Records** removes exactly the records the findings name, each through its own connection.
 
-Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, asset tags, record deletion, and MDM commands. **Demo Mode** shows all of it with sample organizations and connections, without a tenant. See [Features](docs/features.md).
+Every discrepancy can be resolved from the same window: MDM assignments and migrations, PreStage scope, sites and locations, asset tags, record deletion, and MDM commands. **Demo Mode** shows all of it with sample organizations and connections, without a tenant: turn it on from either toolbar picker or the Connection menu, or with **Try Demo Mode** while nothing is configured. See [Features](docs/features.md).
 
-![Checkpoint showing twenty-two Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
+![Checkpoint in Demo Mode showing fourteen Macs with their Apple Business and Jamf Pro status side by side, with the device inspector open](docs/screenshot.png)
 
 Right-click the column headers to choose what shows — more columns are available than appear by default, including model, order number, site, department and FileVault state. Columns and actions the connected product has no source for are left out rather than shown empty. Apple School Manager with Jamf School, showing location and ADE profile in place of site and PreStage:
 
@@ -43,7 +43,7 @@ Right-click the column headers to choose what shows — more columns are availab
 
 An Intune tenant, showing compliance and a single sync time in place of Jamf’s four dates:
 
-![The same window connected to Apple Business and Intune, showing compliance state in the inspector and the commands Intune can carry](docs/screenshot-intune.png)
+![The same window connected to Apple Business and Intune, showing compliance state and last sync in the inspector](docs/screenshot-intune.png)
 
 ## Documentation
 
@@ -61,7 +61,9 @@ An Intune tenant, showing compliance and a single sync time in place of Jamf’s
 
 ## Security
 
-Credentials are stored only on your Mac: secrets in the keychain, non-secret configuration in user defaults. The app is sandboxed, so both live in its own container, and it talks exclusively to the services you configure — Apple’s API endpoints, your Jamf servers, and Microsoft Graph — plus one daily request to GitHub asking whether a newer release exists, which sends nothing else and can be turned off in Settings.
+Credentials are stored only on your Mac: secrets in the keychain, under the service `DeviceStatus.secrets`, and non-secret configuration in user defaults. The app is sandboxed, so both live in its own container. Nothing else is written to disk: lookups, Apple snapshots and the activity log are kept in memory for the session.
+
+The app talks exclusively to the services you configure — Apple’s API endpoints, your Jamf servers or the Jamf Platform API gateway (`<region>.api.jamfcloud.com`), and Microsoft’s sign-in (`login.microsoftonline.com`) and Microsoft Graph — plus one daily request to GitHub asking whether a newer release exists, which sends nothing else and can be turned off in Settings › Updates. Download fetches a release from GitHub only when you choose it.
 
 Recovery keys, Recovery Lock passwords, device lock PINs and local administrator passwords are never stored. They are requested one device at a time, held only while the sheet showing them is open, and discarded when it closes.
 
@@ -69,7 +71,7 @@ The activity log is kept in memory, never written to disk, and never records a s
 
 ## Building
 
-Open the project in Xcode 26 or later and build the `Checkpoint` scheme (⌘R). No dependencies; the app uses only Apple frameworks.
+Open the project in Xcode 27 or later and build the `Checkpoint` scheme (⌘R). The app’s only package dependency is [JTKit](https://github.com/JordyThery/JTKit), the shared package of these apps. Resolving it also downloads Microsoft’s MSAL, which JTKit uses for Intune sign-in and which this app doesn’t link or ship.
 
 ## Acknowledgements
 
