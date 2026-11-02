@@ -116,7 +116,10 @@ final class LiveUITests: JTKitUITestCase {
             choose(menuItemStartingWith: plan.connection)
             lookUp([serial])
             // the one row, by position (a query by serial would name it in the log)
-            tap(firstRow(), timeout: 30)
+            // near its left edge: a row is wider than the window, its middle off-screen
+            let row = firstRow()
+            XCTAssertTrue(row.waitForExistence(timeout: 30), "The lookup showed no row")
+            row.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.5)).click()
             tap(app.buttons[plan.command].firstMatch, timeout: 30)
             tap(dialogButton(plan.command), timeout: 10)
             waitForNetwork()
