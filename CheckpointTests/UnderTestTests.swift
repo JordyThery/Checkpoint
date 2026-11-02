@@ -207,10 +207,12 @@ struct LiveCommandGuardTests {
         let guards = activeGuards(temporaryLog()).forConnection(receivesCommands: false)
         #expect(throws: TestRun.Refusal.self) { try guards.commands.check(.blankPush, "Blank Push") }
         #expect(throws: TestRun.Refusal.self) { try guards.commands.check(.updateInventory, "Update Inventory") }
-        // the unit-test host is under tests and not under the switch
+        // the unit-test host is under tests and not under the switch. The
+        // shared guard isn't called: it writes to the log the release check reads.
+        #expect(UnderTestGuards.shared.commands.isActive)
         #expect(UnderTestGuards.shared.commands.allowedCommands.isEmpty)
         #expect(!LiveLaunch.receivesCommands(SavedData.schoolServerID))
-        #expect(throws: TestRun.Refusal.self) { try UnderTestGuards.shared.commands.check(.blankPush, "Blank Push") }
+        #expect(UnderTestGuards.shared.forConnection(receivesCommands: false).commands.allowedCommands.isEmpty)
     }
 
     @Test("The model refuses Blank Push under tests outside the switch, before anything is sent")
