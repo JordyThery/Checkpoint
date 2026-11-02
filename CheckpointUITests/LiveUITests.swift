@@ -34,10 +34,11 @@ final class LiveUITests: JTKitUITestCase {
         Set((ProcessInfo.processInfo.environment["JTKIT_LIVE_ROLES"] ?? "").split(separator: ",").map(String.init))
     }
 
-    /// A role's test devices from the allow-list.
+    /// A role's test devices, from the allow-list through the gateway (the
+    /// runner is sandboxed and can't read the allow-list itself).
     private func testSerials(_ role: String) throws -> [String] {
-        let list = try AllowList.load()
-        return list.tenants.filter { $0.role == role }.flatMap { $0.testDevices ?? [] }.map(\.serial)
+        let gateway = try liveGateway()
+        return try liveCall { try await gateway.testDevices(role: role) }.map(\.serial)
     }
 
     private var serialField: XCUIElement {
