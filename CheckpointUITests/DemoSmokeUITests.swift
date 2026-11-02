@@ -206,7 +206,7 @@ final class DemoSmokeUITests: JTKitUITestCase {
         tap(delete, timeout: 20)
         let sheet = app.sheets.firstMatch
         XCTAssertTrue(sheet.waitForExistence(timeout: 10), "No confirmation sheet for two records")
-        XCTAssertTrue(sheet.textFields.firstMatch.exists, "The sheet doesn't ask for the number")
+        XCTAssertTrue(sheet.textFields.firstMatch.waitForExistence(timeout: 10), "The sheet doesn’t ask for the number")
         tap(sheet.buttons["Cancel"].firstMatch)
         XCTAssertTrue(app.staticTexts[mac2].firstMatch.exists, "A record went after Cancel")
     }
