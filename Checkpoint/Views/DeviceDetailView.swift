@@ -1516,7 +1516,7 @@ struct DeviceDetailView: View {
     }
 
     private func execute(_ command: MDMCommand, approval: MDMCommand.Confirmation.Approval?) {
-        run(successMessage: "\(command.title(for: model.product(for: report))) was sent to \(report.serial) in \(model.product(for: report).label).") {
+        run(successMessage: "\(command.title(for: model.product(for: report))): sent to \(report.serial) in \(model.product(for: report).label).") {
             try await model.sendCommand(command, reports: [report], approval: approval)
         }
     }

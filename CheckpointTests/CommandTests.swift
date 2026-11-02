@@ -78,9 +78,11 @@ struct CommandHarness {
     }
 
     /// Every request but the sign-ins.
+    /// The commands sent: not the sign-in, nor JTKit's Jamf Pro version read
+    /// (asked once per server per run, by whichever test reaches it first).
     var sent: [RecordedRequest] {
         server.requests.filter {
-            !$0.path.hasSuffix("/token")
+            !$0.path.hasSuffix("/token") && !$0.path.hasSuffix("/jamf-pro-version")
         }
     }
 

@@ -16,7 +16,7 @@ final class DemoSmokeUITests: JTKitUITestCase {
         XCTAssertTrue(window(titled: "Checkpoint").waitForExistence(timeout: 20), "The main window did not open")
     }
 
-    /// "x of y devices" above the table.
+    /// "x of y devices" in the status bar.
     private var deviceCount: XCUIElement {
         app.staticTexts.matching(NSPredicate(format: "value MATCHES '[0-9]+ of [0-9]+ devices?' OR label MATCHES '[0-9]+ of [0-9]+ devices?'")).firstMatch
     }
@@ -114,5 +114,131 @@ final class DemoSmokeUITests: JTKitUITestCase {
         XCTAssertTrue(window(titled: "Activity Log").waitForExistence(timeout: 10))
         openSettings()
         checkDemoTitles()
+    }
+
+    // MARK: More of the main features, in demo mode (2.10)
+
+    /// Demo devices, from JTKit's `DemoWorld`: Macs 1 and 2 on Contoso Jamf
+    /// Pro, an iPad on Contoso Academy Jamf School.
+    private let mac1 = "ZZDEMOM01QW", mac2 = "ZZDEMOM02RX", academyIPad = "ZZDEMOD31QW"
+
+    private var serialField: XCUIElement {
+        app.textFields.matching(NSPredicate(format: "placeholderValue BEGINSWITH 'Serial numbers'")).firstMatch
+    }
+
+    private var fieldText: String { serialField.value as? String ?? "" }
+
+    /// Waits until a lookup has finished (Clear is enabled again).
+    private func waitForLookup() {
+        let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["Clear"].firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [done], timeout: 90), .completed, "The lookup didn't finish")
+    }
+
+    /// A few serials, under the bulk threshold: no consent asked.
+    private func lookUp(_ serials: [String]) {
+        type(serials.joined(separator: " "), into: serialField)
+        tap(app.buttons["Look Up"].firstMatch)
+        XCTAssertTrue(deviceCount.waitForExistence(timeout: 60), "The lookup showed no devices")
+        waitForLookup()
+    }
+
+    private func select(_ serial: String) {
+        tap(app.staticTexts[serial].firstMatch, timeout: 30)
+    }
+
+    private func menu(_ menu: String, _ item: String) {
+        tap(app.menuBars.menuBarItems[menu], timeout: 10)
+        tap(app.menuItems[item].firstMatch)
+    }
+
+    /// The Lookup menu holds the window's actions; the status bar marks Demo Mode.
+    func test8MenusAndStatusBar() {
+        XCTAssertTrue(anyContaining("Demo Mode").waitForExistence(timeout: 10), "The status bar doesn't show Demo Mode")
+        tap(app.menuBars.menuBarItems["Lookup"], timeout: 10)
+        for item in ["Look Up", "Look Up Group…", "Look Up Order…", "Fill In Sample Serials", "Stop Waiting", "Clear List"] {
+            XCTAssertTrue(app.menuItems[item].firstMatch.exists, "The Lookup menu has no \(item)")
+        }
+        app.typeKey(.escape, modifierFlags: [])
+        menu("Lookup", "Fill In Sample Serials")
+        XCTAssertTrue(fieldText.contains(mac1), "Fill In Sample Serials didn't fill the field")
+        menu("Lookup", "Clear List")
+        XCTAssertFalse(fieldText.contains(mac1), "Clear List didn't empty the field")
+        tap(app.menuBars.menuBarItems["File"], timeout: 10)
+        XCTAssertTrue(app.menuItems["Import Serial Numbers…"].firstMatch.exists, "File has no Import Serial Numbers…")
+        XCTAssertFalse(app.menuItems["New Window"].firstMatch.exists, "One main window: File has no New Window")
+        app.typeKey(.escape, modifierFlags: [])
+    }
+
+    /// One device: the inspector's Apple and Jamf Pro sections.
+    func test9Inspector() {
+        lookUp([mac1])
+        select(mac1)
+        for label in ["Activation Lock", "History", "Identifiers", "MDM Commands", "Show FileVault Recovery Key"] {
+            XCTAssertTrue(any(label).waitForExistence(timeout: 20), "The inspector has no \(label)")
+        }
+    }
+
+    /// Blank Push through the real confirmation; the outcome in the status bar.
+    func test10BlankPush() {
+        lookUp([mac1])
+        select(mac1)
+        tap(app.buttons["Send Blank Push"].firstMatch, timeout: 20)
+        tap(dialogButton("Send Blank Push"), timeout: 10)
+        XCTAssertTrue(anyContaining("sent to \(mac1)").waitForExistence(timeout: 30), "The status bar doesn't say the command was sent")
+    }
+
+    /// A recovery secret opens in its sheet and closes with Done.
+    func test11RecoveryKey() {
+        lookUp([mac1])
+        select(mac1)
+        tap(app.buttons["Show FileVault Recovery Key"].firstMatch, timeout: 20)
+        XCTAssertTrue(app.buttons["Copy"].firstMatch.waitForExistence(timeout: 20), "The key's sheet didn't open")
+        tap(app.buttons["Done"].firstMatch)
+        XCTAssertFalse(app.buttons["Copy"].firstMatch.waitForExistence(timeout: 3), "The key's sheet didn't close")
+    }
+
+    /// Delete Record on two devices asks for their number to be typed; Cancel sends nothing.
+    func test12TypedConfirmation() {
+        lookUp([mac1, mac2])
+        select(mac1)
+        XCUIElement.perform(withKeyModifiers: .command) { app.staticTexts[mac2].firstMatch.click() }
+        let delete = app.buttons.matching(NSPredicate(format: "title BEGINSWITH 'Delete Record' OR label BEGINSWITH 'Delete Record'")).firstMatch
+        tap(delete, timeout: 20)
+        let sheet = app.sheets.firstMatch
+        XCTAssertTrue(sheet.waitForExistence(timeout: 10), "No confirmation sheet for two records")
+        XCTAssertTrue(sheet.textFields.firstMatch.exists, "The sheet doesn't ask for the number")
+        tap(sheet.buttons["Cancel"].firstMatch)
+        XCTAssertTrue(app.staticTexts[mac2].firstMatch.exists, "A record went after Cancel")
+    }
+
+    /// All Organizations: a device of each organization, with the Organization column.
+    func test13AllOrganizations() {
+        tap(app.menuBars.menuBarItems["Connection"], timeout: 10)
+        tap(app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'All Organizations'")).firstMatch)
+        lookUp([mac1, academyIPad])
+        XCTAssertTrue(any("Organization").waitForExistence(timeout: 10), "No Organization column")
+        XCTAssertTrue(anyContaining("Contoso Academy").waitForExistence(timeout: 10), "The Apple School Manager device isn't found")
+    }
+
+    /// Look Up Order…: the organization is read after consent, an order fills the field.
+    func test14Order() {
+        menu("Lookup", "Look Up Order…")
+        let read = app.buttons["Read Organization"].firstMatch
+        if read.waitForExistence(timeout: 10) { tap(read) }
+        let order = app.staticTexts["DEMO-1001"].firstMatch
+        XCTAssertTrue(order.waitForExistence(timeout: 90), "The orders weren't listed")
+        order.doubleClick()
+        let filled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", mac1), object: serialField)
+        XCTAssertEqual(XCTWaiter.wait(for: [filled], timeout: 20), .completed, "The order's serials weren't filled in")
+    }
+
+    /// Look Up Group…: Contoso Jamf Pro's groups, one fills the field.
+    func test15Group() {
+        menu("Lookup", "Look Up Group…")
+        let group = app.staticTexts["Design Macs"].firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 30), "The groups weren't listed")
+        group.doubleClick()
+        let filled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value CONTAINS %@", mac1), object: serialField)
+        XCTAssertEqual(XCTWaiter.wait(for: [filled], timeout: 20), .completed, "The group's serials weren't filled in")
     }
 }

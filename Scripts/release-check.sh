@@ -10,8 +10,12 @@
 # intune-test (read only; intune-test kept read only for Checkpoint),
 # jamf-test-a over the Platform API (a JTKTEST computer and mobile device
 # record, removed afterwards), and jamfpro-production, read only, only with
-# --include-production. No MDM command, Apple write or device secret read is
-# ever sent: under tests the app refuses them all, and any attempt fails the run.
+# --include-production (or the allow-list's productionReads). The live UI
+# tests drive the real app (JTKit's live-check switch): lookups on the read
+# roles, and Blank Push (Jamf Pro), Update Inventory (Jamf School) and Sync
+# Device (Intune) to one listed test device each. No interruptive command,
+# Apple write or device secret read is ever sent: the app refuses them all
+# under tests, and any attempt fails the run.
 cd "$(dirname "$0")/.." || exit 1
 
 APP_NAME="Checkpoint"
@@ -24,11 +28,15 @@ SMOKE_CLASS="DemoSmokeUITests"
 SMOKE_FILE="$PWD/CheckpointUITests/DemoSmokeUITests.swift"
 SIGNIN_TEST="CheckpointTests/LiveSignInTests"
 LIVE_TESTS=("CheckpointTests/LiveLookupTests/readOnlyLookups()"
-            "CheckpointTests/LiveLookupTests/testRecords()")
+            "CheckpointTests/LiveLookupTests/testRecords()"
+            "CheckpointUITests/LiveUITests/testReadOnlyLookups"
+            "CheckpointUITests/LiveUITests/testNonInterruptiveCommands")
 CLEANUP_TEST="CheckpointTests/LiveCleanupTests"
 ROLES=(apple-business apple-school jamfpro-readonly jamfschool-readonly intune-test jamf-test-a jamfpro-production)
-# Checkpoint reads Intune only.
-READ_ONLY_ROLES=(intune-test)
+# None: Checkpoint never writes to a tenant beyond jamf-test-a's fenced
+# delete (the app refuses every other write under tests), and intune-test
+# keeps its test device for Sync Device.
+READ_ONLY_ROLES=()
 # role:service:item, read from the Keychain service the allow-list names. The
 # Apple keys, jamfpro-readonly, jamfpro-production and intune-test come from
 # Checkpoint's own saved connections, read inside its test host.

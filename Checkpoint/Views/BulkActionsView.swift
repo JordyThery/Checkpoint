@@ -667,7 +667,7 @@ struct BulkActionsView: View {
         let product = actionProduct
         runReporting {
             let sent = try await model.sendCommand(command, reports: reports, approval: approval)
-            return "\(command.title(for: product)) was sent to \(LookupModel.deviceCount(sent)) in \(product.label)."
+            return "\(command.title(for: product)): sent to \(LookupModel.deviceCount(sent)) in \(product.label)."
         }
     }
 
