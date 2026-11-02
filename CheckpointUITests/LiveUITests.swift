@@ -100,7 +100,7 @@ final class LiveUITests: JTKitUITestCase {
             (Role.intune, Role.intune, "Sync Device"),
         ]
         // which roles receive a command in this run, for the report
-        let receiving = try plans.map(\.role).filter { runRoles.contains($0) && !(try testSerials($0)).isEmpty }
+        let receiving = try plans.map(\.role).filter { try runRoles.contains($0) && !testSerials($0).isEmpty }
         recordLive(step: "roles that receive a device command", passed: true,
                    note: receiving.isEmpty ? "none" : receiving.joined(separator: ", ") + " (one test device each, non-interruptive only)")
         var ran = 0

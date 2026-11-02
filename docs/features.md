@@ -185,7 +185,9 @@ Every service is logged the same way, including Microsoft Graph. The log is held
 
 Copy Log and the export each come in a masked form (Copy Log, Devices Masked and Export for Bug Report), replacing serial numbers, UDIDs and hardware addresses with `<device 1>`, `<device 2>` and so on — consistently, so a device stays recognizable without being named. Use it when attaching a log to a bug report. Copy Entry copies one entry unmasked.
 
-While a service asks Checkpoint to wait before trying a request again (Jamf’s or Microsoft’s “try again in 40 s”, Apple’s per-minute limit), the wait shows in the window’s status bar with a Stop button, which ends the wait and stops those requests.
+While a service asks Checkpoint to wait before trying a request again (Jamf’s or Microsoft’s “try again in 40 s”, Apple’s per-minute limit), the wait shows in the window’s status bar with a Stop button (Lookup › Stop Waiting, ⌥⌘.), which ends the wait and stops those requests. A command stopped this way reports “Stopped: n sent, m not sent.”: the devices it reached received it and are never reported as failed, and its activity log entry names the devices it didn’t reach. A stopped lookup or other action reads “Stopped before it finished.”
+
+The **Device menu** holds the inspector’s actions for the selected device or devices: Open in Jamf Pro, Jamf School or Intune (⌥⌘O; more than 10 records ask first, since each opens a browser tab), the Apple assignment actions and the MDM commands, each through the same confirmation as its button.
 
 ## Demo mode
 
