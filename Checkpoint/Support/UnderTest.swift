@@ -14,9 +14,10 @@ import os
 ///
 /// A live UI test (JTKit's live-check switch, `LiveLaunch`) is under tests
 /// too, with one exception: the non-interruptive commands in
-/// `liveCommands` may go out, through the release check's gateway, which
-/// sends them only to the allow-list's test devices. Everything else stays
-/// refused here, before the gateway sees it.
+/// `liveCommands` may go out through a connection whose role lists test
+/// devices for the run (`LiveLaunch.receivesCommands`), through the release
+/// check's gateway, which sends them only to those devices. Everything else
+/// stays refused here, before the gateway sees it.
 nonisolated enum UnderTest {
     /// Whether this launch is under tests (JTKit's `TestRun.isActive`).
     static let isActive: Bool = TestRun.isActive
@@ -110,11 +111,19 @@ nonisolated struct UnderTestGuards: Sendable {
 
     /// On under tests, off otherwise.
     static let shared = UnderTestGuards(
-        commands: ActionGuard(isActive: UnderTest.isActive, log: .commands,
-                              allowedCommands: LiveLaunch.isActive ? UnderTest.liveCommands : []),
+        commands: ActionGuard(isActive: UnderTest.isActive, log: .commands),
         appleWrites: ActionGuard(isActive: UnderTest.isActive, log: .appleWrites),
         secretReads: ActionGuard(isActive: UnderTest.isActive, log: .secretReads),
         recordWrites: ActionGuard(isActive: UnderTest.isActive, log: .recordWrites))
+
+    /// The guards for one MDM connection: `liveCommands` let through only
+    /// when the connection may receive commands (under the live switch, its
+    /// role lists test devices); every other guard unchanged.
+    func forConnection(receivesCommands: Bool) -> UnderTestGuards {
+        var guards = self
+        guards.commands.allowedCommands = receivesCommands ? UnderTest.liveCommands : []
+        return guards
+    }
 
     /// For unit tests whose requests go to a mock server only.
     static let off = UnderTestGuards(commands: .off, appleWrites: .off, secretReads: .off, recordWrites: .off)

@@ -182,3 +182,48 @@ struct UnderTestTests {
         #expect(!files.contains { $0.contains(URL(filePath: fixture.domain).lastPathComponent) })
     }
 }
+
+// MARK: - Commands under the live switch (2.10.0)
+
+@Suite("Commands under the live switch")
+@MainActor
+struct LiveCommandGuardTests {
+
+    @Test("Through a connection that receives commands: only Blank Push and Update Inventory pass")
+    func onlyTheTwoPass() throws {
+        let guards = activeGuards(temporaryLog()).forConnection(receivesCommands: true)
+        try guards.commands.check(.blankPush, "Blank Push")
+        try guards.commands.check(.updateInventory, "Update Inventory")
+        for command in MDMCommand.allCases where ![.blankPush, .updateInventory].contains(command) {
+            #expect(throws: TestRun.Refusal.self, "\(command) is refused") { try guards.commands.check(command, "\(command)") }
+        }
+        #expect(throws: TestRun.Refusal.self, "an Apple write is refused") { try guards.appleWrites.check("Apple Assign") }
+        #expect(throws: TestRun.Refusal.self) { try guards.recordWrites.check("Delete Record") }
+        #expect(throws: TestRun.Refusal.self) { try guards.secretReads.check("FileVault key") }
+    }
+
+    @Test("Through a connection without test devices, or outside the switch: Blank Push is refused")
+    func refusedElsewhere() {
+        let guards = activeGuards(temporaryLog()).forConnection(receivesCommands: false)
+        #expect(throws: TestRun.Refusal.self) { try guards.commands.check(.blankPush, "Blank Push") }
+        #expect(throws: TestRun.Refusal.self) { try guards.commands.check(.updateInventory, "Update Inventory") }
+        // the unit-test host is under tests and not under the switch
+        #expect(UnderTestGuards.shared.commands.allowedCommands.isEmpty)
+        #expect(!LiveLaunch.receivesCommands(SavedData.schoolServerID))
+        #expect(throws: TestRun.Refusal.self) { try UnderTestGuards.shared.commands.check(.blankPush, "Blank Push") }
+    }
+
+    @Test("The model refuses Blank Push under tests outside the switch, before anything is sent")
+    func modelRefuses() async {
+        let log = temporaryLog()
+        let harness = CommandHarness(underTest: activeGuards(log))
+        let message = await harness.send(.blankPush, [Devices.mac()])
+        #expect(message == UnderTest.refusal)
+        #expect(harness.sent.isEmpty)
+    }
+
+    @Test("The live allowance is exactly Blank Push and Update Inventory")
+    func theAllowance() {
+        #expect(UnderTest.liveCommands == [.blankPush, .updateInventory])
+    }
+}

@@ -44,8 +44,9 @@ struct LookupCommands: Commands {
             // Demo Mode only; dimmed otherwise, so the menu keeps its items.
             Button("Fill In Sample Serials") { actions?.sampleSerials?() }
                 .disabled(actions?.sampleSerials == nil)
+            // ⌥⌘., not ⌘.: ⌘. is the system's Cancel key for alerts and sheets.
             Button("Stop Waiting") { stopWaiting?() }
-                .keyboardShortcut(".")
+                .keyboardShortcut(".", modifiers: [.command, .option])
                 .disabled(stopWaiting == nil)
             Divider()
             Button("Clear List") { actions?.clear?() }

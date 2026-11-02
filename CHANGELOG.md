@@ -22,7 +22,7 @@
 - **One main window.** Every window showed the same results, so File › New
   Window is gone; File › Import Serial Numbers… (⌘O) takes its place.
 - **A Lookup menu:** Look Up (⌘↩), Look Up Group…, Look Up Order… (⇧⌘O),
-  Stop Waiting (⌘.) and Clear List (⌘K).
+  Stop Waiting (⌥⌘.) and Clear List (⌘K).
 - **A status bar** at the bottom of the window shows a lookup’s progress,
   waits, the device count and the outcome of the last command. It replaces
   the “Command Sent” message, which had to be dismissed.

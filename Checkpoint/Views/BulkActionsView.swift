@@ -681,12 +681,17 @@ struct BulkActionsView: View {
     /// Runs an action; a message it returns is shown when it succeeds.
     private func runReporting(_ operation: @escaping () async throws -> String?) {
         isWorking = true
+        model.clearStatus()
         Task {
             do {
                 // In the window's status bar, not a pop-up to dismiss.
                 if let message = try await operation() { model.report(message) }
+            } catch where Stopping.isStop(error) {
+                // Stopped by the user: said in the status bar, not as a failure.
+                model.report(describe(error))
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = describe(error)
+                model.report(describe(error), failed: true)
             }
             isWorking = false
         }

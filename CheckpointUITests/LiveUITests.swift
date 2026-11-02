@@ -15,8 +15,11 @@ import JTKitUITestSupport
 ///   two commands through under the switch, and the gateway sends commands
 ///   only to the allow-list's test devices.
 ///
-/// Serials come from the allow-list's test devices, are kept in memory and
-/// never written to a report or a failure message.
+/// Serials come from the allow-list's test devices through the gateway, are
+/// kept in memory and never written to a report or a failure message: they
+/// are pasted, rows are found by count and position, and a live UI test
+/// keeps no screenshot or element dump (the scheme keeps no automatic
+/// screenshots; JTKit 1.3.2 attaches none on failure).
 final class LiveUITests: JTKitUITestCase {
     override var appName: String { "Checkpoint" }
     override var launchesLive: Bool { true }
@@ -52,7 +55,8 @@ final class LiveUITests: JTKitUITestCase {
 
     /// Looks the serials up and waits until the app's requests are done.
     private func lookUp(_ serials: [String]) {
-        type(serials.joined(separator: " "), into: serialField)
+        // pasted, not typed: XCTest's activity log records what is typed
+        paste(serials.joined(separator: " "), into: serialField)
         tap(app.buttons["Look Up"].firstMatch)
         waitForNetwork(timeout: 300)
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: app.buttons["Clear"].firstMatch)
@@ -72,8 +76,13 @@ final class LiveUITests: JTKitUITestCase {
         if roles.contains(Role.business) || roles.contains(Role.appleSchool) { choose(menuItemStartingWith: "All Organizations") }
         choose(menuItemStartingWith: "All Connections")
         lookUp(serials)
-        var missing = 0
-        for serial in serials where !app.staticTexts[serial].firstMatch.waitForExistence(timeout: 10) { missing += 1 }
+        // counted in the status bar ("4 of 4 devices"), never found by serial:
+        // a query names its text in XCTest's activity log
+        let count = app.staticTexts.matching(NSPredicate(format: "value ENDSWITH ' devices' OR label ENDSWITH ' devices'")).firstMatch
+        let shown = count.waitForExistence(timeout: 10)
+            ? Int(((count.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? count.label).split(separator: " ").first ?? "") ?? 0
+            : 0
+        let missing = max(serials.count - shown, 0)
         let noRecord = app.staticTexts["No record"].firstMatch.exists
         let passed = missing == 0 && !noRecord
         recordLive(step: "read-only lookups", passed: passed,
@@ -90,13 +99,18 @@ final class LiveUITests: JTKitUITestCase {
             (Role.school, Role.school, "Update Inventory"),
             (Role.intune, Role.intune, "Sync Device"),
         ]
+        // which roles receive a command in this run, for the report
+        let receiving = try plans.map(\.role).filter { runRoles.contains($0) && !(try testSerials($0)).isEmpty }
+        recordLive(step: "roles that receive a device command", passed: true,
+                   note: receiving.isEmpty ? "none" : receiving.joined(separator: ", ") + " (one test device each, non-interruptive only)")
         var ran = 0
         for plan in plans where runRoles.contains(plan.role) {
             guard let serial = try testSerials(plan.role).first else { continue }
             try launchLive(roles: [plan.role])
             choose(menuItemStartingWith: plan.connection)
             lookUp([serial])
-            tap(app.staticTexts[serial].firstMatch, timeout: 30)
+            // the one row, by position (a query by serial would name it in the log)
+            tap(app.tables.firstMatch.tableRows.firstMatch, timeout: 30)
             tap(app.buttons[plan.command].firstMatch, timeout: 30)
             tap(dialogButton(plan.command), timeout: 10)
             waitForNetwork()

@@ -336,11 +336,18 @@ struct ContentView: View {
                 } else if model.isLoading {
                     ProgressView().controlSize(.small).accessibilityLabel("In progress")
                     Text(progressText).monospacedDigit()
-                } else if let message = model.statusMessage?.text {
-                    Text(message)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .help(message)
+                } else if let status = model.statusMessage {
+                    Group {
+                        if status.failed {
+                            // first line only: the alert has the whole text
+                            WarningLabel(String(status.text.split(separator: "\n").first ?? ""))
+                        } else {
+                            Text(status.text)
+                        }
+                    }
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(status.text)
                 }
                 Spacer()
                 if !model.reports.isEmpty {
@@ -1114,13 +1121,20 @@ private struct ErrorCellLabel: View {
     let message: String
 
     var body: some View {
-        Label {
-            Text("Error")
-        } icon: {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+        if message == Stopping.sentence {
+            // stopped by the user, not a failure
+            Label("Stopped", systemImage: "stop.circle")
+                .foregroundStyle(.secondary)
+                .help(message)
+        } else {
+            Label {
+                Text("Error")
+            } icon: {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            }
+            .help(message)
         }
-        .help(message)
     }
 }
 

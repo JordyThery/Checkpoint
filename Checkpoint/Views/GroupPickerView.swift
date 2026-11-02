@@ -112,7 +112,7 @@ struct GroupPickerView: View {
         do {
             groups = try await model.jamfGroups()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = describe(error)
         }
         isLoading = false
     }
@@ -132,7 +132,7 @@ struct GroupPickerView: View {
                 onPick(group, serials)
                 dismiss()
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = describe(error)
             }
             isFetchingMembers = false
         }

@@ -586,7 +586,7 @@ struct DeviceDetailView: View {
             historyLoaded = true
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return }
-            appleReadErrors[.history] = error.localizedDescription
+            appleReadErrors[.history] = describe(error)
         }
     }
 
@@ -1399,7 +1399,7 @@ struct DeviceDetailView: View {
             loadedCoverage = coverage
         } catch {
             if cancelled(error) { return }
-            appleReadErrors[.coverage] = error.localizedDescription
+            appleReadErrors[.coverage] = describe(error)
         }
         do {
             let lock = try await model.activationLock(for: report)
@@ -1407,7 +1407,7 @@ struct DeviceDetailView: View {
             activationLock = lock
         } catch {
             if cancelled(error) { return }
-            appleReadErrors[.activationLock] = error.localizedDescription
+            appleReadErrors[.activationLock] = describe(error)
         }
         isLoadingActivationLock = false
         guard report.mdm.value != nil else { return }
@@ -1427,7 +1427,7 @@ struct DeviceDetailView: View {
                 appleDetail = detail
             } catch {
                 if cancelled(error) { return }
-                appleReadErrors[.management] = error.localizedDescription
+                appleReadErrors[.management] = describe(error)
             }
         }
         let compliance = await model.deviceCompliance(for: report)
@@ -1473,7 +1473,7 @@ struct DeviceDetailView: View {
                 let (value, note) = try await fetch()
                 revealedSecret = RevealedSecret(title: title, value: value, note: note)
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = describe(error)
             }
             isWorking = false
         }
@@ -1538,13 +1538,18 @@ struct DeviceDetailView: View {
 
     private func run(successMessage: String? = nil, _ operation: @escaping () async throws -> Void) {
         isWorking = true
+        model.clearStatus()
         Task {
             do {
                 try await operation()
                 // In the window's status bar, not a pop-up to dismiss.
                 if let successMessage { model.report(successMessage) }
+            } catch where Stopping.isStop(error) {
+                // Stopped by the user: said in the status bar, not as a failure.
+                model.report(describe(error))
             } catch {
-                errorMessage = error.localizedDescription
+                errorMessage = describe(error)
+                model.report(describe(error), failed: true)
             }
             isWorking = false
             syncSelections()

@@ -33,7 +33,7 @@ Double-clicking a row, or the arrow at the end of it, opens the device’s recor
 
 **Order…** lists the Apple order numbers in your organization with the number of devices on each. Apple can’t search devices by order number, so Checkpoint reads the whole organization once and reuses it for the session. Before that first read it asks, as a large lookup does; the read takes about a minute per organization, and later uses are immediate.
 
-Both are also in the Lookup menu (Look Up Group…, Look Up Order… ⇧⌘O), beside Look Up (⌘↩), Clear List (⌘K) and Stop Waiting (⌘.); File › Import Serial Numbers… (⌘O) reads a text or CSV file. Checkpoint has one main window: every window would show the same results. Both fill the serial field. When the devices picked mean reading an Apple organization in full (15 devices or more, and not read yet this session), the confirmation appears after you pick the group or order, since neither a group name nor an order number reveals that it covers several hundred devices.
+Both are also in the Lookup menu (Look Up Group…, Look Up Order… ⇧⌘O), beside Look Up (⌘↩), Clear List (⌘K) and Stop Waiting (⌥⌘.); File › Import Serial Numbers… (⌘O) reads a text or CSV file. Checkpoint has one main window: every window would show the same results. Both fill the serial field. When the devices picked mean reading an Apple organization in full (15 devices or more, and not read yet this session), the confirmation appears after you pick the group or order, since neither a group name nor an order number reveals that it covers several hundred devices.
 
 ![The order picker listing Apple School Manager order numbers with the number of devices on each](screenshot-order.png)
 

@@ -1024,3 +1024,43 @@ struct CommandActionEntryTests {
             """)
     }
 }
+
+// MARK: - Stopped during a wait (2.10.0, JTKit 1.3.2)
+
+@MainActor
+@Suite("A bulk command stopped during a wait", .serialized)
+struct StoppedCommandTests {
+    @Test("Stop during the second device's wait: 1 sent, 2 not sent, nothing marked failed")
+    func stoppedDuringAWait() async throws {
+        // the second iPad answers 429 with a long wait; Stop ends it
+        let server = commandServer { request in
+            request.path.hasSuffix("/devices/2/refresh") ? .json(429, "{}", headers: ["Retry-After": "40"]) : nil
+        }
+        let harness = CommandHarness(server)
+        let reports = (1...3).map {
+            Devices.mobile("TESTIPAD00\($0)", id: "\($0)", udid: "00001111-000000000000000\($0)", on: SavedData.schoolServerID)
+        }
+        let task = Task { await harness.send(.updateInventory, reports) }
+        for _ in 0..<500 where harness.model.waits.current.isEmpty {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(harness.model.waits.statusText != nil, "the wait shows in the status bar")
+        harness.model.waits.cancelAll()
+        let message = await task.value
+        #expect(message == "Stopped: 1 sent, 2 not sent.")
+        let refreshes = harness.sent.filter { $0.path.hasSuffix("/refresh") }
+        #expect(refreshes.count == 2, "the third device is never sent to")
+        let entry = try #require(harness.actions.last)
+        #expect(entry.detail == "Update Inventory stopped: 1 sent, 2 not sent")
+        #expect(!entry.isFailure, "a stopped run isn't a failure: the first device received it")
+        #expect(entry.note?.contains("TESTIPAD001") == false, "the device sent to isn't listed as not sent")
+    }
+
+    @Test("A stop reads as one plain sentence, never Swift's cancellation text")
+    func plainSentence() {
+        #expect(describe(CancellationError()) == "Stopped before it finished.")
+        #expect(describe(URLError(.cancelled)) == "Stopped before it finished.")
+        #expect(describe(StoppedRun(sent: 3, notSent: 7)) == "Stopped: 3 sent, 7 not sent.")
+        #expect(describe(LookupModel.ActionError(message: "Refused.")) == "Refused.")
+    }
+}

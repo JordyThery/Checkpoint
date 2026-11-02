@@ -271,7 +271,10 @@ nonisolated enum DateFormatting {
     /// it, a check-in reads correctly wherever the person looking is; without
     /// it, the time is read as local and is wrong by the offset between them.
     static func isoFromInstanceLocal(_ string: String?, timeZone: TimeZone?) -> String? {
-        guard let string, !string.isEmpty else { return nil }
+        guard let text = string, !text.isEmpty else { return nil }
+        // the first 19 characters, as JTKit reads them: fractional seconds or
+        // a suffix never blank the date
+        let string = String(text.prefix(19))
         let zone = timeZone ?? .current
         guard let date = parse(string, format: "yyyy-MM-dd HH:mm:ss", timeZone: zone)
             ?? parse(string, format: "yyyy-MM-dd'T'HH:mm:ss", timeZone: zone) else { return nil }
@@ -493,7 +496,10 @@ final class LookupModel {
     /// The guards for one connection: none for a demo connection, whose
     /// requests reach the in-app demo servers only.
     private func guards(for record: CheckpointConnection) -> UnderTestGuards {
-        demoSource(for: record) == nil ? underTest : .off
+        guard demoSource(for: record) == nil else { return .off }
+        // under the live switch, commands only through a connection whose role lists test devices
+        guard case .mdm(let server) = record else { return underTest.forConnection(receivesCommands: false) }
+        return underTest.forConnection(receivesCommands: LiveLaunch.receivesCommands(server.id))
     }
 
     /// Refuses a device secret read under tests, before any request.
@@ -717,7 +723,7 @@ final class LookupModel {
         } catch {
             recordAction(
                 service,
-                "\(summary) — \(error.localizedDescription)",
+                "\(summary) — \(describe(error))",
                 serials: serials,
                 outcome: .failed,
                 orgName: orgName,
@@ -750,12 +756,12 @@ final class LookupModel {
             let outcomes = try await operation()
             failure = logActivity(org, summary, serials: serials, outcomes: outcomes)
         } catch let partial as PartialSubmission {
-            let notSent = "\(partial.total - partial.sent) of \(partial.total) devices weren’t sent: \(partial.error.localizedDescription)"
+            let notSent = "\(partial.total - partial.sent) of \(partial.total) devices weren’t sent: \(describe(partial.error))"
             _ = logActivity(org, summary, serials: serials, outcomes: partial.outcomes, failedNote: notSent)
             failure = ActionError(message: ([summary + "."] + Self.sentences(partial.outcomes, org: org) + [notSent + "."])
                 .joined(separator: " "))
         } catch {
-            recordAction(service, "\(summary) — \(error.localizedDescription)", serials: serials,
+            recordAction(service, "\(summary) — \(describe(error))", serials: serials,
                          outcome: .failed, orgName: org.displayName)
             failure = error
         }
@@ -951,12 +957,19 @@ final class LookupModel {
     struct StatusMessage: Equatable {
         let id = UUID()
         let text: String
+        /// An action that failed: shown with a warning symbol (its alert shows too).
+        var failed = false
     }
 
     private(set) var statusMessage: StatusMessage?
 
-    func report(_ message: String) {
-        statusMessage = StatusMessage(text: message)
+    func report(_ message: String, failed: Bool = false) {
+        statusMessage = StatusMessage(text: message, failed: failed)
+    }
+
+    /// When an action starts: the last outcome no longer describes what's on screen.
+    func clearStatus() {
+        statusMessage = nil
     }
 
     /// Which product the selected connection talks to. Jamf Pro when nothing
@@ -1577,7 +1590,7 @@ final class LookupModel {
                 case .failure(let error):
                     recordAction(
                         org.kind.activityService,
-                        "Couldn’t read the organization — \(error.localizedDescription)",
+                        "Couldn’t read the organization — \(describe(error))",
                         serials: [],
                         outcome: .failed,
                         orgName: org.displayName
@@ -1615,7 +1628,7 @@ final class LookupModel {
         } catch {
             recordAction(
                 org.kind.activityService,
-                "Couldn’t read the organization — \(error.localizedDescription)",
+                "Couldn’t read the organization — \(describe(error))",
                 serials: [],
                 outcome: .failed,
                 orgName: org.displayName
@@ -2143,7 +2156,7 @@ final class LookupModel {
             try guards(for: .mdm(connection)).recordWrites.check(
                 "\(product.removeRecordAction) (\(product.label)), \(Self.deviceCount(entries.count))")
         } catch {
-            return entries.map { "\($0.serial): \(error.localizedDescription)" }
+            return entries.map { "\($0.serial): \(describe(error))" }
         }
         let school = makeJamfSchoolClient(for: connection)
         let intune = makeIntuneClient(for: connection)
@@ -2167,7 +2180,7 @@ final class LookupModel {
                     }
                 }
             } catch {
-                failures.append("\(entry.serial): \(error.localizedDescription)")
+                failures.append("\(entry.serial): \(describe(error))")
             }
         }
         recordAction(
@@ -2401,7 +2414,7 @@ final class LookupModel {
                     try await jamf.setMobileDeviceSite(deviceID: entry.info.recordID, siteID: siteID)
                 }
             } catch {
-                failures.append("\(entry.serial): \(error.localizedDescription)")
+                failures.append("\(entry.serial): \(describe(error))")
             }
         }
         let allSites = taxonomyByConnection[connection.id]?.sites ?? []
@@ -2517,16 +2530,43 @@ final class LookupModel {
             } else {
                 result = MDMCommand.Result(command: command.title, outcomes: [])
             }
+        } catch where Stopping.isStop(error) {
+            // Stopped before anything was sent (e.g. during the sign-in's
+            // wait): nothing failed, nothing reached a device.
+            let outcomes = targets.map { target in
+                MDMCommand.DeviceOutcome(target: target, outcome: command.applies(to: DeviceKind(target.kind), product: product)
+                                         ? .skipped(.stopped) : .skipped(.notApplicable(target.kind)))
+            }
+            log.recordCommand(command.title(for: product), outcomes: outcomes,
+                              service: product.activityService.label, connection: connection.displayName)
+            throw StoppedRun(sent: 0, notSent: outcomes.filter { $0.outcome == .skipped(.stopped) }.count)
         } catch {
             // With `failure` set, JTKit writes one "<title> failed — …" entry
             // and uses the outcomes only to list the devices.
-            log.recordCommand(command.title(for: product), outcomes: targets.map { .init(target: $0, outcome: .failed(error.localizedDescription)) },
-                              failure: error.localizedDescription,
+            log.recordCommand(command.title(for: product), outcomes: targets.map { .init(target: $0, outcome: .failed(describe(error))) },
+                              failure: describe(error),
                               service: product.activityService.label, connection: connection.displayName)
             throw error
         }
         log.recordCommand(command.title(for: product), outcomes: result.outcomes, warning: result.warning,
                           service: product.activityService.label, connection: connection.displayName)
+        // Stopped during a wait (JTKit 1.3.2): the devices sent to received it.
+        // Said as "Stopped: n sent, m not sent", never as a failure, unless a
+        // device also failed, which is then named.
+        if result.wasStopped {
+            let stopped = StoppedRun(sent: result.sent.count, notSent: result.stopped.count)
+            let failures = result.outcomes.compactMap { item -> String? in
+                switch item.outcome {
+                case .failed(let message): "\(item.target.serial): \(message)"
+                case .notProcessed: "\(item.target.serial): accepted, but not processed."
+                default: nil
+                }
+            }
+            guard failures.isEmpty else {
+                throw ActionError(message: ([stopped.errorDescription ?? ""] + failures).joined(separator: "\n"))
+            }
+            throw stopped
+        }
         if let problems = result.problems {
             // What reached its devices is said too, not only what didn't.
             let reached = result.sent.isEmpty ? []
@@ -2665,7 +2705,7 @@ final class LookupModel {
             secret = try readSecret(for: .mdm(config))
             secretReadFailures[config.id] = nil
         } catch {
-            secretReadFailures[config.id] = error.localizedDescription
+            secretReadFailures[config.id] = describe(error)
             return nil
         }
         guard let secret, !secret.isEmpty else { return nil }
@@ -2754,7 +2794,7 @@ final class LookupModel {
                 schoolFailure = nil
             } catch {
                 schoolFleet = [:]
-                schoolFailure = error.localizedDescription
+                schoolFailure = describe(error)
             }
         }
 
@@ -2767,7 +2807,7 @@ final class LookupModel {
                 intuneFailure = nil
             } catch {
                 intuneFleet = [:]
-                intuneFailure = error.localizedDescription
+                intuneFailure = describe(error)
             }
         }
     }
@@ -2781,6 +2821,10 @@ final class LookupModel {
         /// The MDM connections a lookup reads, in configured order. One per
         /// connection in scope, each carrying its own prologue data.
         var mdmTargets: [MDMTargetContext] = []
+        /// A refresh after an action: AppleCare coverage isn't read again
+        /// (the inspector reads it on demand), so a refresh costs one request
+        /// per device, its assignment.
+        var skipsCoverage = false
         /// True when the lookup spans several connections, which is what
         /// turns on record aggregation and the verdicts.
         var readsAllConnections = false
@@ -2816,6 +2860,7 @@ final class LookupModel {
     ) async -> LookupContext {
         let deviceCount = serials.count
         var context = LookupContext()
+        context.skipsCoverage = refreshing
         // One entry per organization being read. A snapshot already in hand
         // answers instantly, so it is used whatever the size of the lookup.
         // Reading one is worth it when asking per device would be slower, or
@@ -2831,7 +2876,9 @@ final class LookupModel {
         // devices plus one per device management service, which on a real
         // tenant is a few dozen and can cross Apple's per-minute quota on
         // its own.
-        let readInBulk = deviceCount >= Self.snapshotThreshold
+        // A refresh after an action reads only the affected devices, however
+        // many: reading an organization in full needs the lookup's consent.
+        let readInBulk = !refreshing && deviceCount >= Self.snapshotThreshold
         let pairs = orgsToRead.compactMap { org in
             makeABMClient(for: org).map { (org: org, client: $0) }
         }
@@ -2873,7 +2920,7 @@ final class LookupModel {
             if entry.snapshot == nil, let result = filtered[org.id] {
                 switch result {
                 case .success(let devices): entry.devices = devices
-                case .failure(let error): entry.devicesFailure = error.localizedDescription
+                case .failure(let error): entry.devicesFailure = describe(error)
                 }
             }
             if let list = entry.snapshot?.servers ?? (servers[org.id] ?? nil) {
@@ -3130,7 +3177,7 @@ final class LookupModel {
         var released: ABMInfo?
         var failure: String?
         for org in context.abmOrgs {
-            switch await fetchABM(org: org, serial: serial) {
+            switch await fetchABM(org: org, serial: serial, readsCoverage: !context.skipsCoverage) {
             case .found(let info) where info.isReleased:
                 // Kept in case no organization has it as an active device.
                 if released == nil { released = info }
@@ -3148,7 +3195,7 @@ final class LookupModel {
     }
 
     /// Reads one organization for one serial.
-    nonisolated private static func fetchABM(org: ABMOrgContext, serial: String) async -> FetchState<ABMInfo> {
+    nonisolated private static func fetchABM(org: ABMOrgContext, serial: String, readsCoverage: Bool = true) async -> FetchState<ABMInfo> {
         // A wanted snapshot that failed is reported as a failure rather than
         // worked around per device: three requests per serial against a
         // twenty-a-minute quota turns a large lookup into a crawl, and the
@@ -3184,7 +3231,7 @@ final class LookupModel {
             // A failed coverage read is left for the inspector, which reads
             // it again and shows the error; a failed server read is an
             // unknown assignment, never "unassigned".
-            let coverage = try? await org.client.appleCareCoverage(serial: serial)
+            let coverage = readsCoverage ? try? await org.client.appleCareCoverage(serial: serial) : nil
             var serverID: String?
             var assignmentUnknown = false
             do {
@@ -3203,7 +3250,7 @@ final class LookupModel {
                 assignmentUnknown: assignmentUnknown
             ))
         } catch {
-            return .failed(error.localizedDescription)
+            return .failed(describe(error))
         }
     }
 

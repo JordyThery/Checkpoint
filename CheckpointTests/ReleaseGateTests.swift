@@ -575,3 +575,75 @@ struct AppleFilterTests {
         #expect(harness.model.abmSnapshots[SavedData.businessID] == nil, "a new key ID reads the organization again")
     }
 }
+
+@Suite("2.10: review fixes")
+@MainActor
+struct ReviewFixTests {
+    @Test("A refresh after an Apple write on 20 devices reads only those devices, never the whole organization")
+    func refreshReadsOnlyTheAffectedDevices() async throws {
+        let serials = (1...20).map { String(format: "TESTREF%03d", $0) }
+        let server = appleServer { request in
+            if request.path == "/v1/orgDeviceActivities", request.method == "POST" {
+                return .json(201, #"{"data":{"type":"orgDeviceActivities","id":"ACT-1","attributes":{"status":"IN_PROGRESS"}}}"#)
+            }
+            if request.path == "/v1/orgDeviceActivities/ACT-1" {
+                return .json(200, #"{"data":{"type":"orgDeviceActivities","id":"ACT-1","attributes":{"status":"COMPLETED"}}}"#)
+            }
+            if request.path == "/v1/mdmServers" { return .json(200, #"{"data":[{"id":"S1","attributes":{"serverName":"Jamf Pro"}}]}"#) }
+            if request.path == "/v1/orgDevices", let filter = request.queryValue("filter[serialNumber]") {
+                let items = filter.split(separator: ",").map { #"{"type":"orgDevices","id":"\#($0)","attributes":\#(AppleFixtures.device(String($0)))}"# }
+                return .json(200, #"{"data":[\#(items.joined(separator: ","))]}"#)
+            }
+            if request.path.hasSuffix("/relationships/assignedServer") { return .json(200, #"{"data":{"type":"mdmServers","id":"S1"}}"#) }
+            return nil
+        }
+        let harness = AppleHarness(server)
+        harness.model.abmScope = .organization(SavedData.businessID)
+        let reports = try serials.map { try AppleHarness.device($0) }
+        harness.model.reports = reports
+        try await harness.model.setMDMServer(reports: reports, to: "S1")
+        let posted = try #require(server.requests.firstIndex { $0.path == "/v1/orgDeviceActivities" && $0.method == "POST" })
+        let after = server.requests[posted...]
+        #expect(!after.contains { $0.path == "/v1/orgDevices" && $0.queryValue("filter[serialNumber]") == nil },
+                "the organization isn't read in full")
+        #expect(!after.contains { $0.path.contains("/relationships/devices") }, "no server's device list either")
+        #expect(after.filter { $0.path == "/v1/orgDevices" }.count == 1, "20 devices in one filtered request")
+        #expect(!after.contains { $0.path.contains("appleCareCoverage") }, "coverage is left for the inspector")
+        #expect(harness.model.reports.allSatisfy { $0.abm.value?.mdmServerID == "S1" })
+    }
+
+    @Test("Jamf School's check-in time is read from its first 19 characters, in the instance's zone")
+    func schoolCheckIn() {
+        let tokyo = TimeZone(identifier: "Asia/Tokyo")
+        #expect(DateFormatting.isoFromInstanceLocal("2026-10-20 08:12:33", timeZone: tokyo) == "2026-10-19T23:12:33Z")
+        #expect(DateFormatting.isoFromInstanceLocal("2026-10-20 08:12:33.000000", timeZone: tokyo) == "2026-10-19T23:12:33Z")
+        #expect(DateFormatting.isoFromInstanceLocal("2026-10-20T08:12:33+09:00", timeZone: tokyo) == "2026-10-19T23:12:33Z")
+        #expect(DateFormatting.isoFromInstanceLocal("", timeZone: tokyo) == nil)
+    }
+
+    @Test("The status bar: an action's start clears the last message; a failure shows there too")
+    func statusBar() async {
+        let harness = CommandHarness(commandServer { request in
+            request.path.hasSuffix("/refresh") ? .json(500, #"{"code":500,"message":"Server error"}"#) : nil
+        })
+        harness.model.report("Update Inventory: sent to TESTIPAD001 in Jamf School.")
+        harness.model.clearStatus()
+        #expect(harness.model.statusMessage == nil)
+        harness.model.report("Refused.", failed: true)
+        #expect(harness.model.statusMessage?.failed == true)
+        #expect(harness.model.statusMessage?.text == "Refused.")
+        // the same text twice is still a change, so it is said again
+        let first = harness.model.statusMessage
+        harness.model.report("Refused.", failed: true)
+        #expect(harness.model.statusMessage != first)
+    }
+
+    @Test("A Jamf Pro address's path stays in record and Blueprint links")
+    func linksKeepThePath() {
+        let server = MDMConnection(name: "On-premises", baseURL: "https://jss.example.com:8443/jamf/")
+        #expect(JamfWebLink.computer(id: "7", base: server.normalizedBaseURL)?.absoluteString
+                == "https://jss.example.com:8443/jamf/computers.html?id=7&o=r")
+        #expect(JamfWebLink.blueprint(id: "b-1", base: server.normalizedBaseURL)?.absoluteString
+                == "https://jss.example.com:8443/jamf/view/mfe/blueprints/b-1")
+    }
+}

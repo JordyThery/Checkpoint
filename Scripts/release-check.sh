@@ -33,9 +33,14 @@ LIVE_TESTS=("CheckpointTests/LiveLookupTests/readOnlyLookups()"
             "CheckpointUITests/LiveUITests/testNonInterruptiveCommands")
 CLEANUP_TEST="CheckpointTests/LiveCleanupTests"
 ROLES=(apple-business apple-school jamfpro-readonly jamfschool-readonly intune-test jamf-test-a jamfpro-production)
-# None: Checkpoint never writes to a tenant beyond jamf-test-a's fenced
-# delete (the app refuses every other write under tests), and intune-test
-# keeps its test device for Sync Device.
+# None. Roles that receive a device command in this app's run: those whose
+# allow-list entries list test devices (today jamfpro-production, Blank Push;
+# jamfschool-readonly, Update Inventory; intune-test, Sync Device), one listed
+# test device each, non-interruptive only. Despite its name, jamfschool-readonly
+# then gets that one command; every other request to it is a read. The app
+# allows the two commands only through those roles' connections (JTKit's
+# LiveLaunch.receivesCommands), and the gateway sends commands only to the
+# listed devices. Nothing else is written beyond jamf-test-a's fenced delete.
 READ_ONLY_ROLES=()
 # role:service:item, read from the Keychain service the allow-list names:
 # jamf-test-a only. The Apple keys, jamfpro-readonly, jamfpro-production,

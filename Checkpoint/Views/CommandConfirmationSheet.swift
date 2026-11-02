@@ -89,7 +89,7 @@ struct CommandConfirmationSheet: View {
 }
 
 #Preview("Wipe three Macs") {
-    let macs = (1...3).map { MDMCommand.Target(serial: "C02XK1JHJG5\($0)", recordID: "\($0)", kind: .computer) }
+    let macs = (1...3).map { MDMCommand.Target(serial: "ZZDEMOM0\($0)XX", recordID: "\($0)", kind: .computer) }
     CommandConfirmationSheet(
         confirmation: MDMCommand.Confirmation(.wipeComputer, plan: MDMCommand.wipeComputer.plan(for: macs, on: .jamfPro),
                                               on: .jamfPro, connectionName: "Lab Jamf",
