@@ -261,7 +261,8 @@ final class DemoSmokeUITests: JTKitUITestCase {
         app.typeKey("a", modifierFlags: .command)
         tap(app.menuBars.menuBarItems["Device"], timeout: 10)
         tap(app.menuItems.matching(NSPredicate(format: "title BEGINSWITH 'Open'")).firstMatch)
-        let ask = app.staticTexts.matching(NSPredicate(format: "value MATCHES 'Open [0-9]+ Records\\?' OR label MATCHES 'Open [0-9]+ Records\\?'")).firstMatch
+        // the question's own button, e.g. "Open 23 Records"
+        let ask = app.buttons.matching(NSPredicate(format: "label MATCHES 'Open [0-9]+ Records'")).firstMatch
         XCTAssertTrue(ask.waitForExistence(timeout: 10), "Opening many records didn't ask first")
         tap(dialogButton("Cancel"))
     }
