@@ -9,7 +9,9 @@ import SwiftUI
     )
 
     var body: some Scene {
-        WindowGroup("Checkpoint") {
+        // One main window: every window would show the same results and
+        // share one lookup, so a second one would only mislead.
+        Window("Checkpoint", id: "main") {
             ContentView()
                 .environment(settings)
                 .environment(model)
@@ -21,6 +23,7 @@ import SwiftUI
         }
         .commands {
             AppInfoCommands(appName: "Checkpoint") { updates.checkManually() }
+            LookupCommands()
             // The same items as the two toolbar pickers: Apple, then MDM.
             ConnectionCommands(store: settings.connections, roles: [model.appleRole, model.mdmRole],
                                itemTitle: \.displayName) {

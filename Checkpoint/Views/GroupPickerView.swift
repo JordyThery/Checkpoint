@@ -35,9 +35,8 @@ struct GroupPickerView: View {
                 .frame(minHeight: 260)
         } footer: {
                 if let errorMessage {
-                    Text(errorMessage)
+                    WarningLabel(errorMessage)
                         .font(.callout)
-                        .foregroundStyle(.red)
                         .lineLimit(2)
                 } else if !groups.isEmpty {
                     Text("\(visible.count) group\(visible.count == 1 ? "" : "s")")
@@ -71,7 +70,10 @@ struct GroupPickerView: View {
 
             )
         } else {
-            List(visible, selection: $selection) { group in
+            // A field of its own: a sheet has no toolbar to hold a search field.
+            VStack(spacing: 8) {
+                PickerSearchField(prompt: "Search groups", text: $searchText)
+                List(visible, selection: $selection) { group in
                 HStack(spacing: 8) {
                     // Jamf School keeps one list of device groups rather than
                     // splitting them by kind, so there is no kind to show.
@@ -87,7 +89,13 @@ struct GroupPickerView: View {
                 }
                 .tag(group.id)
             }
-            .searchable(text: $searchText, placement: .toolbar, prompt: "Search groups")
+            // Double-clicking a group looks it up, as the default button does.
+            .contextMenu(forSelectionType: JamfGroup.ID.self, menu: { _ in }) { ids in
+                guard let id = ids.first, !isFetchingMembers else { return }
+                selection = id
+                pick()
+            }
+            }
         }
     }
 
@@ -128,5 +136,40 @@ struct GroupPickerView: View {
             }
             isFetchingMembers = false
         }
+    }
+}
+
+/// The search field above a picker sheet's list.
+struct PickerSearchField: View {
+    let prompt: String
+    @Binding var text: String
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .accessibilityLabel(prompt)
+                .focused($isFocused)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Label("Clear Search", systemImage: "xmark.circle.fill")
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Clear the search")
+            }
+        }
+        .padding(.horizontal, 7)
+        .padding(.vertical, 4)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        // Typing starts a search as soon as the sheet opens.
+        .onAppear { isFocused = true }
     }
 }

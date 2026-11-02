@@ -146,16 +146,14 @@ struct ContentView: View {
                         }
                     }
                 }
-                ToolbarItem {
-                    Button {
-                        openSettings()
-                    } label: {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    .help("Configure the Apple and device management connections")
-                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if showsStatusBar { statusBar }
             }
         }
+        // The window's actions in the menu bar too (`LookupCommands`).
+        .focusedSceneValue(\.lookupActions, lookupActions)
+        .focusedSceneValue(\.stopWaiting, stopWaiting)
         // Driven by the visible selection rather than the raw one: a selection
         // holding only filtered-out devices would otherwise open an inspector
         // with nothing in it.
@@ -174,7 +172,7 @@ struct ContentView: View {
                     .inspectorColumnWidth(min: 320, ideal: 380, max: 500)
             }
         }
-        .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.item]) { result in
+        .fileImporter(isPresented: $showingImporter, allowedContentTypes: Self.importTypes) { result in
             handleImport(result)
         }
         // A scope naming a deleted organization would leave the popup blank,
@@ -270,30 +268,105 @@ struct ContentView: View {
                     .frame(minWidth: 60)
             }
             .keyboardShortcut(.defaultAction)
-            .disabled(model.isLoading || serialsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            if model.isLoading {
-                HStack(spacing: 6) {
-                    ProgressView().accessibilityLabel("In progress")
-                        .controlSize(.small)
-                    // Lookups run through a fixed window, so a large list
-                    // takes long enough to be worth counting down. Reading
-                    // the organization comes first and has no known total.
-                    if model.isBuildingSnapshot {
-                        Text(model.snapshotStatus ?? "Reading \(model.appleScopeLabel)…")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    } else if model.totalLookups > Self.confirmGroupLookupAbove {
-                        Text("\(model.completedLookups) of \(model.totalLookups)")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
-                }
-                .padding(.top, 4)
-            }
+            .disabled(!canLookUp)
         }
         .padding(12)
+    }
+
+    private var canLookUp: Bool {
+        !model.isLoading && !serialsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Text and CSV files: the serials are read as text, whatever the extension.
+    private static let importTypes: [UTType] = [.plainText, .commaSeparatedText, .tabSeparatedText, .text]
+
+    /// What the menu bar's Import, Look Up, Group, Order and Clear do, and
+    /// whether they can now: the same as the buttons above the table.
+    private var lookupActions: LookupActions {
+        var actions = LookupActions()
+        guard !model.isLoading else { return actions }
+        actions.importFile = { showingImporter = true }
+        if canLookUp { actions.lookUp = lookUp }
+        if model.mdmCapabilities.contains(.deviceGroups), model.selectedConnection != nil {
+            actions.lookUpGroup = { showingGroupPicker = true }
+        }
+        if model.isABMConfigured { actions.lookUpOrder = { showingOrderPicker = true } }
+        if settings.demo.isOn {
+            actions.sampleSerials = { serialsText = LookupModel.demoSerials.joined(separator: "\n") }
+        }
+        if !model.reports.isEmpty || !serialsText.isEmpty { actions.clear = clear }
+        return actions
+    }
+
+    /// Stop for the retry waits, in the menu bar too: the status bar can be
+    /// out of sight below the screen's edge.
+    private var stopWaiting: (() -> Void)? {
+        model.waits.statusText == nil ? nil : { model.waits.cancelAll() }
+    }
+
+    // MARK: Status bar
+
+    private var showsStatusBar: Bool {
+        settings.demo.isOn || model.waits.statusText != nil || model.isLoading
+            || model.statusMessage != nil || !model.reports.isEmpty
+    }
+
+    /// One line at the bottom of the window: demo mode, then what is going on
+    /// now (a wait before a retry, with Stop; a lookup's progress) or the last
+    /// action's outcome, and the device count.
+    private var statusBar: some View {
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 8) {
+                if settings.demo.isOn {
+                    StatusBadge("Demo Mode", style: .info)
+                        .help(DemoMode.helpText)
+                        .accessibilityLabel("Demo Mode: \(DemoMode.helpText)")
+                    Button("Turn Off") { _ = settings.demo.requestSwitch(to: false) }
+                        .buttonStyle(.link)
+                        .disabled(model.isLoading)
+                        .help("Turn off Demo Mode and use your own connections")
+                }
+                if let wait = model.waits.statusText {
+                    ProgressView().controlSize(.small).accessibilityHidden(true)
+                    Text(wait).monospacedDigit()
+                    Button("Stop") { model.waits.cancelAll() }
+                        .controlSize(.small)
+                        .help("Stop waiting: the requests that wait end now and aren’t sent again")
+                } else if model.isLoading {
+                    ProgressView().controlSize(.small).accessibilityLabel("In progress")
+                    Text(progressText).monospacedDigit()
+                } else if let message = model.statusMessage?.text {
+                    Text(message)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(message)
+                }
+                Spacer()
+                if !model.reports.isEmpty {
+                    Text("\(visibleReports.count) of \(model.reports.count) device\(model.reports.count == 1 ? "" : "s")")
+                        .monospacedDigit()
+                }
+            }
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+        }
+        .background(.bar)
+        // Said aloud: it replaces a pop-up that VoiceOver read.
+        .onChange(of: model.statusMessage) { _, message in
+            if let message { AccessibilityNotification.Announcement(message.text).post() }
+        }
+    }
+
+    /// Lookups run through a fixed window, so a large list takes long enough
+    /// to be worth counting. Reading the organization comes first and has no
+    /// known total.
+    private var progressText: String {
+        if model.isBuildingSnapshot { return model.snapshotStatus ?? "Reading \(model.appleScopeLabel)…" }
+        if model.totalLookups > 1 { return "Looking up \(model.completedLookups) of \(model.totalLookups)…" }
+        return "Looking up…"
     }
 
     private var configurationHint: some View {
@@ -339,9 +412,6 @@ struct ContentView: View {
             .frame(maxWidth: 360)
             filterMenu
             Spacer()
-            Text("\(visibleReports.count) of \(model.reports.count) device\(model.reports.count == 1 ? "" : "s")")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -439,7 +509,7 @@ struct ContentView: View {
             }
             if !options.issues.isEmpty {
                 Divider()
-                Section("Only show devices with") {
+                Section("Only Show Devices With") {
                     ForEach(options.issues, id: \.issue) { entry in
                         Toggle("\(entry.issue.label(for: model.mdmProduct)) (\(entry.count))", isOn: Binding(
                             get: { filters.issues.contains(entry.issue) },
@@ -510,9 +580,10 @@ struct ContentView: View {
             mdmRecordColumns
             mdmStateColumns
             // No customization ID, so the link stays where it is: a column
-            // of nothing but an arrow makes no sense anywhere else.
+            // of nothing but an arrow makes no sense anywhere else. Named,
+            // so the header and VoiceOver say what it is.
             if model.mdmCapabilities.contains(.deviceLink) {
-                TableColumn("") { (report: DeviceReport) in
+                TableColumn("Link") { (report: DeviceReport) in
                     if let url = report.mdm.value?.webURL {
                         Link(destination: url) {
                             Image(systemName: "arrow.up.forward.app")
@@ -521,12 +592,17 @@ struct ContentView: View {
                         .help("Open in \(model.product(for: report).label)")
                     }
                 }
-                .width(28)
+                .width(min: 36, ideal: 36, max: 44)
             }
         }
         .focused($focus, equals: .results)
         .contextMenu(forSelectionType: DeviceReport.ID.self) { ids in
-            Button("Open in \(model.mdmProduct.label)") { openInConsole(ids) }
+            // Named by the records' own product; absent when none has a page.
+            let linked = model.reports.filter { ids.contains($0.id) && $0.mdm.value?.webURL != nil }
+            let products = Set(linked.map { model.product(for: $0).label })
+            if !linked.isEmpty {
+                Button(products.count == 1 ? "Open in \(products.first ?? "")" : "Open Records") { openInConsole(ids) }
+            }
         } primaryAction: { ids in
             openInConsole(ids)
         }
@@ -1032,6 +1108,22 @@ private extension DeviceReport {
 
 // MARK: - Cells
 
+/// A cell's read error: the word in the text color, the icon in orange,
+/// the message on hover.
+private struct ErrorCellLabel: View {
+    let message: String
+
+    var body: some View {
+        Label {
+            Text("Error")
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+        .help(message)
+    }
+}
+
 struct FetchText<Value: Sendable>: View {
     let state: FetchState<Value>
     let text: (Value) -> String
@@ -1043,9 +1135,7 @@ struct FetchText<Value: Sendable>: View {
         case .notConfigured, .notFound:
             Text("—").foregroundStyle(.tertiary)
         case .failed(let message):
-            Label("Error", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-                .help(message)
+            ErrorCellLabel(message: message)
         case .found(let value):
             Text(text(value))
         }
@@ -1065,19 +1155,17 @@ struct MigrationCell: View {
         case .notConfigured, .notFound:
             Text("—").foregroundStyle(.tertiary)
         case .failed(let message):
-            Label("Error", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-                .help(message)
+            ErrorCellLabel(message: message)
         case .found(let info):
             let device = info.device
             if device.hasActiveMigration {
                 let due = DateFormatting.short(device.mdmMigrationDeadlineDateTime)
-                Text(due == "—" ? (device.mdmMigrationStatus?.capitalized ?? "In progress") : due)
-                    .foregroundStyle(.orange)
+                StatusBadge(due == "—" ? (device.mdmMigrationStatus?.capitalized ?? "In progress") : "Due \(due)",
+                            style: .attention)
                     .help("Migration \(device.mdmMigrationStatus?.lowercased() ?? "in progress"), due by this date.")
             } else if let outcome = device.migrationOutcome {
                 Text(outcome)
-                    .foregroundStyle(outcome == "Migrated" ? Color.green : Color.secondary)
+                    .foregroundStyle(.secondary)
                     .help(outcome == "Migrated"
                           ? "The device migrated to its assigned service."
                           : "No migration is scheduled. Apple reports a canceled migration and an unsuccessful one the same way, so this covers both. The organization assignment is unaffected.")
@@ -1096,20 +1184,18 @@ struct ABMStatusCell: View {
         case .pending:
             ProgressView().accessibilityLabel("In progress").controlSize(.small)
         case .notConfigured:
-            Text("Not configured").foregroundStyle(.tertiary)
+            Text("Not configured").foregroundStyle(.secondary)
         case .notFound:
-            Text("Not in organization").foregroundStyle(.red)
+            StatusBadge("Not in organization", style: .failure)
         case .failed(let message):
-            Label("Error", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-                .help(message)
+            ErrorCellLabel(message: message)
         case .found(let info):
             if info.isReleased {
-                Text("Released").foregroundStyle(.red)
+                StatusBadge("Released", style: .failure)
             } else if info.device.status?.uppercased() == "ASSIGNED" {
-                Text("Assigned").foregroundStyle(.green)
+                StatusBadge("Assigned", style: .success)
             } else {
-                Text("Unassigned").foregroundStyle(.orange)
+                StatusBadge("Unassigned", style: .attention)
             }
         }
     }
@@ -1123,16 +1209,14 @@ struct MDMStatusCell: View {
         case .pending:
             ProgressView().accessibilityLabel("In progress").controlSize(.small)
         case .notConfigured:
-            Text("Not configured").foregroundStyle(.tertiary)
+            Text("Not configured").foregroundStyle(.secondary)
         case .notFound:
-            Text("No record").foregroundStyle(.red)
+            StatusBadge("No record", style: .failure)
         case .failed(let message):
-            Label("Error", systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-                .help(message)
+            ErrorCellLabel(message: message)
         case .found(let info):
+            // The record's name, plain: a found record is the normal case.
             Text(info.name ?? "Record #\(info.recordID)")
-                .foregroundStyle(.green)
         }
     }
 }

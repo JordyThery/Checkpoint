@@ -941,6 +941,22 @@ final class LookupModel {
     /// access tokens survive; clearing the list must not cost a fresh sign-in.
     func clearReports() {
         reports = []
+        statusMessage = nil
+    }
+
+    /// The outcome of the last action that has no other place to show (a
+    /// command sent), for the window's status bar. Replaced by the next one,
+    /// and gone when a lookup starts. Each has its own ID, so the same text
+    /// twice is still a change (and is said aloud again).
+    struct StatusMessage: Equatable {
+        let id = UUID()
+        let text: String
+    }
+
+    private(set) var statusMessage: StatusMessage?
+
+    func report(_ message: String) {
+        statusMessage = StatusMessage(text: message)
     }
 
     /// Which product the selected connection talks to. Jamf Pro when nothing
@@ -1112,6 +1128,7 @@ final class LookupModel {
         isLoading = true
         defer { isLoading = false }
         reports = serials.map { DeviceReport(serial: $0) }
+        statusMessage = nil
         completedLookups = 0
         totalLookups = serials.count
         defer { totalLookups = 0 }

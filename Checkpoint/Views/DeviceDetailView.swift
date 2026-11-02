@@ -26,7 +26,6 @@ struct DeviceDetailView: View {
     @State private var locationSelection: String?
     @State private var isWorking = false
     @State private var errorMessage: String?
-    @State private var infoMessage: String?
     @State private var pending: PendingAction?
     /// A confirmation with something to type (the PIN, twice).
     @State private var typed: TypedConfirmation?
@@ -140,8 +139,11 @@ struct DeviceDetailView: View {
             if report.mdm.value?.kind == .computer {
                 if let fileVault = detail.isFileVaultEnabled {
                     LabeledContent("FileVault") {
-                        Text(fileVault ? "Enabled" : "Not enabled")
-                            .foregroundStyle(fileVault ? Color.primary : Color.orange)
+                        if fileVault {
+                            Text("Enabled")
+                        } else {
+                            StatusBadge("Not enabled", style: .attention)
+                        }
                     }
                 }
                 if let firewall = detail.isFirewallEnabled {
@@ -149,13 +151,13 @@ struct DeviceDetailView: View {
                 }
             }
             if detail.deviceLockStatus?.uppercased() == "LOCKED" {
-                LabeledContent("Locked") { Text("Yes").foregroundStyle(.orange) }
+                LabeledContent("Locked") { StatusBadge("Yes", style: .attention) }
             }
             if detail.lostModeStatus?.uppercased() == "ENABLED" {
-                LabeledContent("Lost Mode") { Text("Enabled").foregroundStyle(.orange) }
+                LabeledContent("Lost Mode") { StatusBadge("Enabled", style: .attention) }
             }
             if detail.deviceEraseStatus?.uppercased() == "ERASED" {
-                LabeledContent("Erased") { Text("Yes").foregroundStyle(.orange) }
+                LabeledContent("Erased") { StatusBadge("Yes", style: .attention) }
             }
         } else {
             LabeledContent("Management State") { ProgressView().accessibilityLabel("In progress").controlSize(.small) }
@@ -296,14 +298,6 @@ struct DeviceDetailView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "")
-        }
-        .alert(
-            "Command Sent",
-            isPresented: Binding(get: { infoMessage != nil }, set: { if !$0 { infoMessage = nil } })
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(infoMessage ?? "")
         }
         .sheet(item: $typed) { item in
             CommandConfirmationSheet(confirmation: item.confirmation) { approval in
@@ -516,8 +510,11 @@ struct DeviceDetailView: View {
     /// column wraps them into a ragged block.
     private func historyRow(_ event: ABMAuditEvent, withTime: Bool) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(event.summary + (event.isFailure ? " — failed" : ""))
-                .foregroundStyle(event.isFailure ? Color.orange : Color.primary)
+            if event.isFailure {
+                WarningLabel(event.summary + " — failed")
+            } else {
+                Text(event.summary)
+            }
             Text(
                 [
                     withTime ? DateFormatting.short(event.dateTime) : DateFormatting.dateOnly(event.dateTime),
@@ -597,7 +594,7 @@ struct DeviceDetailView: View {
     /// Apple's message, selectable so the Error ID can be copied.
     private func readFailure(_ message: String, alignment: HorizontalAlignment = .trailing) -> some View {
         VStack(alignment: alignment, spacing: 2) {
-            Text("Couldn’t load").foregroundStyle(.orange)
+            WarningLabel("Couldn’t load")
             Text(message)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -644,7 +641,7 @@ struct DeviceDetailView: View {
             Text("No configured \(model.appleScopeLabel) organization reports this serial number.")
                 .foregroundStyle(.secondary)
         case .failed(let message):
-            Text(message).foregroundStyle(.red)
+            WarningLabel(message)
         case .found(let info):
             abmDetails(info)
         }
@@ -654,12 +651,11 @@ struct DeviceDetailView: View {
     private func abmDetails(_ info: ABMInfo) -> some View {
         LabeledContent("Status") {
             if info.isReleased {
-                Text("Released \(DateFormatting.short(info.device.releasedFromOrgDateTime))")
-                    .foregroundStyle(.red)
+                StatusBadge("Released \(DateFormatting.short(info.device.releasedFromOrgDateTime))", style: .failure)
             } else if info.device.status?.uppercased() == "ASSIGNED" {
-                Text("Assigned").foregroundStyle(.green)
+                StatusBadge("Assigned", style: .success)
             } else {
-                Text("Unassigned").foregroundStyle(.orange)
+                StatusBadge("Unassigned", style: .attention)
             }
         }
         if model.readsAllABMOrgs, let org = info.orgName {
@@ -716,12 +712,11 @@ struct DeviceDetailView: View {
             ForEach(coverage) { coverage in
                 LabeledContent("Warranty Coverage") {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text(coverage.displayStatus)
-                            .foregroundStyle(
-                                coverage.displayStatus == "Expired" ? Color.red
-                                    : coverage.displayStatus == "Active" ? Color.green
-                                    : Color.primary
-                            )
+                        switch coverage.displayStatus {
+                        case "Expired": StatusBadge("Expired", style: .failure)
+                        case "Active": StatusBadge("Active", style: .success)
+                        default: Text(coverage.displayStatus)
+                        }
                         if let description = coverage.description {
                             Text(description)
                                 .font(.caption)
@@ -738,8 +733,7 @@ struct DeviceDetailView: View {
         if info.device.hasActiveMigration {
             LabeledContent("Migration") {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(info.device.mdmMigrationStatus?.capitalized ?? "In progress")
-                        .foregroundStyle(.orange)
+                    StatusBadge(info.device.mdmMigrationStatus?.capitalized ?? "In progress", style: .attention)
                     Text("by \(DateFormatting.short(info.device.mdmMigrationDeadlineDateTime))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -765,11 +759,14 @@ struct DeviceDetailView: View {
                 readFailure(message)
             } else if let lock = activationLock {
                 VStack(alignment: .trailing, spacing: 2) {
-                    // Orange for enabled, plain for disabled: a lock can
-                    // stand in the way of reusing a device, but neither
+                    // An orange badge for enabled, plain for disabled: a lock
+                    // can stand in the way of reusing a device, but neither
                     // state is a fault.
-                    Text(lock.summary)
-                        .foregroundStyle(lock.isLocked ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
+                    if lock.isLocked {
+                        StatusBadge(lock.summary, style: .attention)
+                    } else {
+                        Text(lock.summary)
+                    }
                     if let detail = lock.detail {
                         Text(detail)
                             .font(.caption)
@@ -824,6 +821,12 @@ struct DeviceDetailView: View {
         Button("Release from \(info.orgName ?? model.abmKind.label)", role: .destructive) { pending = .release }
             .disabled(releaseUnavailable != nil)
             .help(releaseUnavailable ?? "")
+            .accessibilityHint(releaseUnavailable ?? "")
+        if let releaseUnavailable {
+            Text(releaseUnavailable)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     /// Apple rejects anything beyond 90 days.
@@ -846,7 +849,7 @@ struct DeviceDetailView: View {
             Text(noRecordHint)
                 .foregroundStyle(.secondary)
         case .failed(let message):
-            Text(message).foregroundStyle(.red)
+            WarningLabel(message)
         case .found(let info):
             mdmDetails(info)
         }
@@ -900,8 +903,11 @@ struct DeviceDetailView: View {
         if capabilities.contains(.complianceOnDemand), let summary = compliance?.summary {
             LabeledContent("Compliance") {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(summary)
-                        .foregroundStyle(compliance?.state == "NON_COMPLIANT" ? Color.orange : Color.primary)
+                    if compliance?.state == "NON_COMPLIANT" {
+                        StatusBadge(summary, style: .attention)
+                    } else {
+                        Text(summary)
+                    }
                     // Named because Jamf Pro relays the verdict rather than
                     // reaching it, so the vendor is who to ask about it.
                     if let vendor = compliance?.vendor, !vendor.isEmpty {
@@ -923,16 +929,23 @@ struct DeviceDetailView: View {
                 let expired = info.mdmProfileExpiration
                     .flatMap(DateFormatting.parseISO)
                     .map { $0 < Date() } ?? false
-                Text(DateFormatting.short(info.mdmProfileExpiration))
-                    .foregroundStyle(expired ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                if expired {
+                    StatusBadge("Expired \(DateFormatting.short(info.mdmProfileExpiration))", style: .failure)
+                } else {
+                    Text(DateFormatting.short(info.mdmProfileExpiration))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         // Whether the device is still managed and supervised, as its product
         // reports it.
         if let managed = info.isManaged {
             LabeledContent("Managed") {
-                Text(managed ? "Yes" : "No")
-                    .foregroundStyle(managed ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                if managed {
+                    Text("Yes").foregroundStyle(.secondary)
+                } else {
+                    StatusBadge("No", style: .attention)
+                }
             }
         }
         if let supervised = info.isSupervised {
@@ -972,14 +985,13 @@ struct DeviceDetailView: View {
             if let details = schoolDetails {
                 VStack(alignment: .trailing, spacing: 2) {
                     switch details.hasPasscode {
-                    case true: Text("Set").foregroundStyle(.green)
-                    case false: Text("Not set").foregroundStyle(.orange)
+                    case true: StatusBadge("Set", style: .success)
+                    case false: StatusBadge("Not set", style: .attention)
                     case nil: Text("—")
                     }
                     if details.passcodeCompliant == false {
-                        Text("Doesn’t meet requirements")
+                        WarningLabel("Doesn’t meet requirements")
                             .font(.caption)
-                            .foregroundStyle(.orange)
                     }
                 }
             } else {
@@ -998,23 +1010,22 @@ struct DeviceDetailView: View {
     private func encryptionRow(_ encryption: DiskEncryptionState, kind: DeviceKind) -> some View {
         LabeledContent(kind == .computer ? "FileVault" : "Encryption") {
             VStack(alignment: .trailing, spacing: 2) {
-                Text(encryption.displaySummary)
-                    .foregroundStyle(encryptionTint(encryption.status))
+                encryptionStatus(encryption)
                 if let warning = encryption.keyValidityWarning {
-                    Text(warning)
+                    WarningLabel(warning)
                         .font(.caption)
-                        .foregroundStyle(.orange)
                 }
             }
         }
         .help(kind == .mobileDevice ? "Storage encryption, as Intune reports it." : "")
     }
 
-    private func encryptionTint(_ status: DiskEncryptionState.Status) -> AnyShapeStyle {
-        switch status {
-        case .enabled: AnyShapeStyle(.green)
-        case .notEnabled, .inProgress: AnyShapeStyle(.orange)
-        case .ineligible, .unknown: AnyShapeStyle(.secondary)
+    @ViewBuilder
+    private func encryptionStatus(_ encryption: DiskEncryptionState) -> some View {
+        switch encryption.status {
+        case .enabled: StatusBadge(encryption.displaySummary, style: .success)
+        case .notEnabled, .inProgress: StatusBadge(encryption.displaySummary, style: .attention)
+        case .ineligible, .unknown: Text(encryption.displaySummary).foregroundStyle(.secondary)
         }
     }
 
@@ -1027,20 +1038,18 @@ struct DeviceDetailView: View {
             LabeledContent("Passcode") {
                 VStack(alignment: .trailing, spacing: 2) {
                     if security.passcodePresent == true {
-                        Text("Set").foregroundStyle(.green)
+                        StatusBadge("Set", style: .success)
                     } else if security.passcodePresent == false {
-                        Text("Not set").foregroundStyle(.orange)
+                        StatusBadge("Not set", style: .attention)
                     } else {
                         Text("—")
                     }
                     if security.passcodeCompliantWithProfile == false {
-                        Text("Doesn’t meet the scoped profile")
+                        WarningLabel("Doesn’t meet the scoped profile")
                             .font(.caption)
-                            .foregroundStyle(.orange)
                     } else if security.passcodeCompliant == false {
-                        Text("Doesn’t meet requirements")
+                        WarningLabel("Doesn’t meet requirements")
                             .font(.caption)
-                            .foregroundStyle(.orange)
                     }
                 }
             }
@@ -1057,8 +1066,7 @@ struct DeviceDetailView: View {
         LabeledContent("Software Update") {
             if let update {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(update.displayState)
-                        .foregroundStyle(updateStateTint(update))
+                    updateState(update)
                     if let version = update.pendingVersion {
                         Text(version).font(.caption).foregroundStyle(.secondary)
                     }
@@ -1066,7 +1074,7 @@ struct DeviceDetailView: View {
                         let overdue = deadline < Date()
                         Text("\(overdue ? "Was due" : "Due") \(DateFormatting.short(deadline))")
                             .font(.caption)
-                            .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                            .foregroundStyle(.secondary)
                     }
                     // Enforcement is not restated here: the deadline above
                     // only exists while an update is enforced, and the
@@ -1074,27 +1082,26 @@ struct DeviceDetailView: View {
                     if update.hasPendingUpdate, let reported = update.offerReportedAt {
                         Text("Reported \(DateFormatting.short(reported))")
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                     }
                     if update.hasCurrentFailure {
                         // The readable sentence, with the whole NSError text
                         // kept in the tooltip for diagnosis.
-                        Text(update.failureSummary ?? "Software update failed.")
+                        WarningLabel(update.failureSummary ?? "Software update failed.")
                             .font(.caption)
-                            .foregroundStyle(.red)
                             .multilineTextAlignment(.trailing)
                             .help(update.lastFailureReason ?? "")
                         if let at = update.lastFailureAt {
                             Text("Failed \(DateFormatting.short(at))")
                                 .font(.caption)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary)
                         }
                     } else if update.hasPastFailure, let at = update.lastFailureAt {
-                        // Deliberately tertiary and past tense: this is a
+                        // Deliberately quiet and past tense: this is a
                         // record of an attempt that is no longer current.
                         Text("Last failed \(DateFormatting.short(at))")
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .help(update.failureSummary ?? "Software update failed.")
                     }
                 }
@@ -1123,13 +1130,18 @@ struct DeviceDetailView: View {
         }
     }
 
-    /// Red is reserved for the state that is itself a failure. Painting
-    /// "Ready to install" red because a later attempt failed labels a sound
-    /// state as a broken one, and the failure below already carries the
-    /// color.
-    private func updateStateTint(_ update: JamfSoftwareUpdateStatus) -> AnyShapeStyle {
-        if update.isFailedState { return AnyShapeStyle(.red) }
-        return update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
+    /// The failure badge is reserved for the state that is itself a failure.
+    /// Marking "Ready to install" failed because a later attempt failed
+    /// labels a sound state as a broken one, and the failure below already
+    /// says so.
+    @ViewBuilder
+    private func updateState(_ update: JamfSoftwareUpdateStatus) -> some View {
+        if update.isFailedState {
+            StatusBadge(update.displayState, style: .failure)
+        } else {
+            Text(update.displayState)
+                .foregroundStyle(update.hasPendingUpdate ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+        }
     }
 
     /// What the device made of the declarations sent to it, and when it last
@@ -1157,7 +1169,7 @@ struct DeviceDetailView: View {
                 LabeledContent("Update Enforcement") {
                     VStack(alignment: .trailing, spacing: 2) {
                         if rejected != nil {
-                            Text("Rejected by the device").foregroundStyle(.red)
+                            StatusBadge("Rejected by the device", style: .failure)
                         } else if satisfied {
                             Text("Satisfied").foregroundStyle(.secondary)
                         } else {
@@ -1176,12 +1188,12 @@ struct DeviceDetailView: View {
                             let overdue = due < Date()
                             Text("\(overdue ? "Was due" : "Due") \(DateFormatting.short(due))")
                                 .font(.caption)
-                                .foregroundStyle(overdue ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                                .foregroundStyle(.secondary)
                         }
                         if !satisfied, let installed, !installed.isEmpty {
                             Text("Installed \(installed)")
                                 .font(.caption)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(.secondary)
                         }
                         if !satisfied, enforcement?.isMajorUpgrade(fromOSVersion: installed) == true {
                             Text("Major upgrade")
@@ -1202,9 +1214,11 @@ struct DeviceDetailView: View {
             }
             LabeledContent("Declarations") {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(declarationSummary(ddm))
-                        .foregroundStyle(ddm.invalidDeclarations.isEmpty && ddm.notAppliedDeclarations.isEmpty
-                                         ? AnyShapeStyle(.secondary) : AnyShapeStyle(.orange))
+                    if ddm.invalidDeclarations.isEmpty && ddm.notAppliedDeclarations.isEmpty {
+                        Text(declarationSummary(ddm)).foregroundStyle(.secondary)
+                    } else {
+                        WarningLabel(declarationSummary(ddm))
+                    }
                     // Ones already spelled out above are not repeated.
                     ForEach(otherInvalidDeclarations(ddm)) { declaration in
                         Text(declaration.reasons.first ?? declaration.identifier)
@@ -1221,8 +1235,8 @@ struct DeviceDetailView: View {
                 // A report months old describes a device that has stopped
                 // talking, not one that is in the state shown above.
                 let stale = reported < Date().addingTimeInterval(-30 * 24 * 60 * 60)
-                Text(DateFormatting.short(reported))
-                    .foregroundStyle(stale ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                Text(DateFormatting.short(reported) + (stale ? " · over a month old" : ""))
+                    .foregroundStyle(.secondary)
                     .help(stale ? "Over a month old, so everything above may have changed since." : "")
             }
         }
@@ -1272,7 +1286,7 @@ struct DeviceDetailView: View {
                     Text(site.name).tag(site.id)
                 }
             }
-            Button("Apply Site Change") { pending = .applySite }
+            Button("Apply Site") { pending = .applySite }
                 .disabled(siteSelection == (info.siteID ?? "-1"))
         }
         if capabilities.contains(.locations), !model.locations(for: report).isEmpty {
@@ -1282,7 +1296,7 @@ struct DeviceDetailView: View {
                     Text(location.name).tag(Optional(location.id))
                 }
             }
-            Button("Apply Location Change") { pending = .applyLocation }
+            Button("Apply Location") { pending = .applyLocation }
                 .disabled(locationSelection == nil || locationSelection == info.locationID)
         }
         if capabilities.contains(.prestageScope) {
@@ -1292,7 +1306,7 @@ struct DeviceDetailView: View {
                     Text(prestage.displayName).tag(Optional(prestage.id))
                 }
             }
-            Button("Apply PreStage Change") { pending = .applyPrestage }
+            Button("Apply PreStage") { pending = .applyPrestage }
                 .disabled(prestageSelection == info.prestageID)
         }
         if capabilities.contains(.assetTag) {
@@ -1315,6 +1329,12 @@ struct DeviceDetailView: View {
             }
             .disabled(noKeyExpected)
             .help(noKeyExpected ? "FileVault isn’t enabled on this Mac." : "")
+            .accessibilityHint(noKeyExpected ? "FileVault isn’t enabled on this Mac." : "")
+            if noKeyExpected {
+                Text("FileVault isn’t enabled on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Button("Show Recovery Lock Password") {
                 reveal(title: "Recovery Lock Password") {
                     (try await model.recoveryLockPassword(for: report), nil)
@@ -1480,9 +1500,14 @@ struct DeviceDetailView: View {
             }
             .disabled(unavailable != nil)
             .help(unavailable ?? command.message(for: product))
+            .accessibilityHint(unavailable ?? "")
         }
+        // Each reason once: several commands often share one.
         let blocked = MDMCommand.commands(for: info.kind, product: product)
-            .compactMap { model.unavailabilityReason(for: $0, reports: [report]) }
+            .compactMap { model.unavailabilityReason(for: $0, reports: [report]) ?? $0.inapplicabilityReason(for: info) }
+            .reduce(into: [String]()) { reasons, reason in
+                if !reasons.contains(reason) { reasons.append(reason) }
+            }
         if !blocked.isEmpty {
             Text(blocked.joined(separator: " "))
                 .font(.caption)
@@ -1516,7 +1541,8 @@ struct DeviceDetailView: View {
         Task {
             do {
                 try await operation()
-                if let successMessage { infoMessage = successMessage }
+                // In the window's status bar, not a pop-up to dismiss.
+                if let successMessage { model.report(successMessage) }
             } catch {
                 errorMessage = error.localizedDescription
             }
