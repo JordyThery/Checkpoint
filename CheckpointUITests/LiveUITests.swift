@@ -63,6 +63,12 @@ final class LiveUITests: JTKitUITestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [done], timeout: 120), .completed, "The lookup didn't finish")
     }
 
+    /// The results' first row: a SwiftUI table reaches XCTest as an outline or a table.
+    private func firstRow() -> XCUIElement {
+        let outline = app.outlines.firstMatch.outlineRows.firstMatch
+        return outline.waitForExistence(timeout: 10) ? outline : app.tables.firstMatch.tableRows.firstMatch
+    }
+
     /// Every read role's test devices, looked up in all of them at once.
     func testReadOnlyLookups() throws {
         _ = try liveGateway()
@@ -110,7 +116,7 @@ final class LiveUITests: JTKitUITestCase {
             choose(menuItemStartingWith: plan.connection)
             lookUp([serial])
             // the one row, by position (a query by serial would name it in the log)
-            tap(app.tables.firstMatch.tableRows.firstMatch, timeout: 30)
+            tap(firstRow(), timeout: 30)
             tap(app.buttons[plan.command].firstMatch, timeout: 30)
             tap(dialogButton(plan.command), timeout: 10)
             waitForNetwork()
